@@ -41,6 +41,11 @@ template <typename T>
 std::uint32_t metadata_checksum(const T& metadata) noexcept
 {
     static_assert(sizeof(T) == kMetadataSize);
+
+    // PFS metadata uses the same broad checksum pattern as the upstream
+    // implementation: the first u32 stores the checksum and the remaining
+    // 1020 bytes are summed as 32-bit words. memcpy keeps this safe even though
+    // the on-disk structure is packed and may not have natural u32 alignment.
     const auto* bytes = reinterpret_cast<const std::byte*>(&metadata);
     std::uint32_t sum = 0;
     for (std::size_t offset = sizeof(std::uint32_t); offset < kMetadataSize;
@@ -149,6 +154,11 @@ Reader::Reader(ApaVolume& volume)
 
 unsigned Reader::inode_scale() const noexcept
 {
+    // This is metadata addressing, not file-data addressing. PFS metadata is
+    // fixed at 1024 bytes while BlockInfo.number is expressed in the filesystem
+    // zone scale. PS2SDK shifts the metadata block number by log2(zone/1024).
+    // Do not replace this with `number * sectors_per_zone` -- that is correct for
+    // payload extents and wrong for inode/SEGI metadata.
     unsigned scale = 0;
     std::uint32_t size = static_cast<std::uint32_t>(kMetadataSize);
     while (size < probe_.super.zone_size) {
@@ -190,6 +200,9 @@ std::optional<Node> Reader::read_inode(BlockInfo location)
         return std::nullopt;
     }
 
+    // `location.number` is not a disk sector. Convert the PFS metadata address
+    // to a 1024-byte metadata-block index first, then to 512-byte sectors.
+    // ApaVolume applies the selected main/sub-partition physical start LBA later.
     const std::uint32_t metadata_block = location.number << scale;
     constexpr std::uint32_t sectors_per_metadata =
         static_cast<std::uint32_t>(kMetadataSize / apa::kSectorSize);
@@ -290,6 +303,9 @@ bool Reader::read_zone_bytes(const BlockInfo& block, std::uint64_t zone_offset,
         return false;
     }
 
+    // File-data BlockInfo.number is a zone number. This conversion is different
+    // from inode metadata addressing above. After zone -> sector conversion,
+    // ApaVolume still has to select the physical APA main/sub extent.
     const std::uint32_t sectors_per_zone = probe_.super.zone_size / apa::kSectorSize;
     const std::uint64_t base_sector = static_cast<std::uint64_t>(block.number) * sectors_per_zone;
     std::uint64_t byte_position = zone_offset;
@@ -302,6 +318,10 @@ bool Reader::read_zone_bytes(const BlockInfo& block, std::uint64_t zone_offset,
 
         if (in_sector == 0 && remaining >= apa::kSectorSize) {
             const std::size_t whole_sectors = remaining / apa::kSectorSize;
+
+            // 128 sectors = 64 KiB. This is a conservative current I/O tuning
+            // value, not a PFS format limit. Keep it documented/benchmarked in
+            // docs/performance.md before changing it.
             const std::size_t batch = std::min<std::size_t>(whole_sectors, 128);
             const std::uint64_t sector64 = base_sector + relative_sector;
             if (sector64 > std::numeric_limits<std::uint32_t>::max()) {
@@ -319,6 +339,9 @@ bool Reader::read_zone_bytes(const BlockInfo& block, std::uint64_t zone_offset,
             continue;
         }
 
+        // Unaligned edges still need a full 512-byte disk-sector read. This is
+        // what lets Reader::read satisfy Windows-style arbitrary byte ranges
+        // without weakening the lower BlockDevice/ApaVolume sector contract.
         std::array<std::byte, apa::kSectorSize> sector{};
         const std::uint64_t sector64 = base_sector + relative_sector;
         if (sector64 > std::numeric_limits<std::uint32_t>::max() ||
@@ -361,7 +384,8 @@ bool Reader::read(const Node& node, std::uint64_t offset, std::span<std::byte> o
     // number_data is a global descriptor count. Index 0 is the primary SEGD
     // descriptor itself. At global index 114 (then every 123 entries) PFS stores
     // an indirect SEGI descriptor; that descriptor's data[0] describes itself and
-    // must be skipped as file payload.
+    // must be skipped as file payload. This odd 123-slot layout is protected by
+    // pfs_segi_tests.cpp and documented in docs/pfs-format-notes.md.
     for (std::size_t global = 1; global < node.inode.number_data && written < out.size(); ++global) {
         BlockInfo block{};
 
@@ -441,6 +465,9 @@ std::vector<DirectoryEntry> Reader::list_directory(const Node& directory,
 
     std::size_t position = 0;
     while (position < bytes.size()) {
+        // PFS directory entries are variable length but may not cross a physical
+        // 512-byte sector boundary. Preserve this boundary check even if the
+        // parser is later optimized to avoid materializing the whole directory.
         const std::size_t sector_start = (position / apa::kSectorSize) * apa::kSectorSize;
         const std::size_t sector_end = std::min(sector_start + apa::kSectorSize, bytes.size());
         if (position + 8 > sector_end) {
@@ -493,6 +520,9 @@ std::optional<Node> Reader::resolve(std::string_view path)
         return std::nullopt;
     }
 
+    // Path traversal is explicit Reader state, not a process-global current
+    // directory. This is an intentional host-API difference from shell/iomanX
+    // style frontends and lets GUI/Dokany callers resolve independent paths.
     std::size_t position = 0;
     while (position < path.size()) {
         while (position < path.size() && (path[position] == '/' || path[position] == '\\')) {
