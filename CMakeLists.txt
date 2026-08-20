@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.2.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.3.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Bocchi" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Chisato" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
@@ -46,6 +46,20 @@ endif()
 add_executable(ps2-driveforge-inspect src/cli/main.cpp)
 target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
+
+if(WIN32)
+    add_executable(ps2-driveforge-gui WIN32 src/gui/windows_main.cpp)
+    set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
+    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_core comctl32 comdlg32 uxtheme)
+    target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
+    target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive-)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2-driveforge-gui PRIVATE /WX)
+        endif()
+    endif()
+endif()
 
 if(PS2DF_BUILD_TESTS)
     enable_testing()
