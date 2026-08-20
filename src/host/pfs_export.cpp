@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <fstream>
 #include <set>
+#include <string>
 #include <system_error>
 
 namespace ps2hdd::pfs {
@@ -20,6 +21,16 @@ std::string join_path(std::string_view parent, std::string_view child)
     result.push_back('/');
     result.append(child);
     return result;
+}
+
+std::filesystem::path utf8_path(std::string_view text)
+{
+    std::u8string value;
+    value.reserve(text.size());
+    for (const unsigned char c : text) {
+        value.push_back(static_cast<char8_t>(c));
+    }
+    return std::filesystem::path(value);
 }
 
 std::string uppercase_ascii(std::string_view text)
@@ -170,7 +181,7 @@ bool export_node(ExportContext& context, const Node& node, std::string_view logi
 
         const std::string child_path = join_path(logical_path, entry.name);
         if (!export_node(context, *child, child_path,
-                         destination / std::filesystem::u8path(host_name), depth + 1)) {
+                         destination / utf8_path(host_name), depth + 1)) {
             context.active_directories.erase(key);
             return false;
         }
