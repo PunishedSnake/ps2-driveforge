@@ -2,6 +2,7 @@
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/apa_volume.hpp"
 #include "ps2hdd/pfs.hpp"
+#include "ps2hdd/pfs_export.hpp"
 #include "ps2hdd/version.hpp"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
 #include "ps2hdd/physical_drive.hpp"
@@ -9,7 +10,6 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -18,7 +18,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
 
@@ -55,8 +54,9 @@ void usage()
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
                  "  ps2-driveforge-inspect --physical 3 --browse +OPL CFG\n"
                  "  ps2-driveforge-inspect --physical 3 --extract +OPL CFG/SLUS_123.45.cfg game.cfg\n"
+                 "  ps2-driveforge-inspect --physical 3 --extract +OPL / exported-OPL\n"
 #endif
-                 "\nSource access is read-only. --extract writes only to the requested host output file.\n";
+                 "\nSource access is read-only. --extract may recursively create host files/directories.\n";
 }
 
 struct BrowseRequest {
@@ -178,57 +178,30 @@ bool extract_pfs(ps2hdd::BlockDevice& device, const ps2hdd::apa::ScanResult& sca
         return false;
     }
 
-    auto node = pfs.resolve(request.path);
-    if (!node) {
-        std::cerr << "Could not resolve PFS path: " << pfs.last_error() << '\n';
-        return false;
-    }
-    if ((node->inode.mode & ps2hdd::pfs::kModeMask) == ps2hdd::pfs::kModeDirectory) {
-        std::cerr << "PFS path is a directory; recursive extraction is not implemented yet.\n";
-        return false;
-    }
+    std::uint64_t last_reported = 0;
+    const auto result = ps2hdd::pfs::export_to_host(
+        pfs, request.path, request.output,
+        [&](const ps2hdd::pfs::ExportStats& stats, std::string_view current) {
+            if (stats.bytes >= last_reported + 64ULL * 1024ULL * 1024ULL) {
+                std::cout << "  " << format_bytes(stats.bytes) << " exported; current: " << current << '\n';
+                last_reported = stats.bytes;
+            }
+        });
 
-    std::ofstream output(request.output, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        std::cerr << "Could not create output file: " << request.output.string() << '\n';
-        return false;
-    }
-
-    constexpr std::size_t kChunkSize = 1024 * 1024;
-    std::vector<std::byte> buffer(kChunkSize);
-    std::uint64_t offset = 0;
-    while (offset < node->inode.size) {
-        const std::size_t chunk = static_cast<std::size_t>(
-            std::min<std::uint64_t>(buffer.size(), node->inode.size - offset));
-        if (!pfs.read(*node, offset, std::span<std::byte>(buffer.data(), chunk))) {
-            output.close();
-            std::error_code ignored;
-            std::filesystem::remove(request.output, ignored);
-            std::cerr << "PFS read failed at offset " << offset << ": " << pfs.last_error() << '\n';
-            return false;
-        }
-        output.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(chunk));
-        if (!output) {
-            output.close();
-            std::error_code ignored;
-            std::filesystem::remove(request.output, ignored);
-            std::cerr << "Host write failed while extracting to: " << request.output.string() << '\n';
-            return false;
-        }
-        offset += chunk;
-    }
-
-    output.close();
-    if (!output) {
-        std::error_code ignored;
-        std::filesystem::remove(request.output, ignored);
-        std::cerr << "Could not finalize output file: " << request.output.string() << '\n';
+    if (!result.ok) {
+        std::cerr << "PFS export failed: " << result.error << '\n';
         return false;
     }
 
-    std::cout << "\nExtracted " << request.partition << ":/" << request.path
-              << " -> " << request.output.string()
-              << " (" << format_bytes(node->inode.size) << ")\n";
+    std::cout << "\nExported " << request.partition << ":/" << request.path
+              << " -> " << request.output.string() << '\n'
+              << "Files: " << result.stats.files
+              << ", directories: " << result.stats.directories
+              << ", bytes: " << format_bytes(result.stats.bytes)
+              << ", skipped: " << result.stats.skipped << '\n';
+    for (const auto& warning : result.warnings) {
+        std::cout << "  [EXPORT WARN] " << warning << '\n';
+    }
     return true;
 }
 
