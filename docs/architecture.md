@@ -4,6 +4,8 @@
 
 Build a Windows-first PS2 HDD management stack that can eventually expose an APA disk to Windows Explorer while keeping parsing, host operations and presentation independent.
 
+The architecture is intentionally different from wrapping pfsshell's interactive device/mount/current-directory model. See [`pfsshell-comparison.md`](pfsshell-comparison.md) for the evidence and the distinction between implemented behavior and future performance targets.
+
 ## Current layers
 
 ```text
@@ -24,13 +26,73 @@ Build a Windows-first PS2 HDD management stack that can eventually expose an APA
              disk image      PhysicalDriveN
 ```
 
-`BlockDevice` is deliberately byte-addressed. Format code decides its own sector size and alignment. This avoids leaking Windows handles or PS2SDK's `iomanX` model into the filesystem implementation.
+### `BlockDevice`
 
-`ps2driveforge_core` does not create host files. It parses APA/PFS and exposes read operations.
+`BlockDevice` is deliberately byte-addressed. Format code decides sector size and alignment. This avoids leaking Windows handles or PS2SDK/iomanX semantics into filesystem code.
 
-`ps2driveforge_host` contains operations that intentionally touch the host filesystem, currently recursive PFS export and filename conversion. Keeping this separate prevents a later Dokany/GUI implementation from duplicating transfer logic or contaminating the on-disk parser with Windows presentation rules.
+Current source backends are read-only:
 
-## 0.1 Ayanami: APA read-only core
+- `FileBlockDevice` for images;
+- `PhysicalDrive` for `\\.\PhysicalDriveN` on Windows.
+
+The absence of `write()` is a safety boundary. Future mutation should introduce an explicit writable capability rather than quietly widening this interface.
+
+### APA
+
+APA owns physical partition-table interpretation:
+
+- 1024-byte header parsing/checksum;
+- linked-list traversal;
+- partition diagnostics;
+- main/sub-partition metadata.
+
+It does not know PFS directory/file semantics.
+
+### `ApaVolume`
+
+`ApaVolume` is the translation boundary between PFS logical sub-partition addressing and physical APA extents:
+
+```text
+PFS subpart 0 -> APA main extent
+PFS subpart 1 -> APA sub extent 0
+PFS subpart 2 -> APA sub extent 1
+...
+```
+
+Only this layer adds a selected extent's physical start LBA. This prevents physical-layout assumptions from leaking upward.
+
+### PFS
+
+The PFS reader owns on-disk filesystem semantics:
+
+```text
+superblock
+  -> SEGD inode metadata
+  -> optional SEGI chain
+  -> logical byte stream
+  -> directory entries
+  -> path resolution
+```
+
+It does **not** own Windows filename policy or host file creation.
+
+### `ps2driveforge_host`
+
+The host layer intentionally knows about the destination filesystem. Current responsibilities include:
+
+- recursive export;
+- host path construction;
+- Windows-invalid character conversion;
+- reserved DOS device names;
+- case-insensitive collision handling;
+- cycle/depth protection;
+- cleanup of partial files after failure.
+
+This separation is important for future GUI drag/drop and Dokany work: host policy can be shared without contaminating on-disk parsing.
+
+## Release-train implementation map
+
+### 0.1 Ayanami: APA read-only core
 
 Implemented and hardware validated:
 
@@ -45,9 +107,7 @@ Implemented and hardware validated:
 - APA extent translator (`main + sub` addressing);
 - PFS primary/backup superblock probe and validation.
 
-No write API exists. That remains intentional.
-
-## 0.2 Bocchi: PFS read path
+### 0.2 Bocchi: PFS read path
 
 Implemented and hardware validated:
 
@@ -62,13 +122,11 @@ ApaVolume
   -> path resolver
 ```
 
-PFS sees one logical volume even when APA expands it across sub-partitions. `ApaVolume` owns this mapping so GUI and future Dokany code do not need to understand physical APA extents.
+The reader validates inode checksum/magic, sub-part references, address overflow, descriptor ranges, directory-entry boundaries and SEGI metadata.
 
-The reader validates inode checksum/magic, 512-byte dentry boundaries and range limits. It handles unaligned reads and indirect SEGI descriptor chains instead of assuming files are contiguous.
+### 0.3 Chisato: Windows browser and host export
 
-## 0.3 Chisato: Windows browser and host export
-
-The first native Windows frontend uses only Win32/Common Controls:
+Current native frontend uses Win32/Common Controls:
 
 ```text
 Main window
@@ -77,60 +135,137 @@ Main window
   +-- Status bar    current path + READ ONLY state
 ```
 
-The GUI owns no filesystem parser logic. Selecting a PFS partition constructs `ApaVolume` + `pfs::Reader`; folder navigation uses `resolve()` and `list_directory()`; single-file extraction uses the same read API as the CLI.
+The GUI owns no filesystem parser logic. Selecting a PFS partition constructs `ApaVolume` + `pfs::Reader`; navigation uses `resolve()` and `list_directory()`.
 
-Host export is a reusable layer above PFS:
+Host export is reusable:
 
 ```text
 PFS path
   -> resolve inode
   -> recurse directories
   -> sanitize host filename
-  -> stream regular files (1 MiB chunks)
+  -> stream regular files
   -> host filesystem
 ```
 
-Safety features include directory-depth limits, active-inode cycle detection, Windows reserved-name handling and case-insensitive collision avoidance.
+## Dependency rules
+
+These are architecture invariants, not suggestions:
+
+1. `ps2driveforge_core` must not include Win32 GUI/Dokany/host-path policy.
+2. PFS must access physical data through `ApaVolume`, never by adding APA LBAs itself.
+3. Frontends must not reimplement APA/PFS parsing.
+4. Windows filename conversion must not alter PFS-visible names.
+5. Read-only parsing must remain usable without loading GUI code.
+6. Performance caches belong at explicit layers and must not weaken validation.
+7. Future write support must be a separate capability with backup/recovery semantics.
+
+If a new feature appears to require violating one of these, update the architecture deliberately rather than creating an accidental dependency.
+
+## Important address units
+
+When debugging PFS, write down the unit at each step. The code handles several incompatible address spaces:
+
+```text
+host bytes
+  <-> 512-byte PS2 sectors
+  <-> 1024-byte PFS metadata blocks
+  <-> PFS zones
+  <-> APA logical extents
+  <-> physical disk LBA
+```
+
+Common mistakes:
+
+- interpreting `BlockInfo.number` as a sector for file data;
+- using payload zone arithmetic for inode metadata;
+- pre-adding an APA extent start before calling `ApaVolume`;
+- assuming APA sub-partitions are physically contiguous.
+
+See [`apa-format-notes.md`](apa-format-notes.md) and [`pfs-format-notes.md`](pfs-format-notes.md).
+
+## Current concurrency/performance reality
+
+The API is designed so the future Dokany provider does not need a global shell mount/current directory, but the backing I/O is not yet highly concurrent.
+
+Today:
+
+```text
+PhysicalDrive::read
+  -> per-device mutex
+  -> SetFilePointerEx
+  -> synchronous ReadFile
+```
+
+and the image backend similarly serializes one `ifstream` seek/read state.
+
+This is correct for Chisato and known to be a performance limit. See [`performance.md`](performance.md) before changing read batching, caching or Windows I/O primitives.
 
 ## Explorer integration
 
-Dokany belongs above `ps2driveforge_core`/`ps2driveforge_host`, not inside them. Its callbacks are multithreaded, so public read operations in the core must either be immutable or synchronize device/cache access.
+Dokany belongs above `ps2driveforge_core`/`ps2driveforge_host`, not inside them.
 
-Proposed namespace:
+Proposed Darkness namespace:
 
 ```text
-P:\\
-  Partitions\\
-    __system\\
-    +OPL\\
-    +BOOT\\
-  Games\\                # virtual HDL view, later
-  System\\
-    MBR.bin               # controlled virtual metadata view, later
+P:\
+  Partitions\
+    __system\
+    __common\
+    +OPL\
+  Games\                # synthetic HDL view, later
+  System\
+    MBR.bin              # controlled metadata/recovery view, later
 ```
 
-The GUI can present a friendlier flat view while the Dokany provider uses explicit namespaces to avoid collisions between partition names and synthetic folders.
+The GUI may present a friendlier flat view while the filesystem provider uses explicit namespaces to avoid collisions between partition names and synthetic folders.
+
+This namespace is a design target, not a Chisato feature.
 
 ## Performance direction
 
-Do not optimize by writing a kernel driver. Optimize the user-mode data path:
+Do not optimize by writing a custom kernel filesystem/storage driver first. Improve the user-mode path and measure it:
 
-- overlapped Windows reads;
-- aligned large read windows;
-- metadata/inode cache;
+- instrumentation counters;
+- immutable metadata/inode cache;
 - directory cache;
+- block/read-window cache;
 - sequential read-ahead;
-- coalesced writes only after the write path is proven safe;
-- parallel read requests where the backing device benefits.
+- larger/adaptive aligned windows;
+- coalescing within APA extents;
+- offset/overlapped Windows reads;
+- parallel read requests where the device benefits.
 
-## Safety invariants
+Detailed benchmark rules live in [`performance.md`](performance.md).
 
-Before write support exists:
+## Safety invariants before write support
+
+Before a physical-disk write path exists, the project requires:
 
 1. parser fuzz/unit tests;
 2. metadata backup format;
 3. read-only-by-default physical device access;
 4. explicit validation of every target extent;
-5. journaling/transaction strategy for APA/PFS metadata writes.
+5. journaling/transaction or other interruption-recovery strategy for APA/PFS metadata writes;
+6. destructive testing against disposable images before real HDDs;
+7. explicit user opt-in to writable mode.
 
 The current source-device path remains read-only end to end.
+
+## Debugging starting points
+
+When a future hardware test fails:
+
+| Symptom | First layer to inspect |
+| --- | --- |
+| APA not detected / chain stops | `apa.cpp` + `apa-format-notes.md` |
+| PFS superblock invalid | `pfs::probe()` |
+| inode checksum/magic failure | PFS metadata addressing |
+| wrong data but valid inode | zone -> sector arithmetic / SEGD-SEGI traversal |
+| only one sub-partition fails | `ApaVolume` logical extent translation |
+| directory garbage | 512-byte dentry boundary parsing |
+| export path/name failure | `ps2driveforge_host`, not PFS core |
+| slow sequential reads | `performance.md`, backing-read counters/batching |
+| GUI-only issue | Win32 frontend; reproduce through CLI/core first |
+
+The goal is to identify which abstraction is wrong before adding compatibility hacks to the layer above it.
