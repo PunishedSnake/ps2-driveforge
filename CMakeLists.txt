@@ -49,8 +49,14 @@ target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(PS2DF_BUILD_TESTS)
     enable_testing()
+
     add_executable(ps2-driveforge-tests tests/apa_tests.cpp)
     target_link_libraries(ps2-driveforge-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-tests COMMAND ps2-driveforge-tests)
+
+    add_executable(ps2-driveforge-pfs-file-tests tests/pfs_file_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-file-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-file-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-file-tests COMMAND ps2-driveforge-pfs-file-tests)
 endif()
