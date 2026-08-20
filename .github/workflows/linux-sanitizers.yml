@@ -1,0 +1,37 @@
+name: Linux sanitizers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  clang-sanitizers:
+    name: Clang / ASan + UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      CXXFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+      LDFLAGS: -fsanitize=address,undefined
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/sanitizers
+          -DCMAKE_BUILD_TYPE=Debug
+          -DPS2DF_BUILD_TESTS=ON
+          -DPS2DF_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build/sanitizers --parallel
+
+      - name: Test
+        run: ctest --test-dir build/sanitizers --output-on-failure

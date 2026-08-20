@@ -110,7 +110,7 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     }
 }
 
-$ZipName = "PS2-DriveForge-0.1.0-Ayanami-$Configuration-windows-x64.zip"
+$ZipName = "PS2-DriveForge-0.2.0-Bocchi-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath

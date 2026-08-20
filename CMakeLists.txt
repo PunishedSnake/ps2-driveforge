@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.1.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.2.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Ayanami" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Bocchi" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
@@ -49,8 +49,19 @@ target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(PS2DF_BUILD_TESTS)
     enable_testing()
+
     add_executable(ps2-driveforge-tests tests/apa_tests.cpp)
     target_link_libraries(ps2-driveforge-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-tests COMMAND ps2-driveforge-tests)
+
+    add_executable(ps2-driveforge-pfs-file-tests tests/pfs_file_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-file-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-file-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-file-tests COMMAND ps2-driveforge-pfs-file-tests)
+
+    add_executable(ps2-driveforge-pfs-segi-tests tests/pfs_segi_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-segi-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-segi-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-segi-tests COMMAND ps2-driveforge-pfs-segi-tests)
 endif()

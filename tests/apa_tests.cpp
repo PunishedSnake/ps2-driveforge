@@ -44,10 +44,15 @@ public:
         chunks_[offset] = std::vector<std::byte>(bytes.begin(), bytes.end());
     }
 
+    template <typename T>
+    void put_object(std::uint64_t offset, const T& object)
+    {
+        put_bytes(offset, std::as_bytes(std::span{&object, 1}));
+    }
+
     void put_header(std::uint32_t lba, const Header& h)
     {
-        const auto bytes = std::as_bytes(std::span{&h, 1});
-        put_bytes(static_cast<std::uint64_t>(lba) * ps2hdd::apa::kSectorSize, bytes);
+        put_object(static_cast<std::uint64_t>(lba) * ps2hdd::apa::kSectorSize, h);
     }
 
 private:
@@ -69,6 +74,19 @@ Header make_header(const char* id, std::uint16_t type, std::uint32_t start,
     h.mbr.version = 2;
     h.checksum = ps2hdd::apa::checksum(h);
     return h;
+}
+
+void put_dentry(std::span<std::byte> sector, std::size_t offset, std::uint32_t inode,
+                std::uint8_t sub, std::string_view name, std::uint16_t mode,
+                std::uint16_t allocated)
+{
+    check(offset + allocated <= sector.size(), "dentry fits");
+    std::memcpy(sector.data() + static_cast<std::ptrdiff_t>(offset), &inode, sizeof(inode));
+    sector[offset + 4] = static_cast<std::byte>(sub);
+    sector[offset + 5] = static_cast<std::byte>(name.size());
+    const std::uint16_t raw_len = static_cast<std::uint16_t>(mode | allocated);
+    std::memcpy(sector.data() + static_cast<std::ptrdiff_t>(offset + 6), &raw_len, sizeof(raw_len));
+    std::memcpy(sector.data() + static_cast<std::ptrdiff_t>(offset + 8), name.data(), name.size());
 }
 
 void valid_chain_is_read()
@@ -170,6 +188,88 @@ void pfs_superblock_is_probed()
     check(pfs_result.super.zone_size == 8192, "pfs_result.super.zone_size == 8192");
 }
 
+void pfs_root_directory_is_read()
+{
+    constexpr std::uint32_t pfs_lba = 0x40000;
+    constexpr std::uint32_t zone_size = 8192;
+    constexpr std::uint32_t root_zone = 100;
+    constexpr std::uint32_t data_zone = 101;
+    constexpr std::uint32_t cfg_zone = 102;
+
+    SparseDevice dev(8ULL * 1024 * 1024 * 1024);
+    auto mbr = make_header("__mbr", ps2hdd::apa::kTypeMbr, 0, 0x40000, pfs_lba, pfs_lba);
+    std::memcpy(mbr.mbr.magic, "Sony Computer Entertainment Inc.", 32);
+    mbr.checksum = ps2hdd::apa::checksum(mbr);
+    auto opl = make_header("+OPL", ps2hdd::apa::kTypePfs, pfs_lba, 0x100000, 0, 0);
+    dev.put_header(0, mbr);
+    dev.put_header(pfs_lba, opl);
+
+    ps2hdd::pfs::SuperBlock sb{};
+    sb.magic = ps2hdd::pfs::kSuperMagic;
+    sb.version = 3;
+    sb.zone_size = zone_size;
+    sb.root = {root_zone, 0, 1};
+    sb.log = {50, 0, 1};
+    std::array<std::byte, ps2hdd::apa::kSectorSize> super_sector{};
+    std::memcpy(super_sector.data(), &sb, sizeof(sb));
+    dev.put_bytes((static_cast<std::uint64_t>(pfs_lba) + ps2hdd::pfs::kSuperSector) * ps2hdd::apa::kSectorSize, super_sector);
+    dev.put_bytes((static_cast<std::uint64_t>(pfs_lba) + ps2hdd::pfs::kSuperBackupSector) * ps2hdd::apa::kSectorSize, super_sector);
+
+    ps2hdd::pfs::Inode root{};
+    root.magic = ps2hdd::pfs::kSegdMagic;
+    root.inode_block = {root_zone, 0, 1};
+    root.last_segment = root.inode_block;
+    root.data[0] = root.inode_block;
+    root.data[1] = {data_zone, 0, 1};
+    root.mode = static_cast<std::uint16_t>(ps2hdd::pfs::kModeDirectory | 0x01FF);
+    root.size = 36;
+    root.number_data = 2;
+    root.number_blocks = 2;
+    root.checksum = ps2hdd::pfs::inode_checksum(root);
+
+    ps2hdd::pfs::Inode cfg{};
+    cfg.magic = ps2hdd::pfs::kSegdMagic;
+    cfg.inode_block = {cfg_zone, 0, 1};
+    cfg.last_segment = cfg.inode_block;
+    cfg.data[0] = cfg.inode_block;
+    cfg.mode = static_cast<std::uint16_t>(ps2hdd::pfs::kModeDirectory | 0x01FF);
+    cfg.number_data = 1;
+    cfg.number_blocks = 1;
+    cfg.checksum = ps2hdd::pfs::inode_checksum(cfg);
+
+    const auto partition_base = static_cast<std::uint64_t>(pfs_lba) * ps2hdd::apa::kSectorSize;
+    dev.put_object(partition_base + static_cast<std::uint64_t>(root_zone) * zone_size, root);
+    dev.put_object(partition_base + static_cast<std::uint64_t>(cfg_zone) * zone_size, cfg);
+
+    std::array<std::byte, ps2hdd::apa::kSectorSize> dentries{};
+    put_dentry(dentries, 0, root_zone, 0, ".", ps2hdd::pfs::kModeDirectory, 12);
+    put_dentry(dentries, 12, root_zone, 0, "..", ps2hdd::pfs::kModeDirectory, 12);
+    put_dentry(dentries, 24, cfg_zone, 0, "CFG", ps2hdd::pfs::kModeDirectory, 12);
+    dev.put_bytes(partition_base + static_cast<std::uint64_t>(data_zone) * zone_size, dentries);
+
+    ps2hdd::apa::Reader apa_reader(dev);
+    const auto apa_result = apa_reader.scan();
+    check(apa_result.ok(), "synthetic PFS APA scan");
+    ps2hdd::ApaVolume volume(dev, apa_result.partitions[1]);
+    ps2hdd::pfs::Reader pfs(volume);
+    check(pfs.valid(), "PFS reader valid");
+
+    const auto root_node = pfs.root();
+    check(root_node.has_value(), "root inode readable");
+    check(root_node->inode.size == 36, "root inode size");
+
+    const auto entries = pfs.list_directory(*root_node);
+    check(pfs.last_error().empty(), "directory enumeration has no error");
+    check(entries.size() == 1, "dot entries hidden");
+    check(entries[0].name == "CFG", "CFG entry found");
+    check(entries[0].is_directory(), "CFG marked as directory");
+
+    const auto cfg_node = pfs.resolve("/CFG");
+    check(cfg_node.has_value(), "CFG path resolves");
+    check((cfg_node->inode.mode & ps2hdd::pfs::kModeMask) == ps2hdd::pfs::kModeDirectory,
+          "CFG inode is directory");
+}
+
 } // namespace
 
 int main()
@@ -179,6 +279,7 @@ int main()
         bad_checksum_is_rejected();
         cycle_is_detected();
         pfs_superblock_is_probed();
+        pfs_root_directory_is_read();
         std::cout << "All APA/PFS tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
