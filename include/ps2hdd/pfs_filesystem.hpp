@@ -7,9 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ps2hdd::pfs {
@@ -110,6 +112,9 @@ public:
     [[nodiscard]] const ProbeResult& probe_result() const noexcept { return probe_; }
     [[nodiscard]] const SuperBlock& superblock() const noexcept { return probe_.super; }
 
+    // Metadata reads are cached after mount. The cache is safe for concurrent readers.
+    void clear_metadata_cache();
+
     [[nodiscard]] bool read_inode(const BlockInfo& location, Inode& out,
                                   std::string* error = nullptr);
     [[nodiscard]] DirectoryResult list_directory(const BlockInfo& location,
@@ -138,10 +143,19 @@ private:
     [[nodiscard]] bool read_volume_bytes(std::uint16_t subpart, std::uint64_t byte_offset,
                                          std::span<std::byte> out, std::string* error);
 
+    [[nodiscard]] static std::uint64_t cache_key(const BlockInfo& location) noexcept
+    {
+        return (static_cast<std::uint64_t>(location.subpart) << 32U) | location.number;
+    }
+
     ApaVolume& volume_;
     ProbeResult probe_{};
     bool mounted_{};
     std::uint32_t zone_sectors_{};
+
+    mutable std::shared_mutex cache_mutex_;
+    std::unordered_map<std::uint64_t, Inode> inode_cache_;
+    std::unordered_map<std::uint64_t, DirectoryResult> directory_cache_;
 };
 
 [[nodiscard]] std::uint32_t inode_checksum(const Inode& inode) noexcept;
