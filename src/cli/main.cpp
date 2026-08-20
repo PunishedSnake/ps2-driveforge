@@ -9,6 +9,8 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -22,7 +24,7 @@
 
 namespace {
 
-enum class Action { scan, browse, tree, extract };
+enum class Action { scan, browse, tree, extract, extract_tree };
 
 struct Options {
     Action action{Action::scan};
@@ -58,10 +60,12 @@ void usage()
                  "  --browse <partition> [path]              List one PFS directory\n"
                  "  --tree <partition> [path]                Recursively list a PFS tree\n"
                  "  --extract <partition> <path> <host-file> Extract one PFS file\n"
+                 "  --extract-tree <partition> <path> <host-dir> Recursively extract a PFS directory\n"
                  "\nExamples:\n"
                  "  ps2-driveforge-inspect --physical 3 --browse +OPL\n"
                  "  ps2-driveforge-inspect --physical 3 --tree +OPL /CFG\n"
                  "  ps2-driveforge-inspect --physical 3 --extract +OPL /CFG/game.cfg game.cfg\n"
+                 "  ps2-driveforge-inspect --physical 3 --extract-tree +OPL /CFG exported-CFG\n"
                  "\nRead-only: this build never writes to the source device.\n";
 }
 
@@ -82,11 +86,11 @@ bool parse_action(int argc, char** argv, int index, Options& options)
         }
         return index == argc;
     }
-    if (action == "--extract") {
+    if (action == "--extract" || action == "--extract-tree") {
         if (index + 2 >= argc) {
             return false;
         }
-        options.action = Action::extract;
+        options.action = action == "--extract" ? Action::extract : Action::extract_tree;
         options.partition = argv[index++];
         options.pfs_path = argv[index++];
         options.host_path = argv[index++];
@@ -108,9 +112,15 @@ const ps2hdd::apa::Partition* find_pfs_partition(const ps2hdd::apa::ScanResult& 
 
 std::string type_letter(std::uint16_t type)
 {
-    if (type == ps2hdd::pfs::kModeDirectory) return "D";
-    if (type == ps2hdd::pfs::kModeRegular) return "F";
-    if (type == ps2hdd::pfs::kModeSymlink) return "L";
+    if (type == ps2hdd::pfs::kModeDirectory) {
+        return "D";
+    }
+    if (type == ps2hdd::pfs::kModeRegular) {
+        return "F";
+    }
+    if (type == ps2hdd::pfs::kModeSymlink) {
+        return "L";
+    }
     return "?";
 }
 
@@ -118,7 +128,9 @@ bool print_directory(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::BlockInfo& 
 {
     const auto listing = fs.list_directory(location);
     if (!listing.ok()) {
-        for (const auto& error : listing.errors) std::cerr << "PFS error: " << error << '\n';
+        for (const auto& error : listing.errors) {
+            std::cerr << "PFS error: " << error << '\n';
+        }
         return false;
     }
 
@@ -126,10 +138,13 @@ bool print_directory(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::BlockInfo& 
         ps2hdd::pfs::Inode inode{};
         std::string error;
         const bool have_inode = fs.read_inode(entry.location, inode, &error);
-        std::cout << type_letter(entry.type) << "  " << std::right << std::setw(12)
+        std::cout << type_letter(entry.type) << "  "
+                  << std::right << std::setw(12)
                   << (have_inode ? format_bytes(inode.size) : std::string("?"))
                   << "  " << entry.name;
-        if (!have_inode) std::cout << "  [stat failed: " << error << ']';
+        if (!have_inode) {
+            std::cout << "  [stat failed: " << error << ']';
+        }
         std::cout << '\n';
     }
     return true;
@@ -154,7 +169,9 @@ bool print_tree(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::BlockInfo& locat
 
     const auto listing = fs.list_directory(location);
     if (!listing.ok()) {
-        for (const auto& error : listing.errors) std::cerr << "PFS error: " << error << '\n';
+        for (const auto& error : listing.errors) {
+            std::cerr << "PFS error: " << error << '\n';
+        }
         return false;
     }
 
@@ -163,11 +180,15 @@ bool print_tree(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::BlockInfo& locat
         std::string error;
         const bool have_inode = fs.read_inode(entry.location, inode, &error);
         std::cout << prefix << (entry.is_directory() ? "[D] " : "[F] ") << entry.name;
-        if (have_inode && !entry.is_directory()) std::cout << "  (" << format_bytes(inode.size) << ')';
+        if (have_inode && !entry.is_directory()) {
+            std::cout << "  (" << format_bytes(inode.size) << ')';
+        }
         std::cout << '\n';
 
         if (entry.is_directory() && have_inode) {
-            if (!print_tree(fs, entry.location, std::string(prefix) + "  ", depth + 1, visited)) return false;
+            if (!print_tree(fs, entry.location, std::string(prefix) + "  ", depth + 1, visited)) {
+                return false;
+            }
         }
     }
     return true;
@@ -186,8 +207,142 @@ bool mount_selected_pfs(ps2hdd::BlockDevice& device, const ps2hdd::apa::ScanResu
     volume = std::make_unique<ps2hdd::ApaVolume>(device, *partition);
     fs = std::make_unique<ps2hdd::pfs::FileSystem>(*volume);
     if (!fs->mount()) {
-        for (const auto& error : fs->probe_result().errors) std::cerr << "PFS mount error: " << error << '\n';
+        for (const auto& error : fs->probe_result().errors) {
+            std::cerr << "PFS mount error: " << error << '\n';
+        }
         return false;
+    }
+    return true;
+}
+
+std::string safe_host_component(std::string_view name)
+{
+    std::string result(name);
+    constexpr std::string_view invalid = "<>:\"/\\|?*";
+    for (char& ch : result) {
+        const auto byte = static_cast<unsigned char>(ch);
+        if (byte < 0x20 || invalid.find(ch) != std::string_view::npos) {
+            ch = '_';
+        }
+    }
+    while (!result.empty() && (result.back() == ' ' || result.back() == '.')) {
+        result.pop_back();
+    }
+    if (result.empty()) {
+        result = "_";
+    }
+
+    std::string upper = result;
+    std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    const auto dot = upper.find('.');
+    const std::string base = upper.substr(0, dot);
+    const bool reserved = base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+                          (base.size() == 4 &&
+                           (base.rfind("COM", 0) == 0 || base.rfind("LPT", 0) == 0) &&
+                           base[3] >= '1' && base[3] <= '9');
+    if (reserved) {
+        result.insert(result.begin(), '_');
+    }
+    return result;
+}
+
+bool extract_node_to_file(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::Node& node,
+                          std::string_view pfs_path, const std::filesystem::path& host_path)
+{
+    std::ofstream output(host_path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        std::cerr << "Could not create host file: " << host_path.string() << '\n';
+        return false;
+    }
+
+    constexpr std::size_t chunk_size = 1024 * 1024;
+    std::vector<std::byte> buffer(chunk_size);
+    std::uint64_t offset = 0;
+    std::string error;
+    while (offset < node.inode.size) {
+        const auto wanted = static_cast<std::size_t>(
+            std::min<std::uint64_t>(buffer.size(), node.inode.size - offset));
+        std::size_t bytes_read = 0;
+        if (!fs.read_file(node, offset, std::span<std::byte>(buffer).first(wanted), bytes_read, &error)) {
+            std::cerr << "PFS read error for " << pfs_path << ": " << error << '\n';
+            return false;
+        }
+        if (bytes_read == 0) {
+            std::cerr << "PFS read returned EOF before inode size for " << pfs_path << ".\n";
+            return false;
+        }
+        output.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(bytes_read));
+        if (!output) {
+            std::cerr << "Host write failed: " << host_path.string() << '\n';
+            return false;
+        }
+        offset += bytes_read;
+    }
+    return true;
+}
+
+bool extract_directory_tree(ps2hdd::pfs::FileSystem& fs, const ps2hdd::pfs::BlockInfo& location,
+                            const std::filesystem::path& host_dir, const std::string& pfs_path,
+                            unsigned depth, std::set<std::uint64_t>& visited)
+{
+    if (depth > 64) {
+        std::cerr << "PFS error: extraction recursion limit reached at " << pfs_path << '\n';
+        return false;
+    }
+    if (!visited.insert(node_key(location)).second) {
+        std::cerr << "PFS error: directory cycle encountered at " << pfs_path << '\n';
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(host_dir, ec);
+    if (ec) {
+        std::cerr << "Could not create host directory: " << host_dir.string()
+                  << ": " << ec.message() << '\n';
+        return false;
+    }
+
+    const auto listing = fs.list_directory(location);
+    if (!listing.ok()) {
+        for (const auto& error : listing.errors) {
+            std::cerr << "PFS error: " << error << '\n';
+        }
+        return false;
+    }
+
+    std::set<std::string> host_names;
+    for (const auto& entry : listing.entries) {
+        ps2hdd::pfs::Inode inode{};
+        std::string error;
+        if (!fs.read_inode(entry.location, inode, &error)) {
+            std::cerr << "PFS stat failed for " << entry.name << ": " << error << '\n';
+            return false;
+        }
+
+        std::string host_name = safe_host_component(entry.name);
+        if (!host_names.insert(host_name).second) {
+            host_name += "~" + std::to_string(entry.location.subpart) + "-" +
+                         std::to_string(entry.location.number);
+            host_names.insert(host_name);
+        }
+
+        const auto host_child = host_dir / std::filesystem::path(host_name);
+        const std::string pfs_child = pfs_path == "/" ? "/" + entry.name
+                                                       : pfs_path + "/" + entry.name;
+        ps2hdd::pfs::Node node{entry.location, inode};
+        if (node.is_directory()) {
+            if (!extract_directory_tree(fs, entry.location, host_child, pfs_child,
+                                        depth + 1, visited)) {
+                return false;
+            }
+        } else {
+            if (!extract_node_to_file(fs, node, pfs_child, host_child)) {
+                return false;
+            }
+            std::cout << "Extracted " << pfs_child << "  (" << format_bytes(inode.size) << ")\n";
+        }
     }
     return true;
 }
@@ -204,36 +359,49 @@ bool extract_file(ps2hdd::pfs::FileSystem& fs, std::string_view path, const std:
         std::cerr << "PFS path is a directory, not a file.\n";
         return false;
     }
-
-    std::ofstream output(host_path, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        std::cerr << "Could not create host file: " << host_path << '\n';
+    if (!extract_node_to_file(fs, *node, path, std::filesystem::path(host_path))) {
         return false;
     }
 
-    constexpr std::size_t chunk_size = 1024 * 1024;
-    std::vector<std::byte> buffer(chunk_size);
-    std::uint64_t offset = 0;
-    while (offset < node->inode.size) {
-        const auto wanted = static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), node->inode.size - offset));
-        std::size_t bytes_read = 0;
-        if (!fs.read_file(*node, offset, std::span<std::byte>(buffer).first(wanted), bytes_read, &error)) {
-            std::cerr << "PFS read error: " << error << '\n';
-            return false;
-        }
-        if (bytes_read == 0) {
-            std::cerr << "PFS read returned EOF before the inode size.\n";
-            return false;
-        }
-        output.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(bytes_read));
-        if (!output) {
-            std::cerr << "Host write failed: " << host_path << '\n';
-            return false;
-        }
-        offset += bytes_read;
+    std::cout << "Extracted " << path << " -> " << host_path
+              << " (" << format_bytes(node->inode.size) << ")\n";
+    return true;
+}
+
+bool extract_tree(ps2hdd::pfs::FileSystem& fs, std::string_view path, const std::string& host_path)
+{
+    std::string error;
+    const auto node = fs.resolve(path, &error);
+    if (!node) {
+        std::cerr << "PFS resolve error: " << error << '\n';
+        return false;
+    }
+    if (!node->is_directory()) {
+        std::cerr << "PFS path is not a directory.\n";
+        return false;
     }
 
-    std::cout << "Extracted " << path << " -> " << host_path << " (" << format_bytes(node->inode.size) << ")\n";
+    const std::filesystem::path destination(host_path);
+    std::error_code ec;
+    if (std::filesystem::exists(destination, ec)) {
+        if (ec) {
+            std::cerr << "Could not inspect destination directory: " << ec.message() << '\n';
+            return false;
+        }
+        if (!std::filesystem::is_directory(destination, ec) ||
+            !std::filesystem::is_empty(destination, ec)) {
+            std::cerr << "Destination must be a new or empty directory: "
+                      << destination.string() << '\n';
+            return false;
+        }
+    }
+
+    std::set<std::uint64_t> visited;
+    if (!extract_directory_tree(fs, node->location, destination, std::string(path), 0, visited)) {
+        return false;
+    }
+    std::cout << "Directory extraction completed: " << path << " -> "
+              << destination.string() << '\n';
     return true;
 }
 
@@ -242,12 +410,17 @@ void print_scan(ps2hdd::BlockDevice& device, const ps2hdd::apa::ScanResult& resu
     std::cout << "Source: " << device.display_name() << '\n'
               << "Size:   " << format_bytes(device.size_bytes()) << '\n'
               << "APA:    " << (result.mbr_valid ? "detected" : "not detected") << '\n';
-    if (!result.mbr_valid) return;
+    if (!result.mbr_valid) {
+        return;
+    }
 
     std::cout << "Version: " << result.apa_version << "\n\n";
     std::cout << std::left << std::setw(34) << "Partition"
-              << std::setw(12) << "Type" << std::setw(16) << "Start LBA"
-              << std::setw(16) << "Main size" << std::setw(12) << "Subs" << "Total\n";
+              << std::setw(12) << "Type"
+              << std::setw(16) << "Start LBA"
+              << std::setw(16) << "Main size"
+              << std::setw(12) << "Subs"
+              << "Total\n";
     std::cout << std::string(102, '-') << '\n';
 
     for (const auto& p : result.partitions) {
@@ -255,7 +428,8 @@ void print_scan(ps2hdd::BlockDevice& device, const ps2hdd::apa::ScanResult& resu
                   << std::setw(12) << ps2hdd::apa::type_name(p.type)
                   << std::setw(16) << p.start_lba
                   << std::setw(16) << format_bytes(static_cast<std::uint64_t>(p.length_sectors) * ps2hdd::apa::kSectorSize)
-                  << std::setw(12) << p.sub_count << format_bytes(p.size_bytes())
+                  << std::setw(12) << p.sub_count
+                  << format_bytes(p.size_bytes())
                   << (p.is_sub() ? "  [SUB]" : "") << '\n';
 
         if (p.type == ps2hdd::apa::kTypePfs && !p.is_sub()) {
@@ -266,9 +440,13 @@ void print_scan(ps2hdd::BlockDevice& device, const ps2hdd::apa::ScanResult& resu
                           << ", zone " << format_bytes(pfs.super.zone_size)
                           << ", filesystem subs " << pfs.super.num_subs
                           << ", backup " << (pfs.backup_matches ? "matches" : "differs/unreadable") << '\n';
-                for (const auto& warning : pfs.warnings) std::cout << "      [PFS WARN] " << warning << '\n';
+                for (const auto& warning : pfs.warnings) {
+                    std::cout << "      [PFS WARN] " << warning << '\n';
+                }
             } else {
-                for (const auto& error : pfs.errors) std::cout << "      [PFS ERROR] " << error << '\n';
+                for (const auto& error : pfs.errors) {
+                    std::cout << "      [PFS ERROR] " << error << '\n';
+                }
             }
         }
     }
@@ -337,32 +515,44 @@ int main(int argc, char** argv)
 
         std::unique_ptr<ps2hdd::ApaVolume> volume;
         std::unique_ptr<ps2hdd::pfs::FileSystem> fs;
-        if (!mount_selected_pfs(*device, scan, options, volume, fs)) return 1;
+        if (!mount_selected_pfs(*device, scan, options, volume, fs)) {
+            return 1;
+        }
 
-        if (options.action == Action::extract) {
-            if (!extract_file(*fs, options.pfs_path, options.host_path)) return 1;
-        } else {
-            std::string error;
-            const auto node = fs->resolve(options.pfs_path, &error);
-            if (!node) {
-                std::cerr << "PFS resolve error: " << error << '\n';
-                return 1;
-            }
+        std::string error;
+        const auto node = fs->resolve(options.pfs_path, &error);
+        if (!node) {
+            std::cerr << "PFS resolve error: " << error << '\n';
+            return 1;
+        }
+
+        std::cout << "Source:    " << device->display_name() << '\n'
+                  << "Partition: " << options.partition << '\n'
+                  << "Path:      " << options.pfs_path << "\n\n";
+
+        if (options.action == Action::browse) {
             if (!node->is_directory()) {
                 std::cerr << "PFS path is not a directory.\n";
                 return 1;
             }
-
-            std::cout << "Source:    " << device->display_name() << '\n'
-                      << "Partition: " << options.partition << '\n'
-                      << "Path:      " << options.pfs_path << "\n\n";
-
-            if (options.action == Action::browse) {
-                if (!print_directory(*fs, node->location)) return 1;
-            } else {
-                std::set<std::uint64_t> visited;
-                if (!print_tree(*fs, node->location, "", 0, visited)) return 1;
+            if (!print_directory(*fs, node->location)) {
+                return 1;
             }
+        } else if (options.action == Action::tree) {
+            if (!node->is_directory()) {
+                std::cerr << "PFS path is not a directory.\n";
+                return 1;
+            }
+            std::set<std::uint64_t> visited;
+            if (!print_tree(*fs, node->location, "", 0, visited)) {
+                return 1;
+            }
+        } else if (options.action == Action::extract) {
+            if (!extract_file(*fs, options.pfs_path, options.host_path)) {
+                return 1;
+            }
+        } else if (!extract_tree(*fs, options.pfs_path, options.host_path)) {
+            return 1;
         }
     }
 
