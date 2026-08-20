@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0-dev "Chisato" - 2026-08-20
+
+- Added the first native Windows GUI (`PS2-DriveForge.exe`) using Win32/Common Controls only.
+- Added Explorer-style APA partition tree and PFS details browser.
+- Added image opening and read-only `PhysicalDrive0..15` opening from the GUI.
+- Added PFS folder navigation, folders-first sorting, `..` navigation, inode/size display and status-path reporting.
+- Added GUI file extraction through the Windows Save As dialog.
+- Added a reusable host export layer shared independently from the APA/PFS parser.
+- Added recursive PFS directory export with 1 MiB streaming file reads.
+- Added Windows-safe filename conversion, DOS device-name protection, case-insensitive collision handling, directory-depth limits and cycle detection.
+- Extended CLI `--extract` so it can export either one file or an entire PFS directory tree.
+- Added host filename conversion tests.
+- Windows artifacts now package both the GUI and CLI inspector.
+- Source HDD/image access remains read-only.
+
 ## 0.2.0-dev "Bocchi" - 2026-08-20
 
 - Added the first native read-only PFS inode reader.
@@ -13,6 +28,7 @@
 - Added streaming `--extract <partition> <pfs-path> <output>` with 1 MiB host-side chunks.
 - Added synthetic root-directory, path-resolution, cross-sector file-read, and SEGI traversal coverage.
 - Added Clang ASan + UBSan CI with warnings-as-errors.
+- Hardware-validated `+OPL` root and empty `CFG` directory browsing on a real 149.05 GiB PS2 HDD.
 - Kept physical HDD access strictly read-only; extraction only writes the selected host output file.
 
 ## 0.1.0-dev "Ayanami" - 2026-08-20
