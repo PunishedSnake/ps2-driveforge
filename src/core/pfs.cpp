@@ -5,6 +5,7 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 namespace ps2hdd::pfs {
 
@@ -36,6 +37,21 @@ std::uint32_t load_u32(const std::byte* ptr)
     return value;
 }
 
+template <typename T>
+std::uint32_t metadata_checksum(const T& metadata) noexcept
+{
+    static_assert(sizeof(T) == kMetadataSize);
+    const auto* bytes = reinterpret_cast<const std::byte*>(&metadata);
+    std::uint32_t sum = 0;
+    for (std::size_t offset = sizeof(std::uint32_t); offset < kMetadataSize;
+         offset += sizeof(std::uint32_t)) {
+        std::uint32_t word{};
+        std::memcpy(&word, bytes + static_cast<std::ptrdiff_t>(offset), sizeof(word));
+        sum += word;
+    }
+    return sum;
+}
+
 } // namespace
 
 bool valid_zone_size(std::uint32_t zone_size) noexcept
@@ -46,12 +62,12 @@ bool valid_zone_size(std::uint32_t zone_size) noexcept
 
 std::uint32_t inode_checksum(const Inode& inode) noexcept
 {
-    const auto* words = reinterpret_cast<const std::uint32_t*>(&inode);
-    std::uint32_t sum = 0;
-    for (std::size_t i = 1; i < kMetadataSize / sizeof(std::uint32_t); ++i) {
-        sum += words[i];
-    }
-    return sum;
+    return metadata_checksum(inode);
+}
+
+std::uint32_t segment_checksum(const SegmentDescriptor& descriptor) noexcept
+{
+    return metadata_checksum(descriptor);
 }
 
 ProbeResult probe(ApaVolume& volume)
@@ -202,17 +218,64 @@ std::optional<Node> Reader::read_inode(BlockInfo location)
         fail("PFS inode checksum mismatch");
         return std::nullopt;
     }
-    if (node.inode.number_data == 0 || node.inode.number_data > kInodeMaxBlocks) {
-        if (node.inode.next_segment.number == 0) {
-            fail("PFS inode has an invalid direct block-descriptor count");
-            return std::nullopt;
-        }
+    if (node.inode.number_data == 0) {
+        fail("PFS inode has no block descriptors");
+        return std::nullopt;
+    }
+    if (node.inode.number_data > kInodeMaxBlocks && node.inode.next_segment.number == 0) {
+        fail("PFS inode references indirect data but has no SEGI chain");
+        return std::nullopt;
     }
 
     return node;
 }
 
-bool Reader::read_zone_bytes(const BlockInfo& block, std::uint32_t zone_offset,
+std::optional<SegmentDescriptor> Reader::read_segment_descriptor(BlockInfo location)
+{
+    if (location.number == 0) {
+        fail("PFS SEGI chain contains a null descriptor pointer");
+        return std::nullopt;
+    }
+    if (location.subpart > probe_.super.num_subs || location.subpart >= volume_.extent_count()) {
+        fail("PFS SEGI descriptor points to a missing sub-partition");
+        return std::nullopt;
+    }
+
+    const auto scale = inode_scale();
+    if (location.number > (std::numeric_limits<std::uint32_t>::max() >> scale)) {
+        fail("PFS SEGI block address overflows");
+        return std::nullopt;
+    }
+    const std::uint32_t metadata_block = location.number << scale;
+    constexpr std::uint32_t sectors_per_metadata =
+        static_cast<std::uint32_t>(kMetadataSize / apa::kSectorSize);
+    const std::uint64_t sector64 = static_cast<std::uint64_t>(metadata_block) * sectors_per_metadata;
+    if (sector64 > std::numeric_limits<std::uint32_t>::max()) {
+        fail("PFS SEGI sector address overflows");
+        return std::nullopt;
+    }
+
+    std::array<std::byte, kMetadataSize> raw{};
+    if (!volume_.read_sectors(location.subpart, static_cast<std::uint32_t>(sector64),
+                              sectors_per_metadata, raw)) {
+        fail("Could not read PFS SEGI metadata");
+        return std::nullopt;
+    }
+
+    SegmentDescriptor descriptor{};
+    std::memcpy(&descriptor, raw.data(), sizeof(descriptor));
+    if (descriptor.magic != kSegiMagic) {
+        fail("PFS indirect descriptor has invalid SEGI magic");
+        return std::nullopt;
+    }
+    if (segment_checksum(descriptor) != descriptor.checksum) {
+        fail("PFS SEGI checksum mismatch");
+        return std::nullopt;
+    }
+    return descriptor;
+}
+
+bool Reader::read_zone_bytes(const BlockInfo& block, std::uint64_t zone_offset,
                              std::span<std::byte> out)
 {
     if (block.subpart > probe_.super.num_subs || block.subpart >= volume_.extent_count()) {
@@ -222,20 +285,19 @@ bool Reader::read_zone_bytes(const BlockInfo& block, std::uint32_t zone_offset,
 
     const std::uint64_t segment_bytes =
         static_cast<std::uint64_t>(block.count) * probe_.super.zone_size;
-    if (static_cast<std::uint64_t>(zone_offset) + out.size() > segment_bytes) {
+    if (zone_offset > segment_bytes || out.size() > segment_bytes - zone_offset) {
         fail("PFS read exceeds block descriptor extent");
         return false;
     }
 
     const std::uint32_t sectors_per_zone = probe_.super.zone_size / apa::kSectorSize;
     const std::uint64_t base_sector = static_cast<std::uint64_t>(block.number) * sectors_per_zone;
-    std::uint64_t byte_position = static_cast<std::uint64_t>(zone_offset);
+    std::uint64_t byte_position = zone_offset;
     std::size_t done = 0;
 
     while (done < out.size()) {
-        const std::uint64_t absolute_byte = byte_position;
-        const std::uint64_t relative_sector = absolute_byte / apa::kSectorSize;
-        const std::size_t in_sector = static_cast<std::size_t>(absolute_byte % apa::kSectorSize);
+        const std::uint64_t relative_sector = byte_position / apa::kSectorSize;
+        const std::size_t in_sector = static_cast<std::size_t>(byte_position % apa::kSectorSize);
         const std::size_t remaining = out.size() - done;
 
         if (in_sector == 0 && remaining >= apa::kSectorSize) {
@@ -290,41 +352,69 @@ bool Reader::read(const Node& node, std::uint64_t offset, std::span<std::byte> o
     }
 
     std::uint64_t logical = 0;
+    std::uint64_t request_position = offset;
     std::size_t written = 0;
-    const std::size_t descriptor_count =
-        std::min<std::size_t>(node.inode.number_data, kInodeMaxBlocks);
+    std::optional<SegmentDescriptor> indirect;
+    BlockInfo next_segment = node.inode.next_segment;
+    std::size_t segi_loaded = 0;
 
-    // data[0] describes the inode/segment descriptor itself. File data starts at data[1].
-    for (std::size_t i = 1; i < descriptor_count && written < out.size(); ++i) {
-        const auto& block = node.inode.data[i];
+    // number_data is a global descriptor count. Index 0 is the primary SEGD
+    // descriptor itself. At global index 114 (then every 123 entries) PFS stores
+    // an indirect SEGI descriptor; that descriptor's data[0] describes itself and
+    // must be skipped as file payload.
+    for (std::size_t global = 1; global < node.inode.number_data && written < out.size(); ++global) {
+        BlockInfo block{};
+
+        if (global < kInodeMaxBlocks) {
+            block = node.inode.data[global];
+        } else {
+            const std::size_t local = (global - kInodeMaxBlocks) % kIndirectMaxBlocks;
+            if (local == 0) {
+                auto loaded = read_segment_descriptor(next_segment);
+                if (!loaded) {
+                    return false;
+                }
+                indirect = *loaded;
+                next_segment = indirect->next_segment;
+                ++segi_loaded;
+                continue;
+            }
+            if (!indirect) {
+                fail("PFS indirect data encountered before a SEGI descriptor");
+                return false;
+            }
+            block = indirect->data[local];
+        }
+
         if (block.count == 0) {
-            continue;
+            fail("PFS contains an empty block descriptor inside the used descriptor range");
+            return false;
         }
         const std::uint64_t segment_size =
             static_cast<std::uint64_t>(block.count) * probe_.super.zone_size;
-        if (offset >= logical + segment_size) {
+        if (request_position >= logical + segment_size) {
             logical += segment_size;
             continue;
         }
 
-        const std::uint64_t within = offset > logical ? offset - logical : 0;
+        const std::uint64_t within = request_position > logical ? request_position - logical : 0;
         const std::uint64_t available = segment_size - within;
         const std::size_t take = static_cast<std::size_t>(
             std::min<std::uint64_t>(available, out.size() - written));
-        if (!read_zone_bytes(block, static_cast<std::uint32_t>(within), out.subspan(written, take))) {
+        if (!read_zone_bytes(block, within, out.subspan(written, take))) {
             return false;
         }
         written += take;
-        offset += take;
+        request_position += take;
         logical += segment_size;
     }
 
     if (written != out.size()) {
-        if (node.inode.next_segment.number != 0 || node.inode.number_data > kInodeMaxBlocks) {
-            fail("PFS file requires an indirect SEGI descriptor chain (not implemented yet)");
-        } else {
-            fail("PFS inode does not describe enough data for the requested read");
-        }
+        fail("PFS inode does not describe enough data for the requested read");
+        return false;
+    }
+    if (node.inode.number_segdesg != 0 && segi_loaded > node.inode.number_segdesg) {
+        fail("PFS SEGI chain is longer than inode metadata reports");
         return false;
     }
     return true;
