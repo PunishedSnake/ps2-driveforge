@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.1.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.2.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Ayanami" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Bocchi" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
