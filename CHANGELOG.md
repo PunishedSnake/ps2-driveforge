@@ -13,6 +13,13 @@
 - Extended CLI `--extract` so it can export either one file or an entire PFS directory tree.
 - Added host filename conversion tests.
 - Windows artifacts now package both the GUI and CLI inspector.
+- Expanded README into the project entry point with current limitations and developer-documentation index.
+- Added APA and PFS implementation notes documenting address units, checksums, extent translation, SEGD/SEGI behavior and directory-entry traps.
+- Added an architecture comparison with pfsshell that separates observed differences from unbenchmarked performance targets.
+- Added a performance/benchmark plan that records the current synchronous I/O bottlenecks before optimization begins.
+- Added development/documentation rules so format decisions, hardware findings and non-obvious invariants are recorded alongside code changes.
+- Expanded real-hardware validation notes into reusable regression cases and explicit coverage gaps.
+- Added code comments around APA traversal/checksums, PFS zone/metadata arithmetic, SEGI traversal, dentry boundaries, host filename policy and Windows raw-disk serialization.
 - Source HDD/image access remains read-only.
 
 ## 0.2.0-dev "Bocchi" - 2026-08-20
