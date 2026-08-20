@@ -23,7 +23,8 @@ int main()
         check(sanitize_host_filename("bad:name?.cfg") == "bad_name_.cfg", "illegal characters replaced");
         check(sanitize_host_filename("CON") == "_CON", "reserved device name escaped");
         check(sanitize_host_filename("LPT1.txt") == "_LPT1.txt", "reserved LPT device name escaped");
-        check(sanitize_host_filename("trailing. ") == "trailing__", "trailing dot/space escaped");
+        check(sanitize_host_filename("trailing. ") == "trailing._", "trailing space escaped");
+        check(sanitize_host_filename("ending.") == "ending_", "trailing dot escaped");
         check(sanitize_host_filename("..") == "_", "dot-dot cannot escape destination");
         std::cout << "All host export tests passed.\n";
         return 0;
