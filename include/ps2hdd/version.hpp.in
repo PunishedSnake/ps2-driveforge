@@ -1,0 +1,14 @@
+#pragma once
+
+#include <string_view>
+
+namespace ps2hdd::version {
+
+inline constexpr unsigned major = @PROJECT_VERSION_MAJOR@;
+inline constexpr unsigned minor = @PROJECT_VERSION_MINOR@;
+inline constexpr unsigned patch = @PROJECT_VERSION_PATCH@;
+inline constexpr std::string_view string = "@PROJECT_VERSION@";
+inline constexpr std::string_view codename = "@PS2DF_CODENAME@";
+inline constexpr bool development = true;
+
+} // namespace ps2hdd::version

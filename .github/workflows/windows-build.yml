@@ -1,0 +1,30 @@
+name: Windows x64 — Ayanami
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: MSVC x64 / Release
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build, test and package
+        shell: pwsh
+        run: .\build-windows.ps1 -Configuration Release -Clean
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PS2-DriveForge-0.1.0-Ayanami-windows-x64
+          path: dist/PS2-DriveForge-0.1.0-Ayanami-Release-windows-x64.zip
+          if-no-files-found: error
