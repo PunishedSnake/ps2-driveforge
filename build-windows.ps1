@@ -10,6 +10,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$Version = '0.2.0'
+$Codename = 'Bocchi'
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)]
@@ -37,7 +40,7 @@ including MSVC, a Windows 10/11 SDK, and CMake tools for Windows.
 '@
 }
 
-Write-Host 'PS2 DriveForge - Windows x64 build' -ForegroundColor Cyan
+Write-Host "PS2 DriveForge $Version-dev ($Codename) - Windows x64 build" -ForegroundColor Cyan
 Write-Host "Configuration: $Configuration"
 Write-Host "Build dir:     $BuildDir"
 Write-Host "Output dir:    $DistDir"
@@ -53,7 +56,6 @@ if ($Clean) {
 }
 
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-
 $BuildTests = if ($SkipTests) { 'OFF' } else { 'ON' }
 
 Write-Host "`n[1/4] Configuring with Visual Studio 2022..." -ForegroundColor Yellow
@@ -83,7 +85,6 @@ $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
 if (-not (Test-Path $InspectorExe)) {
     throw "Expected executable was not produced: $InspectorExe"
 }
-
 Copy-Item $InspectorExe $DistDir -Force
 
 $InspectorPdb = Join-Path $BinDir 'ps2-driveforge-inspect.pdb'
@@ -92,14 +93,13 @@ if (Test-Path $InspectorPdb) {
 }
 
 if (-not $SkipTests) {
-    $TestsExe = Join-Path $BinDir 'ps2-driveforge-tests.exe'
-    if (Test-Path $TestsExe) {
-        Copy-Item $TestsExe $DistDir -Force
-    }
-
-    $TestsPdb = Join-Path $BinDir 'ps2-driveforge-tests.pdb'
-    if (Test-Path $TestsPdb) {
-        Copy-Item $TestsPdb $DistDir -Force
+    foreach ($TestBinary in @('ps2-driveforge-tests', 'ps2-driveforge-pfs-tests')) {
+        foreach ($Extension in @('.exe', '.pdb')) {
+            $Path = Join-Path $BinDir ($TestBinary + $Extension)
+            if (Test-Path $Path) {
+                Copy-Item $Path $DistDir -Force
+            }
+        }
     }
 }
 
@@ -110,7 +110,7 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     }
 }
 
-$ZipName = "PS2-DriveForge-0.1.0-Ayanami-$Configuration-windows-x64.zip"
+$ZipName = "PS2-DriveForge-$Version-$Codename-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
@@ -120,4 +120,4 @@ Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -Compr
 Write-Host "`nBuild completed successfully." -ForegroundColor Green
 Write-Host "Executable: $InspectorExe"
 Write-Host "Package:    $ZipPath"
-Write-Host "`nPhysical-drive inspection remains read-only in this development version." -ForegroundColor Green
+Write-Host "`nPhysical-drive and PFS access remain read-only in this development version." -ForegroundColor Green
