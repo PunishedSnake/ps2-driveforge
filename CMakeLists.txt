@@ -17,6 +17,7 @@ add_library(ps2driveforge_core
     src/core/apa.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
+    src/core/pfs_filesystem.cpp
 )
 
 target_include_directories(ps2driveforge_core
@@ -49,8 +50,14 @@ target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(PS2DF_BUILD_TESTS)
     enable_testing()
+
     add_executable(ps2-driveforge-tests tests/apa_tests.cpp)
     target_link_libraries(ps2-driveforge-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-tests COMMAND ps2-driveforge-tests)
+
+    add_executable(ps2-driveforge-pfs-tests tests/pfs_filesystem_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-tests COMMAND ps2-driveforge-pfs-tests)
 endif()
