@@ -13,6 +13,11 @@ namespace ps2hdd {
 PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
 {
     const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index_);
+
+    // Read-only is a structural invariant during Ayanami/Bocchi/Chisato, not a
+    // UI preference. Do not change GENERIC_READ to GENERIC_READ|GENERIC_WRITE
+    // when adding future mutation support; writable devices need a separate,
+    // explicitly gated capability with metadata backup and validation.
     handle_ = CreateFileW(path.c_str(), GENERIC_READ,
                           FILE_SHARE_READ | FILE_SHARE_WRITE,
                           nullptr, OPEN_EXISTING,
@@ -58,6 +63,11 @@ bool PhysicalDrive::read(std::uint64_t offset, std::span<std::byte> out)
         return false;
     }
 
+    // SetFilePointerEx changes shared HANDLE state, therefore seek+ReadFile must
+    // currently be serialized as one operation. This is correct but intentionally
+    // conservative: it is also one of the known performance bottlenecks tracked
+    // in docs/performance.md. A future offset/overlapped backend should remove
+    // this serialization without changing BlockDevice's byte-addressed contract.
     std::scoped_lock lock(mutex_);
 
     LARGE_INTEGER position{};
