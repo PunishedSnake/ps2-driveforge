@@ -72,10 +72,19 @@ std::uint64_t pfs_offset(std::uint32_t zone, std::uint32_t sector_in_zone = 0)
            ps2hdd::apa::kSectorSize;
 }
 
-void put_inode(SparseDevice& dev, std::uint32_t zone, ps2hdd::pfs::Inode inode)
+void put_inode_at(SparseDevice& dev, std::uint32_t partition_lba, std::uint32_t zone,
+                  ps2hdd::pfs::Inode inode)
 {
     inode.checksum = ps2hdd::pfs::inode_checksum(inode);
-    dev.put_bytes(pfs_offset(zone), std::as_bytes(std::span{&inode, 1}));
+    const auto offset = (static_cast<std::uint64_t>(partition_lba) +
+                         static_cast<std::uint64_t>(zone) * kZoneSectors) *
+                        ps2hdd::apa::kSectorSize;
+    dev.put_bytes(offset, std::as_bytes(std::span{&inode, 1}));
+}
+
+void put_inode(SparseDevice& dev, std::uint32_t zone, ps2hdd::pfs::Inode inode)
+{
+    put_inode_at(dev, kPfsLba, zone, inode);
 }
 
 void write_dentry(std::array<std::byte, ps2hdd::apa::kSectorSize>& sector, std::size_t offset,
@@ -282,7 +291,7 @@ void indirect_segi_extent_is_read()
     file.last_segment = file.next_segment;
     file.mode = 0x21FF;
     file.size = 114ULL * 8192ULL;
-    file.number_data = 116;
+    file.number_data = 116; // SEGD + 113 direct extents + SEGI + 1 indirect extent.
     file.number_blocks = 116;
     file.number_segdesg = 2;
     put_inode(dev, file_zone, file);
@@ -314,6 +323,101 @@ void indirect_segi_extent_is_read()
     check(std::memcmp(data.data(), "INDIRECT", 8) == 0, "SEGI payload");
 }
 
+void pfs_subpartition_is_followed()
+{
+    constexpr std::uint32_t sub_lba = 0x240000;
+    constexpr std::uint32_t main_length = 0x180000;
+    constexpr std::uint32_t sub_length = 0x80000;
+    constexpr std::uint32_t root_zone = 660;
+    constexpr std::uint32_t root_data = 661;
+    constexpr std::uint32_t file_zone = 20;
+    constexpr std::uint32_t file_data = 21;
+
+    SparseDevice dev(8ULL * 1024 * 1024 * 1024);
+
+    auto mbr = make_header("__mbr", ps2hdd::apa::kTypeMbr, 0, 0x40000, sub_lba, kPfsLba);
+    std::memcpy(mbr.mbr.magic, "Sony Computer Entertainment Inc.", 32);
+    mbr.checksum = ps2hdd::apa::checksum(mbr);
+
+    auto main = make_header("+BIGPFS", ps2hdd::apa::kTypePfs, kPfsLba, main_length, 0, sub_lba);
+    main.nsub = 1;
+    main.subs[0].start = sub_lba;
+    main.subs[0].length = sub_length;
+    main.checksum = ps2hdd::apa::checksum(main);
+
+    auto sub = make_header("", ps2hdd::apa::kTypePfs, sub_lba, sub_length, kPfsLba, 0);
+    sub.flags = ps2hdd::apa::kFlagSub;
+    sub.main = kPfsLba;
+    sub.number = 0;
+    sub.checksum = ps2hdd::apa::checksum(sub);
+
+    dev.put_header(0, mbr);
+    dev.put_header(kPfsLba, main);
+    dev.put_header(sub_lba, sub);
+
+    ps2hdd::pfs::SuperBlock sb{};
+    sb.magic = ps2hdd::pfs::kSuperMagic;
+    sb.version = 3;
+    sb.zone_size = 8192;
+    sb.num_subs = 1;
+    sb.root = {root_zone, 0, 1};
+    sb.log = {50, 0, 16};
+
+    std::array<std::byte, 512> super_sector{};
+    std::memcpy(super_sector.data(), &sb, sizeof(sb));
+    dev.put_bytes((static_cast<std::uint64_t>(kPfsLba) + ps2hdd::pfs::kSuperSector) * 512,
+                  super_sector);
+    dev.put_bytes((static_cast<std::uint64_t>(kPfsLba) + ps2hdd::pfs::kSuperBackupSector) * 512,
+                  super_sector);
+
+    auto root = make_inode(root_zone, 0x11FF, 512, root_data);
+    put_inode(dev, root_zone, root);
+
+    ps2hdd::pfs::Inode file{};
+    file.magic = ps2hdd::pfs::kSegdMagic;
+    file.inode_block = {file_zone, 1, 1};
+    file.last_segment = file.inode_block;
+    file.data[0] = file.inode_block;
+    file.data[1] = {file_data, 1, 1};
+    file.mode = 0x21FF;
+    file.size = 8;
+    file.number_blocks = 2;
+    file.number_data = 2;
+    file.number_segdesg = 1;
+    put_inode_at(dev, sub_lba, file_zone, file);
+
+    std::array<std::byte, 512> root_sector{};
+    write_dentry(root_sector, 0, root_zone, 0, ".", 12, ps2hdd::pfs::kModeDirectory);
+    write_dentry(root_sector, 12, root_zone, 0, "..", 12, ps2hdd::pfs::kModeDirectory);
+    write_dentry(root_sector, 24, file_zone, 1, "sub.bin", 488, ps2hdd::pfs::kModeRegular);
+    dev.put_bytes(pfs_offset(root_data), root_sector);
+
+    std::array<std::byte, 512> payload{};
+    std::memcpy(payload.data(), "SUBPART!", 8);
+    dev.put_bytes((static_cast<std::uint64_t>(sub_lba) + file_data * 16ULL) * 512, payload);
+
+    ps2hdd::apa::Reader apa_reader(dev);
+    const auto apa = apa_reader.scan();
+    check(apa.ok(), "APA scan with PFS subpartition");
+    check(apa.partitions.size() == 3, "APA subpartition fixture partition count");
+    check(apa.partitions[1].sub_partitions.size() == 1, "APA PFS subpartition attached");
+
+    ps2hdd::ApaVolume volume(dev, apa.partitions[1]);
+    ps2hdd::pfs::FileSystem fs(volume);
+    check(fs.mount(), "mount PFS with APA subpartition");
+
+    std::string error;
+    const auto node = fs.resolve("/sub.bin", &error);
+    check(node.has_value(), "resolve inode stored in PFS subpartition");
+    check(node->location.subpart == 1, "resolved PFS subpartition index");
+
+    std::array<std::byte, 8> data{};
+    std::size_t bytes_read = 0;
+    check(fs.read_file(*node, 0, data, bytes_read, &error), "read data stored in PFS subpartition");
+    check(bytes_read == 8, "PFS subpartition bytes read");
+    check(std::memcmp(data.data(), "SUBPART!", 8) == 0, "PFS subpartition payload");
+}
+
 } // namespace
 
 int main()
@@ -322,6 +426,7 @@ int main()
         root_directory_and_nested_file_are_read();
         directory_can_span_multiple_sectors();
         indirect_segi_extent_is_read();
+        pfs_subpartition_is_followed();
         std::cout << "All PFS filesystem tests passed.\n";
         return 0;
     } catch (const std::exception& error) {
