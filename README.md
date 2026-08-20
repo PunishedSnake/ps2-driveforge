@@ -2,12 +2,12 @@
 
 **Modern APA/PFS HDD management for PlayStation 2.**
 
-Current development train: **0.1.x — “Ayanami”**  
-Current source version: **0.1.0-dev**
+Current development train: **0.2.x — “Bocchi”**  
+Current source version: **0.2.0-dev**
 
 PS2 DriveForge is a Windows-first replacement for the old `pfsshell` style of PS2 HDD management. The long-term goal is a safe, fast library and GUI that can inspect and manage APA/PFS/HDL disks and expose their contents naturally to Windows Explorer.
 
-> **Safety status:** the current codebase is read-only. There is no public write API and the Windows physical-drive backend requests `GENERIC_READ` only.
+> **Safety status:** the current codebase is read-only with respect to the PS2 source. There is no APA/PFS write API and the Windows physical-drive backend requests `GENERIC_READ` only. File extraction writes only to explicitly selected host paths.
 
 ## What works now
 
@@ -20,7 +20,17 @@ PS2 DriveForge is a Windows-first replacement for the old `pfsshell` style of PS
 - account for APA sub-partitions in logical partition size;
 - translate PFS `sub + sector` addresses through APA extents;
 - probe and validate PFS v1-v3 primary/backup superblocks and zone size;
+- read and validate PFS SEGD inodes;
+- follow chained SEGI indirect segment descriptors;
+- parse multi-sector PFS directories;
+- resolve nested PFS paths;
+- read arbitrary byte ranges from PFS files;
+- browse and recursively print PFS directory trees;
+- extract individual PFS files to the host;
+- cache PFS inode and directory metadata for repeated frontend queries;
 - build and test on Windows x64 through one PowerShell command or GitHub Actions.
+
+The APA/PFS probe path has also been validated against a real APA v2 / PFS v3 PS2 HDD, including a large fragmented HDL partition layout.
 
 ## Windows x64 build
 
@@ -33,7 +43,7 @@ Install Visual Studio 2022 with **Desktop development with C++**, including MSVC
 Output is placed in `dist\windows-x64` and packaged as:
 
 ```text
-PS2-DriveForge-0.1.0-Ayanami-Release-windows-x64.zip
+PS2-DriveForge-0.2.0-Bocchi-Release-windows-x64.zip
 ```
 
 GitHub Actions performs the same MSVC build automatically for pull requests and `main`.
@@ -57,15 +67,38 @@ ctest --test-dir build -C Release --output-on-failure
 Run an elevated terminal if Windows requires it:
 
 ```powershell
-.\dist\windows-x64\ps2-driveforge-inspect.exe --physical 3
+.\ps2-driveforge-inspect.exe --physical 3
 ```
 
 Always verify the Windows disk number before using `--physical`.
 
+### Browse a PFS partition
+
+```powershell
+.\ps2-driveforge-inspect.exe --physical 3 --browse +OPL
+.\ps2-driveforge-inspect.exe --physical 3 --browse +OPL /CFG
+```
+
+### Walk a PFS tree
+
+```powershell
+.\ps2-driveforge-inspect.exe --physical 3 --tree +OPL
+```
+
+### Extract a PFS file
+
+Use a path returned by `--browse` or `--tree`:
+
+```powershell
+.\ps2-driveforge-inspect.exe --physical 3 --extract +OPL /CFG/example.cfg example.cfg
+```
+
+The PS2 disk remains read-only during all of these operations.
+
 ## Roadmap
 
-1. **0.1 “Ayanami”** — APA read-only core, diagnostics and initial PFS probing.
-2. **0.2 “Bocchi”** — PFS inode/directory/file read path.
+1. **0.1 “Ayanami”** — APA read-only core, diagnostics and initial PFS probing. **Done.**
+2. **0.2 “Bocchi”** — PFS inode/directory/file read path, browsing and extraction. **In progress.**
 3. **0.3 “Chisato”** — native Windows GUI browser.
 4. **0.4 “Darkness”** — Dokany Explorer mount, read-only first.
 5. **0.5 “Emilia”** — cache, read-ahead and overlapped-I/O performance pass.
@@ -95,7 +128,9 @@ Windows GUI / CLI / Dokany provider
  disk image      PhysicalDriveN
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for details.
+The PFS reader includes a thread-safe metadata cache so future GUI/Dokany frontends can issue repeated and concurrent metadata queries without re-reading every inode and directory from disk.
+
+See [`docs/architecture.md`](docs/architecture.md) and [`docs/pfs-readpath.md`](docs/pfs-readpath.md) for details.
 
 ## Format references
 
