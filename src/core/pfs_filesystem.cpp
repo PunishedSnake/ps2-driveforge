@@ -5,6 +5,8 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <shared_mutex>
 
 namespace ps2hdd::pfs {
 
@@ -50,6 +52,7 @@ std::uint32_t inode_checksum(const Inode& inode) noexcept
 
 bool FileSystem::mount()
 {
+    clear_metadata_cache();
     probe_ = probe(volume_);
     mounted_ = false;
     zone_sectors_ = 0;
@@ -120,13 +123,34 @@ bool FileSystem::read_raw_inode(const BlockInfo& location, std::uint32_t expecte
     return true;
 }
 
+void FileSystem::clear_metadata_cache()
+{
+    std::unique_lock lock(cache_mutex_);
+    inode_cache_.clear();
+    directory_cache_.clear();
+}
+
 bool FileSystem::read_inode(const BlockInfo& location, Inode& out, std::string* error)
 {
+    const auto key = cache_key(location);
+    {
+        std::shared_lock lock(cache_mutex_);
+        const auto it = inode_cache_.find(key);
+        if (it != inode_cache_.end()) {
+            out = it->second;
+            return true;
+        }
+    }
+
     RawInode raw{};
     if (!read_raw_inode(location, kSegdMagic, raw, error)) {
         return false;
     }
     out = raw.parsed;
+    {
+        std::unique_lock lock(cache_mutex_);
+        inode_cache_.insert_or_assign(key, out);
+    }
     return true;
 }
 
@@ -317,6 +341,17 @@ DirectoryResult FileSystem::list_directory(const BlockInfo& location, bool inclu
         return result;
     }
 
+    // Keep two cache namespaces: visible entries and visible+special entries.
+    const auto base_key = cache_key(location);
+    const auto directory_key = base_key ^ (include_special ? (1ULL << 63U) : 0ULL);
+    {
+        std::shared_lock lock(cache_mutex_);
+        const auto it = directory_cache_.find(directory_key);
+        if (it != directory_cache_.end()) {
+            return it->second;
+        }
+    }
+
     Inode inode{};
     std::string error;
     if (!read_inode(location, inode, &error)) {
@@ -355,8 +390,10 @@ DirectoryResult FileSystem::list_directory(const BlockInfo& location, bool inclu
                 result.errors.emplace_back("directory entry length is not 4-byte aligned");
                 return result;
             }
-            if (allocated < sizeof(DirectoryEntryHeader) || offset + allocated > apa::kSectorSize) {
-                result.errors.emplace_back("directory entry crosses a 512-byte sector boundary");
+            if (allocated < sizeof(DirectoryEntryHeader) ||
+                offset + allocated > apa::kSectorSize ||
+                offset + allocated > bytes_read) {
+                result.errors.emplace_back("directory entry exceeds the available 512-byte sector data");
                 return result;
             }
             if (header.path_length > allocated - sizeof(DirectoryEntryHeader)) {
@@ -387,6 +424,10 @@ DirectoryResult FileSystem::list_directory(const BlockInfo& location, bool inclu
         position += bytes_read;
     }
 
+    if (result.ok()) {
+        std::unique_lock lock(cache_mutex_);
+        directory_cache_.insert_or_assign(directory_key, result);
+    }
     return result;
 }
 
