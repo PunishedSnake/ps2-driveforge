@@ -25,6 +25,9 @@ std::string join_path(std::string_view parent, std::string_view child)
 
 std::filesystem::path utf8_path(std::string_view text)
 {
+    // PFS names are byte strings from the PS2 filesystem. Host-path conversion
+    // belongs here, above ps2driveforge_core, so the on-disk parser never needs
+    // Windows filename policy or std::filesystem semantics.
     std::u8string value;
     value.reserve(text.size());
     for (const unsigned char c : text) {
@@ -62,6 +65,8 @@ bool reserved_windows_name(std::string_view name)
 
 std::uint64_t inode_key(BlockInfo location)
 {
+    // PFS inode identity is (subpart, number), not just the inode number. Use a
+    // stable composite key so corrupted directory links cannot recurse forever.
     return (static_cast<std::uint64_t>(location.subpart) << 32U) | location.number;
 }
 
@@ -97,6 +102,9 @@ bool export_node(ExportContext& context, const Node& node, std::string_view logi
             return false;
         }
 
+        // 1 MiB is the host-side streaming window, not a promise that the lower
+        // device layer performs one 1 MiB read. PFS currently breaks aligned I/O
+        // into smaller batches; docs/performance.md tracks that separately.
         constexpr std::size_t kChunkSize = 1024 * 1024;
         std::vector<std::byte> buffer(kChunkSize);
         std::uint64_t offset = 0;
@@ -162,6 +170,10 @@ bool export_node(ExportContext& context, const Node& node, std::string_view logi
         return false;
     }
 
+    // Windows normally treats file names case-insensitively. Two distinct PFS
+    // names such as `foo` and `FOO` therefore need deterministic host aliases or
+    // one export could overwrite the other. Keep collision policy in this host
+    // layer rather than changing the PFS-visible names returned by the reader.
     std::set<std::string> host_names;
     for (const auto& entry : entries) {
         auto child = context.reader.read_inode(entry.inode);
@@ -195,6 +207,8 @@ bool export_node(ExportContext& context, const Node& node, std::string_view logi
 
 std::string sanitize_host_filename(std::string_view name)
 {
+    // This converts a PFS name into a safe *host export* name. It must never be
+    // reused to rewrite or normalize names on the PS2 filesystem itself.
     std::string result;
     result.reserve(name.size());
     for (const unsigned char c : name) {
