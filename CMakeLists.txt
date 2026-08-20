@@ -59,7 +59,7 @@ else()
 endif()
 
 add_executable(ps2-driveforge-inspect src/cli/main.cpp)
-target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_core)
+target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(WIN32)
