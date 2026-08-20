@@ -1,8 +1,10 @@
 #include "ps2hdd/pfs.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
+#include <limits>
 
 namespace ps2hdd::pfs {
 
@@ -20,12 +22,36 @@ bool read_super(ApaVolume& volume, std::uint32_t sector, SuperBlock& out)
     return true;
 }
 
+std::uint16_t load_u16(const std::byte* ptr)
+{
+    std::uint16_t value{};
+    std::memcpy(&value, ptr, sizeof(value));
+    return value;
+}
+
+std::uint32_t load_u32(const std::byte* ptr)
+{
+    std::uint32_t value{};
+    std::memcpy(&value, ptr, sizeof(value));
+    return value;
+}
+
 } // namespace
 
 bool valid_zone_size(std::uint32_t zone_size) noexcept
 {
     return zone_size >= 2U * 1024U && zone_size <= 128U * 1024U &&
            (zone_size & (zone_size - 1U)) == 0;
+}
+
+std::uint32_t inode_checksum(const Inode& inode) noexcept
+{
+    const auto* words = reinterpret_cast<const std::uint32_t*>(&inode);
+    std::uint32_t sum = 0;
+    for (std::size_t i = 1; i < kMetadataSize / sizeof(std::uint32_t); ++i) {
+        sum += words[i];
+    }
+    return sum;
 }
 
 ProbeResult probe(ApaVolume& volume)
@@ -95,6 +121,322 @@ ProbeResult probe(ApaVolume& volume)
 
     result.valid = true;
     return result;
+}
+
+Reader::Reader(ApaVolume& volume)
+    : volume_(volume), probe_(probe(volume))
+{
+    if (!probe_.valid && !probe_.errors.empty()) {
+        last_error_ = probe_.errors.front();
+    }
+}
+
+unsigned Reader::inode_scale() const noexcept
+{
+    unsigned scale = 0;
+    std::uint32_t size = static_cast<std::uint32_t>(kMetadataSize);
+    while (size < probe_.super.zone_size) {
+        size <<= 1U;
+        ++scale;
+    }
+    return scale;
+}
+
+void Reader::fail(std::string message)
+{
+    last_error_ = std::move(message);
+}
+
+std::optional<Node> Reader::root()
+{
+    if (!valid()) {
+        fail("PFS filesystem is not valid");
+        return std::nullopt;
+    }
+    return read_inode(probe_.super.root);
+}
+
+std::optional<Node> Reader::read_inode(BlockInfo location)
+{
+    last_error_.clear();
+    if (!valid()) {
+        fail("PFS filesystem is not valid");
+        return std::nullopt;
+    }
+    if (location.subpart > probe_.super.num_subs || location.subpart >= volume_.extent_count()) {
+        fail("PFS inode points to a missing sub-partition");
+        return std::nullopt;
+    }
+
+    const auto scale = inode_scale();
+    if (location.number > (std::numeric_limits<std::uint32_t>::max() >> scale)) {
+        fail("PFS inode block address overflows");
+        return std::nullopt;
+    }
+
+    const std::uint32_t metadata_block = location.number << scale;
+    constexpr std::uint32_t sectors_per_metadata =
+        static_cast<std::uint32_t>(kMetadataSize / apa::kSectorSize);
+    const std::uint64_t sector64 = static_cast<std::uint64_t>(metadata_block) * sectors_per_metadata;
+    if (sector64 > std::numeric_limits<std::uint32_t>::max()) {
+        fail("PFS inode sector address overflows");
+        return std::nullopt;
+    }
+
+    std::array<std::byte, kMetadataSize> raw{};
+    if (!volume_.read_sectors(location.subpart, static_cast<std::uint32_t>(sector64),
+                              sectors_per_metadata, raw)) {
+        fail("Could not read PFS inode metadata");
+        return std::nullopt;
+    }
+
+    Node node;
+    node.location = location;
+    std::memcpy(&node.inode, raw.data(), sizeof(node.inode));
+
+    if (node.inode.magic != kSegdMagic) {
+        fail("PFS inode has invalid SEGD magic");
+        return std::nullopt;
+    }
+    if (inode_checksum(node.inode) != node.inode.checksum) {
+        fail("PFS inode checksum mismatch");
+        return std::nullopt;
+    }
+    if (node.inode.number_data == 0 || node.inode.number_data > kInodeMaxBlocks) {
+        if (node.inode.next_segment.number == 0) {
+            fail("PFS inode has an invalid direct block-descriptor count");
+            return std::nullopt;
+        }
+    }
+
+    return node;
+}
+
+bool Reader::read_zone_bytes(const BlockInfo& block, std::uint32_t zone_offset,
+                             std::span<std::byte> out)
+{
+    if (block.subpart > probe_.super.num_subs || block.subpart >= volume_.extent_count()) {
+        fail("PFS data block points to a missing sub-partition");
+        return false;
+    }
+
+    const std::uint64_t segment_bytes =
+        static_cast<std::uint64_t>(block.count) * probe_.super.zone_size;
+    if (static_cast<std::uint64_t>(zone_offset) + out.size() > segment_bytes) {
+        fail("PFS read exceeds block descriptor extent");
+        return false;
+    }
+
+    const std::uint32_t sectors_per_zone = probe_.super.zone_size / apa::kSectorSize;
+    const std::uint64_t base_sector = static_cast<std::uint64_t>(block.number) * sectors_per_zone;
+    std::uint64_t byte_position = static_cast<std::uint64_t>(zone_offset);
+    std::size_t done = 0;
+
+    while (done < out.size()) {
+        const std::uint64_t absolute_byte = byte_position;
+        const std::uint64_t relative_sector = absolute_byte / apa::kSectorSize;
+        const std::size_t in_sector = static_cast<std::size_t>(absolute_byte % apa::kSectorSize);
+        const std::size_t remaining = out.size() - done;
+
+        if (in_sector == 0 && remaining >= apa::kSectorSize) {
+            const std::size_t whole_sectors = remaining / apa::kSectorSize;
+            const std::size_t batch = std::min<std::size_t>(whole_sectors, 128);
+            const std::uint64_t sector64 = base_sector + relative_sector;
+            if (sector64 > std::numeric_limits<std::uint32_t>::max()) {
+                fail("PFS data sector address overflows");
+                return false;
+            }
+            const auto bytes = batch * apa::kSectorSize;
+            if (!volume_.read_sectors(block.subpart, static_cast<std::uint32_t>(sector64),
+                                      static_cast<std::uint32_t>(batch), out.subspan(done, bytes))) {
+                fail("Could not read PFS data sectors");
+                return false;
+            }
+            done += bytes;
+            byte_position += bytes;
+            continue;
+        }
+
+        std::array<std::byte, apa::kSectorSize> sector{};
+        const std::uint64_t sector64 = base_sector + relative_sector;
+        if (sector64 > std::numeric_limits<std::uint32_t>::max() ||
+            !volume_.read_sectors(block.subpart, static_cast<std::uint32_t>(sector64), 1, sector)) {
+            fail("Could not read PFS data sector");
+            return false;
+        }
+        const std::size_t take = std::min(remaining, apa::kSectorSize - in_sector);
+        std::copy_n(sector.begin() + static_cast<std::ptrdiff_t>(in_sector), take,
+                    out.begin() + static_cast<std::ptrdiff_t>(done));
+        done += take;
+        byte_position += take;
+    }
+
+    return true;
+}
+
+bool Reader::read(const Node& node, std::uint64_t offset, std::span<std::byte> out)
+{
+    last_error_.clear();
+    if (!valid()) {
+        fail("PFS filesystem is not valid");
+        return false;
+    }
+    if (offset > node.inode.size || out.size() > node.inode.size - offset) {
+        fail("PFS read is outside file bounds");
+        return false;
+    }
+    if (out.empty()) {
+        return true;
+    }
+
+    std::uint64_t logical = 0;
+    std::size_t written = 0;
+    const std::size_t descriptor_count =
+        std::min<std::size_t>(node.inode.number_data, kInodeMaxBlocks);
+
+    // data[0] describes the inode/segment descriptor itself. File data starts at data[1].
+    for (std::size_t i = 1; i < descriptor_count && written < out.size(); ++i) {
+        const auto& block = node.inode.data[i];
+        if (block.count == 0) {
+            continue;
+        }
+        const std::uint64_t segment_size =
+            static_cast<std::uint64_t>(block.count) * probe_.super.zone_size;
+        if (offset >= logical + segment_size) {
+            logical += segment_size;
+            continue;
+        }
+
+        const std::uint64_t within = offset > logical ? offset - logical : 0;
+        const std::uint64_t available = segment_size - within;
+        const std::size_t take = static_cast<std::size_t>(
+            std::min<std::uint64_t>(available, out.size() - written));
+        if (!read_zone_bytes(block, static_cast<std::uint32_t>(within), out.subspan(written, take))) {
+            return false;
+        }
+        written += take;
+        offset += take;
+        logical += segment_size;
+    }
+
+    if (written != out.size()) {
+        if (node.inode.next_segment.number != 0 || node.inode.number_data > kInodeMaxBlocks) {
+            fail("PFS file requires an indirect SEGI descriptor chain (not implemented yet)");
+        } else {
+            fail("PFS inode does not describe enough data for the requested read");
+        }
+        return false;
+    }
+    return true;
+}
+
+std::vector<DirectoryEntry> Reader::list_directory(const Node& directory,
+                                                   bool include_dot_entries)
+{
+    last_error_.clear();
+    std::vector<DirectoryEntry> entries;
+    if ((directory.inode.mode & kModeMask) != kModeDirectory) {
+        fail("PFS node is not a directory");
+        return entries;
+    }
+    if (directory.inode.size > 64ULL * 1024ULL * 1024ULL) {
+        fail("PFS directory size is implausibly large");
+        return entries;
+    }
+
+    std::vector<std::byte> bytes(static_cast<std::size_t>(directory.inode.size));
+    if (!read(directory, 0, bytes)) {
+        return entries;
+    }
+
+    std::size_t position = 0;
+    while (position < bytes.size()) {
+        const std::size_t sector_start = (position / apa::kSectorSize) * apa::kSectorSize;
+        const std::size_t sector_end = std::min(sector_start + apa::kSectorSize, bytes.size());
+        if (position + 8 > sector_end) {
+            position = sector_end;
+            continue;
+        }
+
+        const auto* ptr = bytes.data() + static_cast<std::ptrdiff_t>(position);
+        const std::uint32_t inode_number = load_u32(ptr);
+        const std::uint8_t subpart = static_cast<std::uint8_t>(ptr[4]);
+        const std::uint8_t path_len = static_cast<std::uint8_t>(ptr[5]);
+        const std::uint16_t raw_len = load_u16(ptr + 6);
+        const std::uint16_t allocated = raw_len & 0x0FFFU;
+        const std::uint16_t mode = raw_len & kModeMask;
+
+        if (allocated < 8 || (allocated & 3U) != 0 || position + allocated > sector_end) {
+            fail("Malformed PFS directory entry allocation length");
+            entries.clear();
+            return entries;
+        }
+        if (path_len > allocated - 8) {
+            fail("Malformed PFS directory entry name length");
+            entries.clear();
+            return entries;
+        }
+
+        if (inode_number != 0 && path_len != 0) {
+            std::string name(reinterpret_cast<const char*>(ptr + 8), path_len);
+            if (include_dot_entries || (name != "." && name != "..")) {
+                DirectoryEntry entry;
+                entry.name = std::move(name);
+                entry.inode.number = inode_number;
+                entry.inode.subpart = subpart;
+                entry.inode.count = 1;
+                entry.mode = mode;
+                entries.emplace_back(std::move(entry));
+            }
+        }
+        position += allocated;
+    }
+
+    return entries;
+}
+
+std::optional<Node> Reader::resolve(std::string_view path)
+{
+    last_error_.clear();
+    auto current = root();
+    if (!current) {
+        return std::nullopt;
+    }
+
+    std::size_t position = 0;
+    while (position < path.size()) {
+        while (position < path.size() && (path[position] == '/' || path[position] == '\\')) {
+            ++position;
+        }
+        if (position == path.size()) {
+            break;
+        }
+        const std::size_t start = position;
+        while (position < path.size() && path[position] != '/' && path[position] != '\\') {
+            ++position;
+        }
+        const std::string_view component = path.substr(start, position - start);
+        if (component.empty() || component == ".") {
+            continue;
+        }
+
+        const auto entries = list_directory(*current, true);
+        if (!last_error_.empty()) {
+            return std::nullopt;
+        }
+        const auto it = std::find_if(entries.begin(), entries.end(),
+                                     [component](const DirectoryEntry& e) { return e.name == component; });
+        if (it == entries.end()) {
+            fail("PFS path component not found: " + std::string(component));
+            return std::nullopt;
+        }
+        current = read_inode(it->inode);
+        if (!current) {
+            return std::nullopt;
+        }
+    }
+
+    return current;
 }
 
 } // namespace ps2hdd::pfs
