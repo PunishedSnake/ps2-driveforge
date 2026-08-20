@@ -23,6 +23,7 @@ inline constexpr std::uint32_t kFsckWriteError = 0x01;
 inline constexpr std::uint32_t kFsckErrorsFixed = 0x02;
 inline constexpr std::size_t kMetadataSize = 1024;
 inline constexpr std::size_t kInodeMaxBlocks = 114;
+inline constexpr std::size_t kIndirectMaxBlocks = 123;
 inline constexpr std::uint16_t kModeMask = 0xF000;
 inline constexpr std::uint16_t kModeDirectory = 0x1000;
 inline constexpr std::uint16_t kModeRegular = 0x2000;
@@ -77,12 +78,25 @@ struct Inode {
     std::uint32_t subpart;
     std::uint32_t reserved[4];
 };
+
+// PFS deliberately reuses the 72-byte metadata tail of indirect SEGI records
+// as nine additional BlockInfo entries. 40-byte header + 123 * 8 bytes = 1024.
+struct SegmentDescriptor {
+    std::uint32_t checksum;
+    std::uint32_t magic;
+    BlockInfo inode_block;
+    BlockInfo next_segment;
+    BlockInfo last_segment;
+    BlockInfo unused;
+    BlockInfo data[kIndirectMaxBlocks];
+};
 #pragma pack(pop)
 
 static_assert(sizeof(BlockInfo) == 8);
 static_assert(sizeof(DateTime) == 8);
 static_assert(sizeof(SuperBlock) == 40);
 static_assert(sizeof(Inode) == kMetadataSize);
+static_assert(sizeof(SegmentDescriptor) == kMetadataSize);
 
 struct ProbeResult {
     bool valid{};
@@ -109,6 +123,7 @@ struct Node {
 [[nodiscard]] bool valid_zone_size(std::uint32_t zone_size) noexcept;
 [[nodiscard]] ProbeResult probe(ApaVolume& volume);
 [[nodiscard]] std::uint32_t inode_checksum(const Inode& inode) noexcept;
+[[nodiscard]] std::uint32_t segment_checksum(const SegmentDescriptor& descriptor) noexcept;
 
 class Reader {
 public:
@@ -124,14 +139,14 @@ public:
     [[nodiscard]] std::vector<DirectoryEntry> list_directory(const Node& directory,
                                                               bool include_dot_entries = false);
 
-    // Reads a byte range from a regular file or directory data stream. The current
-    // implementation supports the direct SEGD block descriptors used by ordinary
-    // files/directories and fails explicitly if an indirect SEGI chain is required.
+    // Reads any byte range described by the inode, following both direct SEGD
+    // block descriptors and chained indirect SEGI descriptors.
     bool read(const Node& node, std::uint64_t offset, std::span<std::byte> out);
 
 private:
     [[nodiscard]] unsigned inode_scale() const noexcept;
-    bool read_zone_bytes(const BlockInfo& block, std::uint32_t zone_offset,
+    [[nodiscard]] std::optional<SegmentDescriptor> read_segment_descriptor(BlockInfo location);
+    bool read_zone_bytes(const BlockInfo& block, std::uint64_t zone_offset,
                          std::span<std::byte> out);
     void fail(std::string message);
 
