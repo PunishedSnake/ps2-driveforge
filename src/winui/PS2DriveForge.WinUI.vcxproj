@@ -112,9 +112,9 @@
     inherits types from Foundation/InteractiveExperiences (DispatcherQueue,
     Composition, AppWindow). Manual packages-folder restore does not automatically
     place those dependency WinMDs in ReferencePath, so inject them immediately
-    before C++/WinRT resolves direct WinMD references. Keep this version-agnostic
-    within the restored 2.3 dependency set rather than hard-coding individual
-    metadata file names.
+    before C++/WinRT resolves direct WinMD references. InteractiveExperiences ships
+    multiple OS-contract projections; use the newest restored projection compatible
+    with DriveForge's Windows 10 19041 minimum to avoid duplicate WinRT type definitions.
   -->
   <PropertyGroup>
     <GetCppWinRTDirectWinMDReferencesDependsOn>PS2DFAddWindowsAppSDKDependencyWinMDs;$(GetCppWinRTDirectWinMDReferencesDependsOn)</GetCppWinRTDirectWinMDReferencesDependsOn>
@@ -131,7 +131,7 @@
         <IsSystemReference>false</IsSystemReference>
         <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
       </ReferencePath>
-      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.*\**\*.winmd">
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.*\metadata\10.0.18362.0\*.winmd">
         <WinMDFile>true</WinMDFile>
         <IsSystemReference>false</IsSystemReference>
         <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
