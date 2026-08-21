@@ -3,6 +3,7 @@
 #include "ps2hdd/mount_view.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/version.hpp"
+#include "dokany_open_policy.hpp"
 
 #if __has_include(<dokan/dokan.h>)
 #include <dokan/dokan.h>
@@ -35,6 +36,7 @@ struct MountContext {
 };
 
 std::wstring g_mount_point;
+bool g_debug = false;
 
 MountContext* context(PDOKAN_FILE_INFO info)
 {
@@ -83,8 +85,8 @@ std::wstring utf8_to_wide(std::string_view value)
 
     // PFS stores byte strings and legacy software may contain names that are not
     // valid UTF-8. Keep the mount operational by exposing those bytes in the low
-    // Unicode range. Darkness keeps this fallback explicit; a later naming pass
-    // can add a documented legacy encoding policy without changing PFS parsing.
+    // Unicode range. A later naming pass can add a documented legacy-encoding
+    // policy without changing PFS parsing.
     std::wstring fallback;
     fallback.reserve(value.size());
     for (const unsigned char byte : value) {
@@ -104,8 +106,45 @@ bool has_write_access(ACCESS_MASK access)
 {
     constexpr ACCESS_MASK write_mask = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA |
                                        FILE_WRITE_ATTRIBUTES | DELETE | WRITE_DAC | WRITE_OWNER |
-                                       GENERIC_WRITE;
+                                       GENERIC_WRITE | GENERIC_ALL;
     return (access & write_mask) != 0;
+}
+
+NTSTATUS map_open_status(ps2hdd::dokany_policy::OpenStatus status)
+{
+    using ps2hdd::dokany_policy::OpenStatus;
+    switch (status) {
+    case OpenStatus::success:
+        return STATUS_SUCCESS;
+    case OpenStatus::name_not_found:
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    case OpenStatus::name_collision:
+        return STATUS_OBJECT_NAME_COLLISION;
+    case OpenStatus::write_protected:
+        return STATUS_MEDIA_WRITE_PROTECTED;
+    case OpenStatus::file_is_directory:
+        return STATUS_FILE_IS_A_DIRECTORY;
+    case OpenStatus::not_a_directory:
+        return STATUS_NOT_A_DIRECTORY;
+    case OpenStatus::invalid_disposition:
+        return STATUS_INVALID_PARAMETER;
+    }
+    return STATUS_INVALID_PARAMETER;
+}
+
+void debug_open(LPCWSTR file_name, ACCESS_MASK access, ULONG disposition, ULONG options,
+                bool exists, NTSTATUS status)
+{
+    if (!g_debug) {
+        return;
+    }
+    std::wcerr << L"[ZwCreateFile] path=" << (file_name ? file_name : L"<null>")
+               << L" disposition=" << disposition
+               << L" access=0x" << std::hex << access
+               << L" options=0x" << options
+               << L" exists=" << std::dec << (exists ? 1 : 0)
+               << L" -> NTSTATUS=0x" << std::hex << static_cast<unsigned long>(status)
+               << std::dec << L'\n';
 }
 
 NTSTATUS DOKAN_CALLBACK create_file(LPCWSTR file_name,
@@ -124,25 +163,27 @@ NTSTATUS DOKAN_CALLBACK create_file(LPCWSTR file_name,
     }
 
     const auto node = ctx->view.lookup(*path);
-    if (!node.ok) {
-        return create_disposition == OPEN_EXISTING ? STATUS_OBJECT_NAME_NOT_FOUND
-                                                    : STATUS_MEDIA_WRITE_PROTECTED;
+
+    // IMPORTANT: Dokany's ZwCreateFile callback receives the NT FILE_* values
+    // (FILE_OPEN, FILE_CREATE, FILE_OPEN_IF, ...), not Win32 CreateFileW's
+    // OPEN_EXISTING/CREATE_NEW constants. FILE_OPEN and CREATE_NEW are both
+    // numerically 1, which caused the first Darkness build to report the root as
+    // "The file exists" when Explorer merely tried to open it.
+    ps2hdd::dokany_policy::OpenRequest request{};
+    request.exists = node.ok;
+    request.is_directory = node.ok && node.is_directory();
+    request.wants_write = has_write_access(desired_access);
+    request.directory_only = (create_options & FILE_DIRECTORY_FILE) != 0;
+    request.non_directory_only = (create_options & FILE_NON_DIRECTORY_FILE) != 0;
+    request.delete_on_close = (create_options & FILE_DELETE_ON_CLOSE) != 0;
+    request.disposition = create_disposition;
+
+    const NTSTATUS status = map_open_status(ps2hdd::dokany_policy::evaluate(request));
+    debug_open(file_name, desired_access, create_disposition, create_options, node.ok, status);
+    if (status != STATUS_SUCCESS) {
+        return status;
     }
 
-    if (create_disposition == CREATE_NEW) {
-        return STATUS_OBJECT_NAME_COLLISION;
-    }
-    if (create_disposition == CREATE_ALWAYS || create_disposition == TRUNCATE_EXISTING ||
-        has_write_access(desired_access)) {
-        return STATUS_MEDIA_WRITE_PROTECTED;
-    }
-
-    if ((create_options & FILE_NON_DIRECTORY_FILE) != 0 && node.is_directory()) {
-        return STATUS_FILE_IS_A_DIRECTORY;
-    }
-    if ((create_options & FILE_DIRECTORY_FILE) != 0 && !node.is_directory()) {
-        return STATUS_NOT_A_DIRECTORY;
-    }
     info->IsDirectory = node.is_directory() ? TRUE : FALSE;
     return STATUS_SUCCESS;
 }
@@ -177,6 +218,11 @@ NTSTATUS DOKAN_CALLBACK read_file(LPCWSTR file_name,
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
     *read_length = static_cast<DWORD>(result.bytes_read);
+    if (g_debug) {
+        std::wcerr << L"[ReadFile] path=" << (file_name ? file_name : L"<null>")
+                   << L" offset=" << offset << L" requested=" << buffer_length
+                   << L" read=" << *read_length << L'\n';
+    }
     return STATUS_SUCCESS;
 }
 
@@ -216,6 +262,11 @@ NTSTATUS DOKAN_CALLBACK get_file_information(LPCWSTR file_name,
     buffer->nNumberOfLinks = 1;
     buffer->nFileSizeHigh = static_cast<DWORD>(node.size >> 32U);
     buffer->nFileSizeLow = static_cast<DWORD>(node.size & 0xFFFFFFFFULL);
+    if (g_debug) {
+        std::wcerr << L"[GetFileInformation] path=" << (file_name ? file_name : L"<null>")
+                   << L" directory=" << (node.is_directory() ? 1 : 0)
+                   << L" size=" << node.size << L'\n';
+    }
     return STATUS_SUCCESS;
 }
 
@@ -244,6 +295,10 @@ NTSTATUS DOKAN_CALLBACK find_files(LPCWSTR file_name,
         return node.ok ? STATUS_NOT_A_DIRECTORY : STATUS_OBJECT_PATH_NOT_FOUND;
     }
 
+    if (g_debug) {
+        std::wcerr << L"[FindFiles] path=" << (file_name ? file_name : L"<null>")
+                   << L" entries=" << result.entries.size() << L'\n';
+    }
     for (const auto& entry : result.entries) {
         WIN32_FIND_DATAW data{};
         fill_find_data(entry, data);
@@ -302,6 +357,9 @@ NTSTATUS DOKAN_CALLBACK get_disk_free_space(PULONGLONG free_bytes_available,
     *total_bytes = ctx->session.device().size_bytes();
     *free_bytes_available = 0;
     *total_free_bytes = 0;
+    if (g_debug) {
+        std::wcerr << L"[GetDiskFreeSpace] total=" << *total_bytes << L" free=0 (read-only view)\n";
+    }
     return STATUS_SUCCESS;
 }
 
@@ -329,6 +387,9 @@ NTSTATUS DOKAN_CALLBACK get_volume_information(LPWSTR volume_name,
     }
     if (file_system_name && file_system_name_size > 0) {
         wcsncpy_s(file_system_name, file_system_name_size, L"PS2PFS", _TRUNCATE);
+    }
+    if (g_debug) {
+        std::wcerr << L"[GetVolumeInformation] volume=PS2 DriveForge fs=PS2PFS read-only\n";
     }
     return STATUS_SUCCESS;
 }
@@ -378,8 +439,8 @@ void usage()
                << L"-dev \"" << utf8_to_wide(ps2hdd::version::codename)
                << L"\" - read-only Dokany mount\n\n"
                   L"Usage:\n"
-                  L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:>\n"
-                  L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:>\n"
+                  L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:> [--debug]\n"
+                  L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> [--debug]\n"
                   L"  PS2-DriveForge-Mount.exe --unmount <P:>\n\n"
                   L"The source device is always opened read-only. All mounted mutation requests are rejected.\n";
 }
@@ -408,6 +469,8 @@ int wmain(int argc, wchar_t** argv)
             mount_point = normalize_mount_point(argv[++i]);
         } else if (arg == L"--unmount" && i + 1 < argc) {
             unmount_point = normalize_mount_point(argv[++i]);
+        } else if (arg == L"--debug") {
+            g_debug = true;
         } else if (arg == L"--help" || arg == L"-h") {
             usage();
             return 0;
@@ -501,6 +564,9 @@ int wmain(int argc, wchar_t** argv)
                << L"Namespace root: " << *mount_point << L"Partitions\\\n"
                << L"Press Ctrl+C or run --unmount " << *mount_point
                << L" from another terminal.\n";
+    if (g_debug) {
+        std::wcout << L"Debug callback logging enabled.\n";
+    }
 
     const int status = DokanMain(&options, &operations);
     SetConsoleCtrlHandler(console_handler, FALSE);
