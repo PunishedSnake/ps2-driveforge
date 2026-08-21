@@ -9,22 +9,28 @@ The architecture is intentionally different from wrapping pfsshell's interactive
 ## Current layers
 
 ```text
- Native Win32 GUI        CLI        future Dokany provider
-        |                 |                 |
-        +-------- ps2driveforge_host -------+
-                          |
-                 ps2driveforge_core
-                          |
-               +----------+----------+
-               |          |          |
-              APA        PFS       HDL/MBR
-               |          |          |
-               +----------+----------+
-                          |
-                     BlockDevice
-                   /             \
-             disk image      PhysicalDriveN
+ Native Win32 GUI          CLI          future Dokany provider
+        |                   |                   |
+        +------------- DriveSession -----------+
+                            |
+                   ps2driveforge_host
+                            |
+                   ps2driveforge_core
+                            |
+                +-----------+-----------+
+                |           |           |
+               APA         PFS       HDL/MBR
+                |           |           |
+                +-----------+-----------+
+                            |
+                InstrumentedBlockDevice
+                            |
+                       BlockDevice
+                     /             \
+               disk image      PhysicalDriveN
 ```
+
+`DriveSession` is frontend orchestration, not filesystem state. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not another on-disk abstraction.
 
 ### `BlockDevice`
 
@@ -37,6 +43,17 @@ Current source backends are read-only:
 
 The absence of `write()` is a safety boundary. Future mutation should introduce an explicit writable capability rather than quietly widening this interface.
 
+### `InstrumentedBlockDevice`
+
+`InstrumentedBlockDevice` wraps any existing `BlockDevice` and delegates every read while collecting actual backend-request statistics:
+
+- read call count;
+- requested bytes;
+- failed reads;
+- largest read.
+
+Because the wrapper sits below APA/PFS, these numbers represent host/backend reads **after** PFS batching and APA translation. It does not change addressing or source semantics.
+
 ### APA
 
 APA owns physical partition-table interpretation:
@@ -44,7 +61,8 @@ APA owns physical partition-table interpretation:
 - 1024-byte header parsing/checksum;
 - linked-list traversal;
 - partition diagnostics;
-- main/sub-partition metadata.
+- main/sub-partition metadata;
+- validation that main and recorded sub-partition extents remain inside the backing device.
 
 It does not know PFS directory/file semantics.
 
@@ -78,17 +96,37 @@ It does **not** own Windows filename policy or host file creation.
 
 ### `ps2driveforge_host`
 
-The host layer intentionally knows about the destination filesystem. Current responsibilities include:
+The host layer intentionally knows about host/frontend operations rather than raw format parsing. Current responsibilities include:
 
-- recursive export;
+- recursive PFS export;
 - host path construction;
 - Windows-invalid character conversion;
 - reserved DOS device names;
 - case-insensitive collision handling;
 - cycle/depth protection;
-- cleanup of partial files after failure.
+- cleanup of partial files after failure;
+- `DriveSession` orchestration;
+- Windows read-only physical-drive discovery.
 
-This separation is important for future GUI drag/drop and Dokany work: host policy can be shared without contaminating on-disk parsing.
+This separation is important for GUI drag/drop and future Dokany work: frontends share host policy without contaminating on-disk parsing.
+
+### `DriveSession`
+
+`DriveSession` owns one opened source plus the reusable frontend operations around it:
+
+```text
+DriveSession
+  -> InstrumentedBlockDevice
+  -> APA scan result
+  -> find partition
+  -> PFS browse(partition, path)
+  -> host export(partition, path, destination)
+  -> operation / backing-I/O statistics
+```
+
+The session does **not** maintain a filesystem-global current directory. Paths remain explicit call arguments. GUI navigation state stays in the GUI; future Dokany callbacks can resolve independent paths through the same session model.
+
+The Win32 GUI and CLI now both use `DriveSession`, so one frontend cannot accidentally acquire a different PFS traversal/export implementation.
 
 ## Release-train implementation map
 
@@ -124,29 +162,28 @@ ApaVolume
 
 The reader validates inode checksum/magic, sub-part references, address overflow, descriptor ranges, directory-entry boundaries and SEGI metadata.
 
-### 0.3 Chisato: Windows browser and host export
+### 0.3 Chisato: Windows browser, host/session layer and pre-hardware hardening
 
-Current native frontend uses Win32/Common Controls:
+Implemented and CI-validated; real-HDD GUI/export validation is still pending:
 
 ```text
 Main window
   +-- TreeView      APA main partitions
   +-- ListView      PFS directory contents / metadata
-  +-- Status bar    current path + READ ONLY state
+  +-- Status bar    path + READ ONLY + backing-I/O counters
 ```
 
-The GUI owns no filesystem parser logic. Selecting a PFS partition constructs `ApaVolume` + `pfs::Reader`; navigation uses `resolve()` and `list_directory()`.
+The GUI uses `DriveSession::browse()` and `DriveSession::export_to_host()`. It no longer constructs a separate `ApaVolume`/`pfs::Reader` path or manual copy loop.
 
-Host export is reusable:
+Chisato also adds:
 
-```text
-PFS path
-  -> resolve inode
-  -> recurse directories
-  -> sanitize host filename
-  -> stream regular files
-  -> host filesystem
-```
+- read-only physical-drive discovery;
+- generated-image end-to-end validation;
+- deterministic malformed-metadata regression corpus;
+- optional APA libFuzzer target;
+- backend read instrumentation.
+
+See [`testing.md`](testing.md).
 
 ## Dependency rules
 
@@ -157,10 +194,11 @@ These are architecture invariants, not suggestions:
 3. Frontends must not reimplement APA/PFS parsing.
 4. Windows filename conversion must not alter PFS-visible names.
 5. Read-only parsing must remain usable without loading GUI code.
-6. Performance caches belong at explicit layers and must not weaken validation.
-7. Future write support must be a separate capability with backup/recovery semantics.
+6. `DriveSession` may orchestrate parser/host operations but must not become a shell-global mount/current-directory model.
+7. Instrumentation/caches must remain transparent to parser correctness and safety checks.
+8. Future write support must be a separate capability with backup/recovery semantics.
 
-If a new feature appears to require violating one of these, update the architecture deliberately rather than creating an accidental dependency.
+If a feature appears to require violating one of these, update the architecture deliberately rather than creating an accidental dependency.
 
 ## Important address units
 
@@ -186,24 +224,26 @@ See [`apa-format-notes.md`](apa-format-notes.md) and [`pfs-format-notes.md`](pfs
 
 ## Current concurrency/performance reality
 
-The API is designed so the future Dokany provider does not need a global shell mount/current directory, but the backing I/O is not yet highly concurrent.
+The API is designed so future Dokany callbacks do not require a global shell mount/current directory, but backing I/O is not yet highly concurrent.
 
 Today:
 
 ```text
-PhysicalDrive::read
-  -> per-device mutex
-  -> SetFilePointerEx
-  -> synchronous ReadFile
+DriveSession
+  -> InstrumentedBlockDevice
+    -> PhysicalDrive::read
+      -> per-device mutex
+      -> SetFilePointerEx
+      -> synchronous ReadFile
 ```
 
-and the image backend similarly serializes one `ifstream` seek/read state.
+The image backend similarly serializes one `ifstream` seek/read state.
 
-This is correct for Chisato and known to be a performance limit. See [`performance.md`](performance.md) before changing read batching, caching or Windows I/O primitives.
+This is correct for Chisato and is a known performance limit. The new counters finally make the lower-level request pattern visible. See [`performance.md`](performance.md) before changing batching, caching or Windows I/O primitives.
 
 ## Explorer integration
 
-Dokany belongs above `ps2driveforge_core`/`ps2driveforge_host`, not inside them.
+Dokany belongs above `DriveSession`/host/core, not inside format parsing.
 
 Proposed Darkness namespace:
 
@@ -222,22 +262,6 @@ The GUI may present a friendlier flat view while the filesystem provider uses ex
 
 This namespace is a design target, not a Chisato feature.
 
-## Performance direction
-
-Do not optimize by writing a custom kernel filesystem/storage driver first. Improve the user-mode path and measure it:
-
-- instrumentation counters;
-- immutable metadata/inode cache;
-- directory cache;
-- block/read-window cache;
-- sequential read-ahead;
-- larger/adaptive aligned windows;
-- coalescing within APA extents;
-- offset/overlapped Windows reads;
-- parallel read requests where the device benefits.
-
-Detailed benchmark rules live in [`performance.md`](performance.md).
-
 ## Safety invariants before write support
 
 Before a physical-disk write path exists, the project requires:
@@ -254,18 +278,18 @@ The current source-device path remains read-only end to end.
 
 ## Debugging starting points
 
-When a future hardware test fails:
-
 | Symptom | First layer to inspect |
 | --- | --- |
 | APA not detected / chain stops | `apa.cpp` + `apa-format-notes.md` |
+| valid header but impossible extent | APA extent-bounds diagnostics |
 | PFS superblock invalid | `pfs::probe()` |
 | inode checksum/magic failure | PFS metadata addressing |
 | wrong data but valid inode | zone -> sector arithmetic / SEGD-SEGI traversal |
 | only one sub-partition fails | `ApaVolume` logical extent translation |
 | directory garbage | 512-byte dentry boundary parsing |
 | export path/name failure | `ps2driveforge_host`, not PFS core |
-| slow sequential reads | `performance.md`, backing-read counters/batching |
-| GUI-only issue | Win32 frontend; reproduce through CLI/core first |
+| CLI/GUI disagreement | `DriveSession` call inputs/results first |
+| slow sequential reads | `--stats` + `performance.md` |
+| GUI-only issue | Win32 presentation; reproduce via `DriveSession`/CLI first |
 
 The goal is to identify which abstraction is wrong before adding compatibility hacks to the layer above it.
