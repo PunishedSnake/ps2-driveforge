@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -32,6 +33,22 @@ std::string format_bytes(std::uint64_t bytes)
     }
     std::ostringstream out;
     out << std::fixed << std::setprecision(unit == 0 ? 0 : 2) << value << ' ' << units[unit];
+    return out.str();
+}
+
+std::string format_time(std::uint64_t nanoseconds)
+{
+    std::ostringstream out;
+    out << std::fixed;
+    if (nanoseconds >= 1'000'000'000ULL) {
+        out << std::setprecision(3) << static_cast<double>(nanoseconds) / 1'000'000'000.0 << " s";
+    } else if (nanoseconds >= 1'000'000ULL) {
+        out << std::setprecision(3) << static_cast<double>(nanoseconds) / 1'000'000.0 << " ms";
+    } else if (nanoseconds >= 1'000ULL) {
+        out << std::setprecision(3) << static_cast<double>(nanoseconds) / 1'000.0 << " us";
+    } else {
+        out << nanoseconds << " ns";
+    }
     return out.str();
 }
 
@@ -74,23 +91,47 @@ struct ExtractRequest {
 void print_stats(const ps2hdd::SessionStats& stats)
 {
     const auto& io = stats.backing_io;
-    const auto average = io.read_calls == 0 ? 0 : io.bytes_requested / io.read_calls;
-    std::cout << "\nI/O statistics:\n"
-              << "  APA scans:             " << stats.apa_scans << '\n'
-              << "  PFS browse operations: " << stats.browse_operations << '\n'
-              << "  PFS export operations: " << stats.export_operations << '\n'
-              << "  Backing read calls:    " << io.read_calls << '\n'
-              << "  Backing bytes read:    " << format_bytes(io.bytes_requested) << '\n'
-              << "  Average backing read:  " << format_bytes(average) << '\n'
-              << "  Largest backing read:  " << format_bytes(io.largest_read) << '\n'
-              << "  Failed backing reads:  " << io.failed_reads << '\n';
+    const auto& cache = stats.cache;
+    const auto average_size = io.read_calls == 0 ? 0 : io.bytes_requested / io.read_calls;
+    const auto average_latency = io.read_calls == 0 ? 0 : io.read_time_ns / io.read_calls;
+
+    std::cout << "\nEmilia I/O statistics:\n"
+              << "  APA scans:                " << stats.apa_scans << '\n'
+              << "  PFS browse operations:    " << stats.browse_operations << '\n'
+              << "  PFS stat operations:      " << stats.stat_operations << '\n'
+              << "  PFS read operations:      " << stats.read_operations << '\n'
+              << "  PFS export operations:    " << stats.export_operations << '\n'
+              << "\nOperation wall time:\n"
+              << "  APA scan time:            " << format_time(stats.scan_time_ns) << '\n'
+              << "  Browse time:              " << format_time(stats.browse_time_ns) << '\n'
+              << "  Stat time:                " << format_time(stats.stat_time_ns) << '\n'
+              << "  Read time:                " << format_time(stats.read_time_ns) << '\n'
+              << "  Export time:              " << format_time(stats.export_time_ns) << '\n'
+              << "\nBacking BlockDevice:\n"
+              << "  Read calls:               " << io.read_calls << '\n'
+              << "  Small reads (<=4 KiB):    " << io.small_read_calls << '\n'
+              << "  Bytes requested:          " << format_bytes(io.bytes_requested) << '\n'
+              << "  Average read size:        " << format_bytes(average_size) << '\n'
+              << "  Largest read:             " << format_bytes(io.largest_read) << '\n'
+              << "  Failed reads:             " << io.failed_reads << '\n'
+              << "  Backend service time:     " << format_time(io.read_time_ns) << '\n'
+              << "  Average read latency:     " << format_time(average_latency) << '\n'
+              << "  Maximum reads in flight:  " << io.max_in_flight << '\n'
+              << "\nImmutable session caches:\n"
+              << "  PFS probe hits/misses:    " << cache.probe_hits << " / " << cache.probe_misses << '\n'
+              << "  Directory hits/misses:    " << cache.browse_hits << " / " << cache.browse_misses << '\n'
+              << "  Stat hits/misses:         " << cache.stat_hits << " / " << cache.stat_misses << '\n'
+              << "  Node hits/misses:         " << cache.node_hits << " / " << cache.node_misses << '\n'
+              << "  Cache evictions:          " << cache.evictions << '\n';
 }
 
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
 int detect_physical(unsigned max_index)
 {
     const auto probes = ps2hdd::discover_physical_drives(max_index);
-    std::cout << "Read-only Windows physical-drive discovery (0.." << (max_index == 0 ? 0 : max_index - 1) << ")\n\n";
+    std::cout << "Read-only Windows SetupAPI disk discovery"
+              << (max_index == std::numeric_limits<unsigned>::max() ? "" : " (compatibility index filter active)")
+              << "\n\n";
     std::cout << std::left << std::setw(18) << "Drive"
               << std::setw(14) << "Size"
               << std::setw(16) << "APA"
@@ -111,7 +152,8 @@ int detect_physical(unsigned max_index)
                   << std::setw(12) << probe.partition_count
                   << probe.note << '\n';
     }
-    std::cout << "\nOpenable drives: " << probes.size() << ", PS2 APA candidates: " << candidates << '\n'
+    std::cout << "\nEnumerated disk interfaces: " << probes.size()
+              << ", PS2 APA candidates: " << candidates << '\n'
               << "Discovery requests GENERIC_READ only; it never enables source writes.\n";
     return candidates == 0 ? 1 : 0;
 }
@@ -257,12 +299,12 @@ int main(int argc, char** argv)
 
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
     if (std::string_view(argv[arg]) == "--detect-physical") {
-        unsigned max_index = 32;
+        unsigned max_index = std::numeric_limits<unsigned>::max();
         if (arg + 1 < argc) {
             try {
                 max_index = static_cast<unsigned>(std::stoul(argv[arg + 1]));
             } catch (...) {
-                std::cerr << "Invalid physical discovery limit.\n";
+                std::cerr << "Invalid physical discovery index filter.\n";
                 return 2;
             }
         }
