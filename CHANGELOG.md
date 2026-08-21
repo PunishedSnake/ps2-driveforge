@@ -24,6 +24,8 @@
 - Added `DriveSession` regression tests for scan/browse/export and backing-I/O counter reset/collection.
 - Added an optional Clang/libFuzzer APA parser target (`PS2DF_BUILD_FUZZERS=ON`).
 - Expanded the normal CI suite to seven test executables; Windows/MSVC and Clang ASan+UBSan+`-Werror` both pass the complete suite.
+- Cleaned the Win32 control-ID casts so MSVC builds without DriveForge `Cxxxx` warnings.
+- Made the Win32 GUI target compile source text explicitly as UTF-8 under MSVC, fixing mojibake in punctuation used by window/status/discovery strings.
 - Windows artifacts package both the GUI and CLI inspector.
 - Expanded README into the project entry point with current limitations, source detection, statistics and developer-documentation index.
 - Added APA and PFS implementation notes documenting address units, checksums, extent translation, SEGD/SEGI behavior and directory-entry traps.
@@ -33,6 +35,11 @@
 - Added development/documentation rules so format decisions, hardware findings and non-obvious invariants are recorded alongside code changes.
 - Expanded real-hardware validation notes into reusable regression cases and explicit coverage gaps.
 - Added code comments around APA traversal/checksums, PFS zone/metadata arithmetic, SEGI traversal, dentry boundaries, host filename policy and Windows raw-disk serialization.
+- Hardware-validated Chisato on a 149.05 GiB APA v2 HDD: read-only discovery found `PhysicalDrive3` as the sole PS2 APA candidate with 190 headers; full scan and GUI reported clean diagnostics and 43 main partitions.
+- Recorded the first real-HDD backing-I/O baseline for `+OPL` browse: 215 backing reads / 206.50 KiB, 983 B average, 1 KiB largest, zero failed reads.
+- Hardware-validated recursive export of the real `+OPL` directory tree.
+- Hardware-validated regular-file extraction from `__common:/OPL/conf_hdd.cfg` (20 bytes, SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`).
+- Real-HDD PFS SEGI traversal remains an explicit coverage gap because this test disk stores its large content as HDL game partitions; deterministic generated-image SEGI coverage remains green.
 - Source HDD/image access remains read-only.
 
 ## 0.2.0-dev "Bocchi" - 2026-08-20
