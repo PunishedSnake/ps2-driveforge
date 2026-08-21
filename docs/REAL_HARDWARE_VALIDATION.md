@@ -66,8 +66,6 @@ DIR     512 B         0         544           APPS
 
 ## 0.3.0-dev "Chisato" — hardware validated
 
-Chisato validated the shared `DriveSession`, GUI browser, physical discovery, recursive exporter, generated-image hardening, and backing-I/O instrumentation.
-
 ### Physical discovery and scan
 
 The original Chisato discovery pass observed:
@@ -87,12 +85,6 @@ The full scan completed without fatal APA diagnostics. Observed PFS partitions r
 
 ### `+OPL` backing-I/O baseline
 
-```powershell
-ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
-```
-
-Recorded baseline:
-
 ```text
 APA scans:             1
 PFS browse operations: 1
@@ -106,7 +98,7 @@ Failed backing reads:  0
 
 This is a correctness/performance baseline for later Emilia work, not a benchmark claim against pfsshell/pfsfuse.
 
-### GUI and recursive export
+### GUI/export validation
 
 The native GUI opened the disk read-only, displayed the partition tree, browsed `+OPL`, retained explicit `READ ONLY` status, and showed cumulative backing reads.
 
@@ -123,10 +115,6 @@ exported-OPL\
   APPS\
 ```
 
-The observed directories were empty, so this case validates traversal/host-directory creation but not payload bytes.
-
-### Real regular-file export
-
 A real non-empty file was extracted from:
 
 ```text
@@ -136,17 +124,15 @@ content: hdd_partition=+OPL\r\n
 SHA-256: E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
 ```
 
-The supplied artifact was independently re-hashed and matched the recorded value.
+The supplied artifact was independently re-hashed and matched.
 
 ### Remaining real-hardware coverage gap: PFS SEGI
 
-The disk does not contain a suitable large/fragmented **PFS** file; its large content is stored as HDL game partitions. Therefore direct real-HDD PFS SEGI traversal is still not observed. SEGI plus APA main/sub crossing remain protected by the deterministic generated sparse-image E2E test.
+The disk does not contain a suitable large/fragmented **PFS** file; large content is stored as HDL game partitions. Direct real-HDD PFS SEGI remains unobserved. SEGI plus APA main/sub crossing remain protected by deterministic generated-image E2E.
 
-This gap did not block Chisato and does not block Darkness because the missing case has end-to-end synthetic coverage and is explicitly documented rather than treated as hardware-proven.
+This explicit gap does not block Darkness because the missing case has end-to-end synthetic coverage.
 
-## 0.4.0-dev "Darkness" — CLI/Dokany path hardware validated
-
-Darkness adds the read-only Dokany Explorer filesystem and Windows 11 host-UI work.
+## 0.4.0-dev "Darkness" — standalone/shared Dokany path hardware validated
 
 ### Native GUI theme
 
@@ -157,97 +143,98 @@ Observed on Windows 11:
 - the physical HDD remains browseable while themes change;
 - source access semantics are unchanged.
 
-### First Dokany attempt and root-open regression
+### Initial mount regression
 
-The first `PhysicalDrive3 -> P:` mount successfully registered the drive letter, but Explorer initially reported:
+The first `PhysicalDrive3 -> P:` mount registered successfully, but Explorer initially reported:
 
 ```text
 P:\ is not accessible.
 The file exists.
 ```
 
-The cause was a frontend contract bug: Dokany `ZwCreateFile` passes NT kernel `FILE_*` create-disposition values, but the first adapter compared them with Win32 `CreateFileW` constants. `FILE_OPEN == 1` was therefore mistaken for `CREATE_NEW == 1`, returning `STATUS_OBJECT_NAME_COLLISION` for an existing root.
+Cause: Dokany `ZwCreateFile` passes NT `FILE_*` create dispositions, while the first adapter compared them with Win32 `CreateFileW` constants. `FILE_OPEN == 1` was mistaken for `CREATE_NEW == 1`, returning `STATUS_OBJECT_NAME_COLLISION` for the root.
 
-The corrected policy models NT dispositions explicitly and has a portable regression test under both MSVC and Linux sanitizers.
+The corrected policy models NT dispositions explicitly and has portable regression coverage under MSVC and Linux sanitizers.
 
 ### Corrected real-HDD Explorer mount — passed
 
-After the fix, the same physical HDD mounted read-only as `P:` and the complete CLI-driven Darkness smoke test passed.
-
 Observed successfully:
 
-- `P:` registered and appeared as **PS2 DriveForge (P:)** / `PS2PFS`;
-- Windows reported the physical capacity at roughly **149 GiB**;
-- the read-only view intentionally reported **0 bytes free**;
+- `P:` appeared as PS2 DriveForge / `PS2PFS`;
+- Windows reported roughly 149 GiB total size and intentionally 0 bytes free for the read-only view;
 - `P:\` opened normally;
-- `P:\Partitions` enumerated the exposed PFS namespace;
-- `P:\Partitions\+OPL` enumerated `CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`;
-- `P:\Partitions\__common\OPL` resolved successfully;
-- Explorer copied `conf_hdd.cfg` through the mounted filesystem;
-- the mounted copy was exactly 20 bytes and matched SHA-256:
-  `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
+- `P:\Partitions` enumerated;
+- `P:\Partitions\+OPL` showed `CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`;
+- `P:\Partitions\__common\OPL` resolved;
+- Explorer copied `conf_hdd.cfg` through the mount;
+- the mounted copy was 20 bytes with SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
 - creating `write-test.txt` was rejected;
-- `DOKAN_OPTION_WRITE_PROTECT` stopped the create before any writable source path could exist;
-- callback-level mutation rejection remains a second barrier;
-- the project still has no `BlockDevice::write()` API;
-- `PhysicalDrive` still requests `GENERIC_READ` only;
+- Dokany write-protect stopped creation before any source write path;
+- callback-level mutation rejection remained active;
+- the project still had no `BlockDevice::write()` API;
+- `PhysicalDrive` still requested `GENERIC_READ` only;
 - unmount completed cleanly and the drive letter disappeared.
 
-The observed end-to-end read path is therefore hardware validated:
+Validated end-to-end path:
 
 ```text
 PhysicalDrive3 / GENERIC_READ
-        -> APA v2
-        -> PFS
-        -> DriveSession
-        -> ReadOnlyMountView
-        -> DokanyMountController callbacks
-        -> Windows Explorer
-        -> copied host file
-        -> matching SHA-256
+ -> APA v2
+ -> PFS
+ -> DriveSession
+ -> ReadOnlyMountView
+ -> DokanyMountController
+ -> Explorer
+ -> copied host file
+ -> matching SHA-256
 ```
 
-### Final Darkness hardware gate: integrated GUI workflow
+## Final Darkness merge gate: integrated GUI workflow
 
-After the successful CLI-driven mount, Darkness was refactored so the native GUI and standalone mount CLI share one `DokanyMountController`. Windows disk discovery was also changed from a fixed visible `PhysicalDrive0..31` probe list to SetupAPI enumeration of actual `GUID_DEVINTERFACE_DISK` devices, mapped to their real physical-drive numbers with `IOCTL_STORAGE_GET_DEVICE_NUMBER` before the normal read-only APA probe.
+After the successful standalone/shared-controller mount, Darkness added the final Windows workflow:
 
-The remaining pre-merge hardware test is specifically this new integrated UX:
+- SetupAPI enumeration of actual `GUID_DEVINTERFACE_DISK` devices instead of a fixed visible `PhysicalDrive0..31` list;
+- `IOCTL_STORAGE_GET_DEVICE_NUMBER` mapping to the real raw-disk number;
+- normal DriveForge read-only APA classification;
+- controlled UAC relaunch with cancellation fallback;
+- automatic startup discovery and one-candidate auto-open;
+- direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` using the same `DokanyMountController` as the CLI;
+- automatic free-drive-letter selection preferring `P:`.
+
+This exact integrated path is the only remaining hardware blocker before PR #5 can merge:
 
 1. launch `PS2-DriveForge.exe` as a normal user;
-2. confirm one controlled UAC relaunch and no elevation loop;
-3. confirm SetupAPI startup discovery finds the PS2 HDD without the old fixed PhysicalDrive list;
-4. with one PS2 candidate, confirm it opens automatically and reports approximately 149.05 GiB / APA v2 / 43 main partitions;
-5. use `File -> Mount read-only` and confirm a free drive letter is selected automatically (prefer `P:`);
-6. use `Open mounted volume in Explorer` and recheck `Partitions\+OPL` plus `Partitions\__common\OPL`;
-7. optionally repeat the known `conf_hdd.cfg` SHA-256 check;
-8. confirm write/create/rename/delete remain rejected;
-9. use the GUI `Unmount` command and confirm clean removal of the mount;
-10. run `Rescan PS2 HDDs` and confirm discovery does not silently replace an already-open source;
-11. once, cancel UAC and confirm the limited process remains capable of image-file use, with `Restart as Administrator` available to regain raw-disk access;
-12. if practical, occupy `P:` and verify automatic fallback to another free drive letter.
+2. confirm one UAC relaunch and no loop;
+3. confirm startup SetupAPI discovery finds the PS2 HDD with no old fixed list;
+4. confirm the sole candidate auto-opens with approximately 149.05 GiB / APA v2 / 43 main partitions;
+5. mount from the GUI and confirm a free drive letter is selected automatically;
+6. open the mount from the GUI and browse known PFS paths;
+7. confirm write/create/rename/delete remain rejected;
+8. unmount from the GUI and confirm clean drive-letter removal;
+9. rescan and confirm an already-open source is not silently replaced;
+10. once cancel UAC and confirm image-capable limited mode remains usable, with manual restart-as-admin recovery;
+11. if practical, occupy `P:` and verify fallback to another free letter.
 
-Passing this integrated workflow is the final hardware blocker before Darkness is marked complete and merged.
+Passing this list closes 0.4 hardware validation.
 
 ## Emilia baseline handoff
 
-Before starting 0.5 Emilia, preserve the final Darkness Explorer workload:
+Preserve the final successful Darkness workload:
 
 ```text
 cold GUI start
  -> discovery/open
  -> mount
- -> P:\
- -> P:\Partitions
+ -> root
+ -> Partitions
  -> +OPL
  -> __common\OPL
  -> read/copy conf_hdd.cfg
  -> unmount
 ```
 
-Explorer issues many repeated metadata/open/enumeration callbacks. That observed workload, together with existing backing-I/O counters and the 215-read Chisato browse baseline, is the reference for measuring inode/directory/block caching, read-ahead, request coalescing, and overlapped physical I/O in Emilia.
+Explorer issues many repeated metadata/open/enumeration callbacks. This workload plus existing backing-I/O counters and the 215-read Chisato browse baseline is the reference for 0.5 Emilia.
 
-## When to update this document
+## Update rule
 
-Update this file whenever real hardware validates or disproves assumptions about APA/PFS layout, SEGD/SEGI traversal, directory parsing, sub-partition addressing, GUI/Dokany visibility, extraction/copy correctness, device discovery/elevation, mount lifecycle, backing-I/O behavior, or future write/recovery semantics.
-
-If a hardware failure changes interpretation or frontend policy, add a deterministic regression test and update the relevant format/testing/architecture note in the same change.
+When hardware validates or disproves an APA/PFS, discovery/elevation, GUI/Dokany, extraction/copy, mount-lifecycle, or performance assumption, update this file and add a deterministic regression where possible. Hardware and synthetic evidence must remain explicitly distinguished.
