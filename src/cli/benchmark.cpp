@@ -75,7 +75,7 @@ void print_storage_profile(const ps2hdd::StorageCharacteristics& storage)
         std::cout << "unknown\n";
     }
     std::cout << "  nominal rotation rate:  ";
-    if (storage.rotation_rate_known) {
+    if (storage.nominal_rotation_rate_known) {
         if (storage.nominal_rotation_rate == 1) {
             std::cout << "non-rotating\n";
         } else {
