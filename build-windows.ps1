@@ -126,6 +126,7 @@ if (-not $SkipTests) {
         'ps2-driveforge-read-cache-tests.exe',
         'ps2-driveforge-read-ahead-tests.exe',
         'ps2-driveforge-partition-catalog-tests.exe',
+        'ps2-driveforge-storage-profile-tests.exe',
         'ps2-driveforge-dokany-open-policy-tests.exe',
         'ps2-driveforge-darkness-policy-tests.exe'
     )) {
