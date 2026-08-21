@@ -3,12 +3,14 @@
 #include "ps2hdd/pfs.hpp"
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -51,6 +53,45 @@ public:
 private:
     std::uint64_t size_;
     std::map<std::uint64_t, std::vector<std::byte>> chunks_;
+};
+
+class CountingLinearDevice final : public ps2hdd::BlockDevice {
+public:
+    explicit CountingLinearDevice(std::size_t size) : bytes_(size) {}
+
+    [[nodiscard]] std::uint64_t size_bytes() const override { return bytes_.size(); }
+    [[nodiscard]] std::string display_name() const override { return "pfs-coalescing-fixture"; }
+
+    bool read(std::uint64_t offset, std::span<std::byte> out) override
+    {
+        if (offset > bytes_.size() || out.size() > bytes_.size() - static_cast<std::size_t>(offset)) {
+            return false;
+        }
+        std::memcpy(out.data(), bytes_.data() + static_cast<std::size_t>(offset), out.size());
+        reads_.emplace_back(offset, out.size());
+        return true;
+    }
+
+    void fill(std::uint64_t offset, std::size_t size, std::byte seed)
+    {
+        if (offset > bytes_.size() || size > bytes_.size() - static_cast<std::size_t>(offset)) {
+            throw std::runtime_error("coalescing fixture fill out of range");
+        }
+        for (std::size_t i = 0; i < size; ++i) {
+            bytes_[static_cast<std::size_t>(offset) + i] =
+                static_cast<std::byte>((std::to_integer<unsigned>(seed) + i) & 0xFFU);
+        }
+    }
+
+    void clear_reads() { reads_.clear(); }
+    [[nodiscard]] const std::vector<std::pair<std::uint64_t, std::size_t>>& reads() const noexcept
+    {
+        return reads_;
+    }
+
+private:
+    std::vector<std::byte> bytes_;
+    std::vector<std::pair<std::uint64_t, std::size_t>> reads_;
 };
 
 ps2hdd::apa::Header make_header(const char* id, std::uint16_t type, std::uint32_t start,
@@ -175,12 +216,68 @@ void cross_sector_file_read()
     }
 }
 
+void adjacent_descriptor_coalescing()
+{
+    constexpr std::uint32_t partition_lba = 0x1000;
+    constexpr std::uint32_t zone_size = 4096;
+    constexpr std::uint32_t first_zone = 10;
+    constexpr std::size_t request_bytes = 2U * zone_size;
+
+    CountingLinearDevice device(64U * 1024U * 1024U);
+    ps2hdd::apa::Partition partition;
+    partition.id = "+TEST";
+    partition.type = ps2hdd::apa::kTypePfs;
+    partition.start_lba = partition_lba;
+    partition.length_sectors = 0x10000;
+    partition.total_sectors = partition.length_sectors;
+
+    ps2hdd::ApaVolume volume(device, partition);
+    ps2hdd::pfs::ProbeResult probe;
+    probe.valid = true;
+    probe.super.magic = ps2hdd::pfs::kSuperMagic;
+    probe.super.version = 3;
+    probe.super.zone_size = zone_size;
+    probe.super.num_subs = 0;
+
+    const auto partition_base =
+        static_cast<std::uint64_t>(partition_lba) * ps2hdd::apa::kSectorSize;
+    device.fill(partition_base + static_cast<std::uint64_t>(first_zone) * zone_size,
+                request_bytes, std::byte{0x31});
+
+    ps2hdd::pfs::Node node;
+    node.inode.size = request_bytes;
+    node.inode.number_data = 3;
+    node.inode.data[0] = {1, 0, 1};
+    node.inode.data[1] = {first_zone, 0, 1};
+    node.inode.data[2] = {first_zone + 1, 0, 1};
+
+    ps2hdd::pfs::Reader reader(volume, probe);
+    std::array<std::byte, request_bytes> data{};
+    device.clear_reads();
+    check(reader.read(node, 0, data), "adjacent two-zone PFS read succeeds");
+    check(device.reads().size() == 1,
+          "adjacent PFS descriptors are coalesced into one backing request");
+    check(device.reads().front().second == request_bytes,
+          "coalesced request spans both adjacent zones");
+
+    node.inode.data[2] = {first_zone + 2, 0, 1};
+    device.fill(partition_base + static_cast<std::uint64_t>(first_zone + 2) * zone_size,
+                zone_size, std::byte{0x73});
+    device.clear_reads();
+    check(reader.read(node, 0, data), "non-contiguous two-zone PFS read succeeds");
+    check(device.reads().size() == 2,
+          "non-contiguous PFS descriptors remain separate backing requests");
+    check(device.reads()[0].second == zone_size && device.reads()[1].second == zone_size,
+          "non-contiguous descriptors preserve exact zone-sized reads");
+}
+
 } // namespace
 
 int main()
 {
     try {
         cross_sector_file_read();
+        adjacent_descriptor_coalescing();
         std::cout << "PFS file read tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
