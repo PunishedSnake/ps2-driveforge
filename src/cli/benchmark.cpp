@@ -1,5 +1,6 @@
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/hdl.hpp"
 #include "ps2hdd/version.hpp"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
 #include "ps2hdd/physical_drive.hpp"
@@ -111,9 +112,9 @@ void usage()
     std::cout << "PS2 DriveForge " << ps2hdd::version::string << "-dev ("
               << ps2hdd::version::codename << ") performance harness\n\n"
               << "Usage:\n"
-              << "  ps2-driveforge-benchmark <disk-image> [--browse <partition> [path]]\n"
+              << "  ps2-driveforge-benchmark <disk-image> [--hdl] [--browse <partition> [path]]\n"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
-              << "  ps2-driveforge-benchmark --physical <index> [--browse <partition> [path]]\n"
+              << "  ps2-driveforge-benchmark --physical <index> [--hdl] [--browse <partition> [path]]\n"
 #endif
               << "\nThe harness is read-only. Cold and warm metadata workloads are reported separately.\n";
 }
@@ -138,6 +139,18 @@ bool metadata_workload(ps2hdd::DriveSession& session, const BrowseTarget& target
         }
     }
     return true;
+}
+
+void print_hdl_summary(const ps2hdd::hdl::CatalogResult& catalog)
+{
+    std::cout << "  games discovered:       " << catalog.entries.size() << '\n'
+              << "  readable/unreadable:    " << catalog.readable << '/' << catalog.unreadable << '\n';
+    for (const auto& entry : catalog.entries) {
+        if (!entry.ok) {
+            std::cout << "  unreadable HDL:         " << entry.game.partition_id
+                      << " (" << entry.error << ")\n";
+        }
+    }
 }
 
 } // namespace
@@ -183,18 +196,32 @@ int main(int argc, char** argv)
         ++arg;
     }
 
+    bool run_hdl = false;
     std::optional<BrowseTarget> target;
-    if (arg < argc) {
-        if (std::string_view(argv[arg]) != "--browse" || arg + 1 >= argc || arg + 3 < argc) {
-            usage();
-            return 2;
+    while (arg < argc) {
+        const std::string_view option(argv[arg]);
+        if (option == "--hdl") {
+            run_hdl = true;
+            ++arg;
+            continue;
         }
-        BrowseTarget request;
-        request.partition = argv[arg + 1];
-        if (arg + 2 < argc) {
-            request.path = argv[arg + 2];
+        if (option == "--browse") {
+            if (target || arg + 1 >= argc) {
+                usage();
+                return 2;
+            }
+            BrowseTarget request;
+            request.partition = argv[arg + 1];
+            arg += 2;
+            if (arg < argc && std::string_view(argv[arg]).starts_with("--") == false) {
+                request.path = argv[arg];
+                ++arg;
+            }
+            target = std::move(request);
+            continue;
         }
-        target = std::move(request);
+        usage();
+        return 2;
     }
 
     print_storage_profile(source->storage_characteristics());
@@ -222,6 +249,23 @@ int main(int argc, char** argv)
               << "  HDL bytes:              " << format_bytes(catalog.hdl_bytes) << '\n'
               << "  PFS bytes:              " << format_bytes(catalog.pfs_bytes) << '\n'
               << "  free bytes:             " << format_bytes(catalog.free_bytes) << '\n';
+
+    if (run_hdl) {
+        session.clear_caches();
+        session.reset_stats();
+        const auto hdl_cold_started = Clock::now();
+        const auto hdl_cold = ps2hdd::hdl::read_catalog(session.device(), session.scan_result());
+        const auto hdl_cold_wall = elapsed_ns(hdl_cold_started);
+        print_io("cold native HDL metadata enrichment", session.stats(), hdl_cold_wall);
+        print_hdl_summary(hdl_cold);
+
+        session.reset_stats();
+        const auto hdl_warm_started = Clock::now();
+        const auto hdl_warm = ps2hdd::hdl::read_catalog(session.device(), session.scan_result());
+        const auto hdl_warm_wall = elapsed_ns(hdl_warm_started);
+        print_io("warm native HDL metadata enrichment", session.stats(), hdl_warm_wall);
+        print_hdl_summary(hdl_warm);
+    }
 
     if (!target) {
         return 0;
