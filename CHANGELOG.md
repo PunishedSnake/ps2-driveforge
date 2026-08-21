@@ -33,7 +33,7 @@
 - Added direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` actions.
 - Added automatic free-drive-letter selection for GUI mounts, preferring `P:` and falling back to another free data-drive letter.
 - Retained `PS2-DriveForge-Mount.exe` as a thin diagnostic/script frontend over the shared controller.
-- Added portable Darkness GUI/mount policy regression coverage for one-candidate auto-open behavior, source-preserving rescan behavior, `P:` preference, occupied-letter fallback, and exhaustion of `D:`-`Z:`.
+- Added portable Darkness GUI/mount policy coverage for one-candidate auto-open behavior, source-preserving rescan behavior, `P:` preference, occupied-letter fallback, and exhaustion of `D:`-`Z:`.
 - Expanded the normal regression matrix to **nine** test executables; Linux Clang ASan/UBSan and Windows/MSVC + Dokany remain the merge gates.
 - Recorded the corrected real-HDD Dokany mount, mounted copy/hash integrity, write rejection and clean unmount in `REAL_HARDWARE_VALIDATION.md`.
 - Defined the final Darkness-to-Emilia Explorer workload so metadata/open/enumeration behavior can be compared before and after 0.5 caching/read-ahead/overlapped-I/O work.
