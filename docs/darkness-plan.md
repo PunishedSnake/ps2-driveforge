@@ -35,7 +35,7 @@ The native Windows GUI also supports persistent System/Light/Dark themes with Hi
 12. **Done / CI-built:** direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` commands.
 13. **Done:** automatic free-drive-letter selection preferring `P:` and avoiding letters below `D:`.
 14. **Done:** portable NT `ZwCreateFile` policy regression protects the original root-open bug.
-15. **Done:** portable Darkness GUI/mount policy regression protects one-candidate auto-open and deterministic free-letter fallback/exhaustion behavior.
+15. **Done:** portable Darkness GUI/mount policy regression records and tests the required one-candidate auto-open and free-letter fallback/exhaustion behavior independently from SetupAPI/Dokany runtime state.
 16. **Done:** Windows CI pins/verifies/installs Dokany 2.3.1 SDK/runtime and packages GUI, inspector, mount CLI, docs, and all nine regression tests.
 17. **Done:** CLI-driven real-HDD Dokany path validates Explorer browse, known-file copy/hash, write rejection, and clean unmount.
 18. **Pending hardware gate:** validate the final integrated GUI elevation/discovery/mount workflow on the real PS2 HDD.
@@ -60,8 +60,6 @@ The device-interface handle used to obtain `STORAGE_DEVICE_NUMBER` requests no d
 
 DriveForge deliberately does not use a global `requireAdministrator` manifest because image browsing does not need elevation.
 
-Normal startup:
-
 ```text
 normal user
   -> ShellExecuteExW("runas", --elevated-relaunch)
@@ -69,7 +67,7 @@ normal user
   -> SetupAPI discovery
 ```
 
-The marker prevents relaunch loops. If UAC is cancelled, the original GUI remains running in limited mode so image files still work. `Restart as Administrator` can recover raw-disk access later.
+The marker prevents relaunch loops. Cancelling UAC leaves the original GUI running in limited image-capable mode. `Restart as Administrator` can recover raw-disk access later.
 
 ## Shared mount controller
 
@@ -99,33 +97,22 @@ The controller owns source lifetime, `DokanMain`, callbacks, mount/unmount state
 
 `ZwCreateFile` receives NT kernel `FILE_*` dispositions, not Win32 `CreateFileW` constants. The first physical mount exposed this because `FILE_OPEN == 1` was interpreted as Win32 `CREATE_NEW == 1`, returning a root collision and Explorer's **"The file exists."** message.
 
-The adapter now models:
-
-```text
-0 FILE_SUPERSEDE
-1 FILE_OPEN
-2 FILE_CREATE
-3 FILE_OPEN_IF
-4 FILE_OVERWRITE
-5 FILE_OVERWRITE_IF
-```
-
-and a portable regression runs under both MSVC and Linux sanitizer CI.
+The adapter now models the NT values explicitly and a portable regression runs under both MSVC and Linux sanitizer CI.
 
 ## Windows theme policy
 
 - `View -> Theme -> System / Light / Dark` persists per user.
 - System follows Windows' application theme preference.
 - High Contrast overrides DriveForge theme choices.
-- Client area, TreeView, ListView/header, status area, and Windows 11 titlebar receive dark-mode handling.
-- optional UxTheme helpers are best-effort only; failure falls back instead of blocking startup.
-- theme code remains entirely above storage/session/parser layers.
+- client area, TreeView, ListView/header, status area, and Windows 11 titlebar receive dark-mode handling;
+- optional UxTheme helpers are best-effort only;
+- theme code remains above storage/session/parser layers.
 
 ## Performance boundary and Emilia handoff
 
 Darkness targets filesystem correctness and stable Explorer behavior. Caching, read-ahead, request coalescing, and overlapped physical I/O are intentionally 0.5 Emilia work.
 
-The final Darkness workload to preserve before merge is:
+Final workload to preserve before merge:
 
 ```text
 cold GUI start
@@ -139,7 +126,7 @@ cold GUI start
  -> unmount
 ```
 
-Explorer's repeated create/open/stat/enumeration pattern is the real workload Emilia should optimize. Existing CLI instrumentation plus the Chisato 215-read browse baseline provide the lower-level reference.
+Explorer's repeated create/open/stat/enumeration pattern is the real workload Emilia should optimize. Existing backing-I/O counters plus the Chisato 215-read browse baseline provide the lower-level reference.
 
 ## Hardware validation progress
 
