@@ -11,9 +11,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ps2hdd {
@@ -53,8 +55,19 @@ struct ReadResult {
     std::size_t bytes_read{};
 };
 
+struct SessionCacheStats {
+    std::uint64_t browse_hits{};
+    std::uint64_t browse_misses{};
+    std::uint64_t stat_hits{};
+    std::uint64_t stat_misses{};
+    std::uint64_t node_hits{};
+    std::uint64_t node_misses{};
+    std::uint64_t evictions{};
+};
+
 struct SessionStats {
     BlockIoStats backing_io{};
+    SessionCacheStats cache{};
     std::uint64_t apa_scans{};
     std::uint64_t browse_operations{};
     std::uint64_t stat_operations{};
@@ -72,9 +85,10 @@ struct SessionStats {
 // CLI command, and Dokany callbacks can resolve independent paths against the
 // same validated APA scan.
 //
-// Darkness calls stat/read/browse concurrently from Dokany worker threads. The
-// format readers remain per-call objects while the shared backing device handles
-// serialization where required; operation counters therefore use atomics.
+// Emilia keeps immutable metadata results across calls because every current
+// source is read-only. Caches are bounded and guarded independently from the
+// backing device so repeated Explorer stat/enumeration traffic can be served
+// without turning DriveSession into process-global filesystem state.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -100,12 +114,23 @@ public:
 
     [[nodiscard]] SessionStats stats() const noexcept;
     void reset_stats() noexcept;
+    void clear_caches();
 
 private:
+    static constexpr std::size_t kMaxBrowseCacheEntries = 1024;
+    static constexpr std::size_t kMaxStatCacheEntries = 8192;
+    static constexpr std::size_t kMaxNodeCacheEntries = 8192;
+
     std::unique_ptr<BlockDevice> source_;
     InstrumentedBlockDevice instrumented_;
     apa::ScanResult scan_{};
     std::string last_error_;
+
+    mutable std::shared_mutex cache_mutex_;
+    std::unordered_map<std::string, BrowseResult> browse_cache_;
+    std::unordered_map<std::string, StatResult> stat_cache_;
+    std::unordered_map<std::string, pfs::Node> node_cache_;
+
     std::atomic<std::uint64_t> apa_scans_{};
     std::atomic<std::uint64_t> browse_operations_{};
     std::atomic<std::uint64_t> stat_operations_{};
@@ -116,6 +141,13 @@ private:
     std::atomic<std::uint64_t> stat_time_ns_{};
     std::atomic<std::uint64_t> read_time_ns_{};
     std::atomic<std::uint64_t> export_time_ns_{};
+    std::atomic<std::uint64_t> browse_cache_hits_{};
+    std::atomic<std::uint64_t> browse_cache_misses_{};
+    std::atomic<std::uint64_t> stat_cache_hits_{};
+    std::atomic<std::uint64_t> stat_cache_misses_{};
+    std::atomic<std::uint64_t> node_cache_hits_{};
+    std::atomic<std::uint64_t> node_cache_misses_{};
+    std::atomic<std::uint64_t> cache_evictions_{};
 };
 
 } // namespace ps2hdd
