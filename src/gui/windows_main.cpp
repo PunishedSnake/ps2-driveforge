@@ -2,10 +2,9 @@
 #define NOMINMAX
 #endif
 
-#include "ps2hdd/apa.hpp"
-#include "ps2hdd/apa_volume.hpp"
+#include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
-#include "ps2hdd/pfs.hpp"
+#include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/version.hpp"
 
@@ -19,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -33,8 +31,9 @@ constexpr wchar_t kWindowClass[] = L"PS2DriveForgeMainWindow";
 constexpr UINT kIdOpenImage = 100;
 constexpr UINT kIdExit = 101;
 constexpr UINT kIdAbout = 102;
+constexpr UINT kIdDetectPhysical = 103;
 constexpr UINT kIdPhysicalBase = 200;
-constexpr UINT kPhysicalCount = 16;
+constexpr UINT kPhysicalCount = 32;
 constexpr int kTreeId = 1000;
 constexpr int kListId = 1001;
 constexpr int kStatusId = 1002;
@@ -87,14 +86,6 @@ std::string parent_pfs_path(std::string_view path)
     return pos == std::string_view::npos ? std::string{} : std::string(path.substr(0, pos));
 }
 
-struct VisibleEntry {
-    ps2hdd::pfs::DirectoryEntry entry;
-    std::uint64_t size{};
-    bool inode_readable{};
-    bool directory{};
-    bool regular{};
-};
-
 class App {
 public:
     explicit App(HWND window) : window_(window) {}
@@ -111,7 +102,7 @@ public:
                                     LVS_SHOWSELALWAYS | LVS_SINGLESEL,
                                 0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kListId),
                                 GetModuleHandleW(nullptr), nullptr);
-        status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"No PS2 HDD opened",
+        status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"No PS2 HDD opened — READ ONLY",
                                   WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
                                   0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kStatusId),
                                   GetModuleHandleW(nullptr), nullptr);
@@ -121,7 +112,7 @@ public:
         SetWindowTheme(tree_, L"Explorer", nullptr);
         SetWindowTheme(list_, L"Explorer", nullptr);
 
-        add_column(0, L"Name", 260);
+        add_column(0, L"Name", 280);
         add_column(1, L"Type", 90);
         add_column(2, L"Size", 110);
         add_column(3, L"Sub", 70);
@@ -154,25 +145,56 @@ public:
             return false;
         }
 
-        auto device = std::make_unique<ps2hdd::FileBlockDevice>(std::filesystem::path(path.data()));
-        if (!device->is_open()) {
+        auto source = std::make_unique<ps2hdd::FileBlockDevice>(std::filesystem::path(path.data()));
+        if (!source->is_open()) {
             message(L"Could not open the selected disk image.", MB_ICONERROR);
             return false;
         }
-        return load_device(std::move(device));
+        return load_device(std::move(source));
     }
 
     bool open_physical(unsigned index)
     {
-        auto device = std::make_unique<ps2hdd::PhysicalDrive>(index);
-        if (!device->is_open()) {
+        auto source = std::make_unique<ps2hdd::PhysicalDrive>(index);
+        if (!source->is_open()) {
             std::wostringstream text;
             text << L"Could not open \\\\.\\PhysicalDrive" << index
                  << L" for read-only access.\n\nRun DriveForge as Administrator if required.";
             message(text.str(), MB_ICONERROR);
             return false;
         }
-        return load_device(std::move(device));
+        return load_device(std::move(source));
+    }
+
+    void detect_physical()
+    {
+        const auto probes = ps2hdd::discover_physical_drives(kPhysicalCount);
+        std::wostringstream text;
+        std::size_t candidates = 0;
+        for (const auto& probe : probes) {
+            if (!probe.apa_detected) {
+                continue;
+            }
+            ++candidates;
+            text << L"PhysicalDrive" << probe.index << L" — " << format_bytes(probe.size_bytes)
+                 << L" — APA v" << probe.apa_version << L" — " << probe.partition_count << L" headers";
+            if (!probe.apa_clean) {
+                text << L" — DIAGNOSTIC ERRORS";
+            }
+            text << L'\n';
+        }
+
+        if (candidates == 0) {
+            text << L"No PS2 APA disk was detected among openable PhysicalDrive0.."
+                 << (kPhysicalCount - 1) << L".\n\n"
+                 << L"If the expected disk is missing, run DriveForge as Administrator and verify that Windows can see the device.";
+        } else {
+            text << L"\nDetected " << candidates << L" PS2 APA candidate"
+                 << (candidates == 1 ? L"." : L"s.")
+                 << L"\n\nOpen the desired disk from File -> Open physical drive.\n"
+                 << L"Discovery and opening both request GENERIC_READ only.";
+        }
+        message(text.str(), MB_ICONINFORMATION);
     }
 
     void tree_selection_changed(const NMTREEVIEWW& notification)
@@ -183,38 +205,35 @@ public:
             return;
         }
         const std::size_t index = data - 1;
-        if (index >= main_partitions_.size()) {
-            return;
+        if (index < main_partitions_.size()) {
+            open_partition(main_partitions_[index]);
         }
-        open_partition(main_partitions_[index]);
     }
 
     void list_double_click()
     {
-        if (!pfs_) {
+        if (!session_ || !active_partition_) {
             return;
         }
         const int selected = ListView_GetNextItem(list_, -1, LVNI_SELECTED);
         if (selected < 0) {
             return;
         }
-
-        if (!active_path_.empty()) {
-            if (selected == 0) {
-                navigate(parent_pfs_path(active_path_));
-                return;
-            }
+        if (!active_path_.empty() && selected == 0) {
+            navigate(parent_pfs_path(active_path_));
+            return;
         }
+
         const std::size_t offset = active_path_.empty() ? 0U : 1U;
         const std::size_t entry_index = static_cast<std::size_t>(selected) - offset;
         if (entry_index >= visible_entries_.size()) {
             return;
         }
-        const auto& visible = visible_entries_[entry_index];
-        if (visible.directory) {
-            navigate(join_pfs_path(active_path_, visible.entry.name));
-        } else if (visible.regular) {
-            extract_entry(visible);
+        const auto& entry = visible_entries_[entry_index];
+        if (entry.is_directory()) {
+            navigate(join_pfs_path(active_path_, entry.name));
+        } else if (entry.is_regular()) {
+            extract_entry(entry);
         }
     }
 
@@ -224,6 +243,7 @@ public:
         text << L"PS2 DriveForge " << widen(ps2hdd::version::string) << L"-dev ("
              << widen(ps2hdd::version::codename) << L")\n\n"
              << L"Native read-only APA/PFS browser for PlayStation 2 HDDs.\n\n"
+             << L"The GUI and CLI share the same DriveSession/PFS reader/export path.\n"
              << L"Physical drives are opened with GENERIC_READ only.";
         message(text.str(), MB_ICONINFORMATION);
     }
@@ -246,30 +266,39 @@ private:
 
     void set_status(std::wstring_view text)
     {
-        SendMessageW(status_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(std::wstring(text).c_str()));
+        const std::wstring copy(text);
+        SendMessageW(status_, SB_SETTEXTW, 0, reinterpret_cast<LPARAM>(copy.c_str()));
     }
 
-    bool load_device(std::unique_ptr<ps2hdd::BlockDevice> candidate)
+    std::wstring io_suffix() const
     {
-        ps2hdd::apa::Reader reader(*candidate);
-        auto scan = reader.scan();
-        if (!scan.mbr_valid) {
+        if (!session_) {
+            return {};
+        }
+        const auto io = session_->stats().backing_io;
+        std::wostringstream out;
+        out << L"  |  reads " << io.read_calls << L" / " << format_bytes(io.bytes_requested);
+        return out.str();
+    }
+
+    bool load_device(std::unique_ptr<ps2hdd::BlockDevice> source)
+    {
+        auto candidate = std::make_unique<ps2hdd::DriveSession>(std::move(source));
+        const bool clean = candidate->scan();
+        if (!candidate->scan_result().mbr_valid) {
             message(L"The selected source does not contain a valid PS2 APA MBR.", MB_ICONERROR);
             return false;
         }
-        if (!scan.ok()) {
+        if (!clean) {
             const int answer = MessageBoxW(window_,
-                                           L"APA diagnostics contain errors. DriveForge will keep the source read-only.\n\nOpen it anyway for inspection?",
+                                           L"APA diagnostics contain fatal errors. DriveForge will keep the source read-only.\n\nOpen it anyway for inspection?",
                                            L"PS2 DriveForge", MB_YESNO | MB_ICONWARNING);
             if (answer != IDYES) {
                 return false;
             }
         }
 
-        pfs_.reset();
-        volume_.reset();
-        device_ = std::move(candidate);
-        scan_ = std::move(scan);
+        session_ = std::move(candidate);
         active_path_.clear();
         active_partition_.reset();
         visible_entries_.clear();
@@ -282,17 +311,20 @@ private:
     {
         TreeView_DeleteAllItems(tree_);
         main_partitions_.clear();
+        if (!session_) {
+            return;
+        }
 
         TVINSERTSTRUCTW root_insert{};
         root_insert.hParent = TVI_ROOT;
         root_insert.hInsertAfter = TVI_LAST;
         root_insert.item.mask = TVIF_TEXT | TVIF_PARAM;
-        std::wstring root_text = widen(device_->display_name());
+        std::wstring root_text = widen(session_->device().display_name());
         root_insert.item.pszText = root_text.data();
         root_insert.item.lParam = 0;
         const HTREEITEM root = TreeView_InsertItem(tree_, &root_insert);
 
-        for (const auto& partition : scan_.partitions) {
+        for (const auto& partition : session_->scan_result().partitions) {
             if (partition.is_sub()) {
                 continue;
             }
@@ -315,27 +347,30 @@ private:
 
     void show_drive_overview()
     {
-        pfs_.reset();
-        volume_.reset();
         active_partition_.reset();
         active_path_.clear();
         visible_entries_.clear();
         ListView_DeleteAllItems(list_);
+        if (!session_) {
+            set_status(L"No PS2 HDD opened — READ ONLY");
+            return;
+        }
 
-        insert_list_row(0, L"PS2 APA HDD", L"Drive", format_bytes(device_->size_bytes()), L"", L"");
-        insert_list_row(1, L"APA version", L"Metadata", std::to_wstring(scan_.apa_version), L"", L"");
+        const auto& scan = session_->scan_result();
+        insert_list_row(0, L"PS2 APA HDD", L"Drive", format_bytes(session_->device().size_bytes()), L"", L"");
+        insert_list_row(1, L"APA version", L"Metadata", std::to_wstring(scan.apa_version), L"", L"");
         insert_list_row(2, L"Main partitions", L"Metadata", std::to_wstring(main_partitions_.size()), L"", L"");
+        insert_list_row(3, L"Diagnostics", L"Metadata", scan.ok() ? L"clean" : L"errors", L"", L"");
 
         std::wostringstream status;
-        status << widen(device_->display_name()) << L"  |  APA v" << scan_.apa_version
-               << L"  |  " << main_partitions_.size() << L" main partitions  |  READ ONLY";
+        status << widen(session_->device().display_name()) << L"  |  APA v" << scan.apa_version
+               << L"  |  " << main_partitions_.size() << L" main partitions  |  READ ONLY"
+               << io_suffix();
         set_status(status.str());
     }
 
     void open_partition(const ps2hdd::apa::Partition& partition)
     {
-        pfs_.reset();
-        volume_.reset();
         active_partition_ = partition;
         active_path_.clear();
         visible_entries_.clear();
@@ -344,15 +379,7 @@ private:
         if (partition.type != ps2hdd::apa::kTypePfs) {
             insert_list_row(0, widen(partition.id), widen(ps2hdd::apa::type_name(partition.type)),
                             format_bytes(partition.size_bytes()), L"", L"");
-            set_status(widen(partition.id) + L"  |  Not a PFS filesystem  |  READ ONLY");
-            return;
-        }
-
-        volume_ = std::make_unique<ps2hdd::ApaVolume>(*device_, partition);
-        pfs_ = std::make_unique<ps2hdd::pfs::Reader>(*volume_);
-        if (!pfs_->valid()) {
-            insert_list_row(0, L"PFS mount failed", L"Error", L"", L"", L"");
-            set_status(widen(partition.id) + L"  |  PFS error: " + widen(pfs_->last_error()));
+            set_status(widen(partition.id) + L"  |  Not a PFS filesystem  |  READ ONLY" + io_suffix());
             return;
         }
         navigate("");
@@ -360,48 +387,22 @@ private:
 
     void navigate(std::string path)
     {
-        if (!pfs_ || !active_partition_) {
+        if (!session_ || !active_partition_) {
             return;
         }
-        auto node = pfs_->resolve(path);
-        if (!node) {
-            message(L"Could not resolve PFS path:\n" + widen(pfs_->last_error()), MB_ICONERROR);
-            return;
-        }
-        if ((node->inode.mode & ps2hdd::pfs::kModeMask) != ps2hdd::pfs::kModeDirectory) {
-            return;
-        }
-
-        auto entries = pfs_->list_directory(*node);
-        if (!pfs_->last_error().empty()) {
-            message(L"Could not enumerate PFS directory:\n" + widen(pfs_->last_error()), MB_ICONERROR);
+        const auto result = session_->browse(active_partition_->id, path);
+        if (!result.ok) {
+            message(L"Could not enumerate PFS directory:\n" + widen(result.error), MB_ICONERROR);
             return;
         }
 
         active_path_ = std::move(path);
-        visible_entries_.clear();
-        visible_entries_.reserve(entries.size());
-        for (const auto& entry : entries) {
-            VisibleEntry visible;
-            visible.entry = entry;
-            if (auto child = pfs_->read_inode(entry.inode)) {
-                visible.inode_readable = true;
-                visible.size = child->inode.size;
-                const auto type = child->inode.mode & ps2hdd::pfs::kModeMask;
-                visible.directory = type == ps2hdd::pfs::kModeDirectory;
-                visible.regular = type == ps2hdd::pfs::kModeRegular;
-            } else {
-                visible.directory = entry.is_directory();
-                visible.regular = entry.is_regular();
-            }
-            visible_entries_.push_back(std::move(visible));
-        }
-
+        visible_entries_ = result.entries;
         std::sort(visible_entries_.begin(), visible_entries_.end(), [](const auto& a, const auto& b) {
-            if (a.directory != b.directory) {
-                return a.directory > b.directory;
+            if (a.is_directory() != b.is_directory()) {
+                return a.is_directory() > b.is_directory();
             }
-            return a.entry.name < b.entry.name;
+            return a.name < b.name;
         });
 
         ListView_DeleteAllItems(list_);
@@ -409,18 +410,18 @@ private:
         if (!active_path_.empty()) {
             insert_list_row(row++, L"..", L"Folder", L"", L"", L"");
         }
-        for (const auto& visible : visible_entries_) {
-            const std::wstring type = visible.directory ? L"Folder" : (visible.regular ? L"File" : L"Other");
-            insert_list_row(row++, widen(visible.entry.name), type,
-                            visible.inode_readable ? format_bytes(visible.size) : L"?",
-                            std::to_wstring(visible.entry.inode.subpart),
-                            std::to_wstring(visible.entry.inode.number));
+        for (const auto& entry : visible_entries_) {
+            const std::wstring type = entry.is_directory() ? L"Folder" : (entry.is_regular() ? L"File" : L"Other");
+            insert_list_row(row++, widen(entry.name), type,
+                            entry.inode_readable ? format_bytes(entry.size) : L"?",
+                            std::to_wstring(entry.inode.subpart),
+                            std::to_wstring(entry.inode.number));
         }
 
         std::wstring location = widen(active_partition_->id) + L":/" + widen(active_path_);
         std::wostringstream status;
         status << location << L"  |  " << visible_entries_.size() << L" entries  |  READ ONLY"
-               << L"  |  Double-click a folder to open, a file to extract";
+               << io_suffix() << L"  |  Double-click a folder to open, a file to extract";
         set_status(status.str());
     }
 
@@ -439,20 +440,14 @@ private:
         ListView_SetItemText(list_, row, 4, const_cast<wchar_t*>(inode.c_str()));
     }
 
-    void extract_entry(const VisibleEntry& visible)
+    void extract_entry(const ps2hdd::SessionEntry& entry)
     {
-        if (!pfs_ || !visible.regular) {
-            return;
-        }
-        const std::string source_path = join_pfs_path(active_path_, visible.entry.name);
-        auto node = pfs_->resolve(source_path);
-        if (!node) {
-            message(L"Could not resolve source file:\n" + widen(pfs_->last_error()), MB_ICONERROR);
+        if (!session_ || !active_partition_ || !entry.is_regular()) {
             return;
         }
 
         std::array<wchar_t, 32768> output{};
-        const auto default_name = widen(visible.entry.name);
+        const auto default_name = widen(entry.name);
         std::copy_n(default_name.c_str(), std::min(default_name.size(), output.size() - 1), output.data());
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
@@ -465,58 +460,32 @@ private:
             return;
         }
 
-        const std::filesystem::path output_path(output.data());
-        std::ofstream stream(output_path, std::ios::binary | std::ios::trunc);
-        if (!stream) {
-            message(L"Could not create the output file.", MB_ICONERROR);
+        const auto source_path = join_pfs_path(active_path_, entry.name);
+        const auto result = session_->export_to_host(active_partition_->id, source_path,
+                                                     std::filesystem::path(output.data()));
+        if (!result.ok) {
+            message(L"Extraction failed:\n\n" + widen(result.error), MB_ICONERROR);
             return;
         }
 
-        constexpr std::size_t kChunk = 1024 * 1024;
-        std::vector<std::byte> buffer(kChunk);
-        std::uint64_t offset = 0;
-        bool ok = true;
-        while (offset < node->inode.size) {
-            const auto take = static_cast<std::size_t>(
-                std::min<std::uint64_t>(buffer.size(), node->inode.size - offset));
-            auto chunk = std::span<std::byte>(buffer.data(), take);
-            if (!pfs_->read(*node, offset, chunk)) {
-                ok = false;
-                break;
-            }
-            stream.write(reinterpret_cast<const char*>(chunk.data()), static_cast<std::streamsize>(take));
-            if (!stream) {
-                ok = false;
-                break;
-            }
-            offset += take;
-        }
-        stream.close();
-
-        if (!ok) {
-            std::error_code ec;
-            std::filesystem::remove(output_path, ec);
-            message(L"Extraction failed. Partial output was removed.\n\n" + widen(pfs_->last_error()),
-                    MB_ICONERROR);
-            return;
-        }
         std::wostringstream text;
-        text << L"Extracted " << format_bytes(node->inode.size) << L" to:\n" << output_path.wstring();
+        text << L"Extracted " << result.stats.files << L" file, " << format_bytes(result.stats.bytes)
+             << L" to:\n" << output.data() << L"\n\n"
+             << L"Backing I/O so far: " << session_->stats().backing_io.read_calls << L" reads / "
+             << format_bytes(session_->stats().backing_io.bytes_requested);
         message(text.str(), MB_ICONINFORMATION);
+        navigate(active_path_);
     }
 
     HWND window_{};
     HWND tree_{};
     HWND list_{};
     HWND status_{};
-    std::unique_ptr<ps2hdd::BlockDevice> device_;
-    ps2hdd::apa::ScanResult scan_{};
+    std::unique_ptr<ps2hdd::DriveSession> session_;
     std::vector<ps2hdd::apa::Partition> main_partitions_;
     std::optional<ps2hdd::apa::Partition> active_partition_;
-    std::unique_ptr<ps2hdd::ApaVolume> volume_;
-    std::unique_ptr<ps2hdd::pfs::Reader> pfs_;
     std::string active_path_;
-    std::vector<VisibleEntry> visible_entries_;
+    std::vector<ps2hdd::SessionEntry> visible_entries_;
 };
 
 HMENU create_menu()
@@ -524,7 +493,8 @@ HMENU create_menu()
     HMENU menu = CreateMenu();
     HMENU file = CreatePopupMenu();
     HMENU physical = CreatePopupMenu();
-    AppendMenuW(file, MF_STRING, kIdOpenImage, L"Open disk &image...\tCtrl+O");
+    AppendMenuW(file, MF_STRING, kIdOpenImage, L"Open disk &image...");
+    AppendMenuW(file, MF_STRING, kIdDetectPhysical, L"&Detect PS2 HDDs...");
     for (UINT i = 0; i < kPhysicalCount; ++i) {
         std::wstring label = L"PhysicalDrive" + std::to_wstring(i);
         AppendMenuW(physical, MF_STRING, kIdPhysicalBase + i, label.c_str());
@@ -561,6 +531,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (LOWORD(wparam) == kIdOpenImage) {
             app->open_image_dialog();
+            return 0;
+        }
+        if (LOWORD(wparam) == kIdDetectPhysical) {
+            app->detect_physical();
             return 0;
         }
         if (LOWORD(wparam) == kIdExit) {
@@ -608,7 +582,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     common.dwSize = sizeof(common);
     common.dwICC = ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&common);
-
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSEXW wc{};
@@ -635,11 +608,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     }
     ShowWindow(window, show);
     UpdateWindow(window);
-
-    auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (app) {
-        app->open_image_dialog();
-    }
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
