@@ -44,6 +44,33 @@ The portable mount-view tests already cover root/partition enumeration, Windows-
 - the mount requests `DOKAN_OPTION_WRITE_PROTECT` in addition to callback-level rejection;
 - source-device handles never become writable as a side effect of mounting.
 
+## ZwCreateFile disposition contract
+
+Dokany's `ZwCreateFile` callback receives the NT kernel `FILE_*` create-disposition values, not the Win32 `CreateFileW` constants.
+
+This distinction is deliberately covered by a portable regression test because several numeric values overlap while having different meanings. The first real Darkness mount exposed exactly this trap: `FILE_OPEN == 1` was accidentally interpreted as Win32 `CREATE_NEW == 1`, so opening the existing mount root returned `STATUS_OBJECT_NAME_COLLISION` and Explorer displayed **"The file exists."**
+
+The adapter now models the NT values explicitly:
+
+```text
+0 FILE_SUPERSEDE
+1 FILE_OPEN
+2 FILE_CREATE
+3 FILE_OPEN_IF
+4 FILE_OVERWRITE
+5 FILE_OVERWRITE_IF
+```
+
+Existing objects opened with `FILE_OPEN`/`FILE_OPEN_IF` succeed when no write access is requested. Create/overwrite/supersede operations remain blocked by the read-only policy. The `ps2-driveforge-dokany-open-policy-tests` regression runs under both MSVC and Linux sanitizer CI, taking the normal test matrix from seven to eight executables.
+
+For real-machine diagnosis the mount frontend also supports:
+
+```powershell
+PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug
+```
+
+which logs `ZwCreateFile`, directory enumeration, metadata, read and volume/free-space callbacks without changing source-device access.
+
 ## Windows GUI theme policy
 
 Darkness adds persistent `View -> Theme -> System / Light / Dark` selection to the native Win32 GUI.
@@ -76,5 +103,13 @@ On the current real test HDD:
 8. unmount cleanly;
 9. record backing-I/O statistics for the mounted workload;
 10. visually verify GUI System/Dark/Light switching on Windows 11, including title bar, panes, header/status area and menu fallback behavior.
+
+### Real-hardware progress
+
+- The native GUI System/Dark/Light switching has been visually validated on Windows 11 and changes dynamically while the application is running.
+- Dokany successfully created the `P:` mount point for `PhysicalDrive3`.
+- The first Explorer open failed at the root with "The file exists" because of the NT/Win32 create-disposition mismatch described above.
+- The corrected adapter, `--debug` callback logging, and the new disposition-policy regression pass both MSVC and Clang ASan/UBSan CI.
+- The corrected mount build now requires the second Explorer smoke test before the remaining browse/copy/write-rejection checks continue.
 
 Generated-image tests continue to cover SEGI and APA main/sub-partition crossings that are not available as real PFS content on the current HDD.
