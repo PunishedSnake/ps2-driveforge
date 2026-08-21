@@ -133,6 +133,27 @@ const apa::Partition* DriveSession::find_partition(std::string_view id) const no
     return it == scan_.partitions.end() ? nullptr : &*it;
 }
 
+pfs::ProbeResult DriveSession::probe_for(std::string_view partition_id, ApaVolume& volume)
+{
+    const std::string key(partition_id);
+    {
+        std::shared_lock lock(cache_mutex_);
+        const auto cached = probe_cache_.find(key);
+        if (cached != probe_cache_.end()) {
+            probe_cache_hits_.fetch_add(1, std::memory_order_relaxed);
+            return cached->second;
+        }
+    }
+
+    probe_cache_misses_.fetch_add(1, std::memory_order_relaxed);
+    auto result = pfs::probe(volume);
+    {
+        std::unique_lock lock(cache_mutex_);
+        bounded_store(probe_cache_, key, result, kMaxProbeCacheEntries, cache_evictions_);
+    }
+    return result;
+}
+
 BrowseResult DriveSession::browse(std::string_view partition_id, std::string_view path)
 {
     AtomicTimer timer(browse_time_ns_);
@@ -162,7 +183,7 @@ BrowseResult DriveSession::browse(std::string_view partition_id, std::string_vie
     }
 
     ApaVolume volume(instrumented_, *partition);
-    pfs::Reader reader(volume);
+    pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
         return result;
@@ -268,7 +289,7 @@ StatResult DriveSession::stat(std::string_view partition_id, std::string_view pa
     }
 
     ApaVolume volume(instrumented_, *partition);
-    pfs::Reader reader(volume);
+    pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
         return result;
@@ -307,7 +328,7 @@ ReadResult DriveSession::read_file(std::string_view partition_id, std::string_vi
     const auto normalized_path = normalize_cache_path(path);
     const auto key = make_cache_key(partition_id, normalized_path);
     ApaVolume volume(instrumented_, *partition);
-    pfs::Reader reader(volume);
+    pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
         return result;
@@ -379,7 +400,7 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
     }
 
     ApaVolume volume(instrumented_, *partition);
-    pfs::Reader reader(volume);
+    pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         error_result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
         return error_result;
@@ -392,6 +413,8 @@ SessionStats DriveSession::stats() const noexcept
     return {
         instrumented_.stats(),
         {
+            probe_cache_hits_.load(std::memory_order_relaxed),
+            probe_cache_misses_.load(std::memory_order_relaxed),
             browse_cache_hits_.load(std::memory_order_relaxed),
             browse_cache_misses_.load(std::memory_order_relaxed),
             stat_cache_hits_.load(std::memory_order_relaxed),
@@ -426,6 +449,8 @@ void DriveSession::reset_stats() noexcept
     stat_time_ns_.store(0, std::memory_order_relaxed);
     read_time_ns_.store(0, std::memory_order_relaxed);
     export_time_ns_.store(0, std::memory_order_relaxed);
+    probe_cache_hits_.store(0, std::memory_order_relaxed);
+    probe_cache_misses_.store(0, std::memory_order_relaxed);
     browse_cache_hits_.store(0, std::memory_order_relaxed);
     browse_cache_misses_.store(0, std::memory_order_relaxed);
     stat_cache_hits_.store(0, std::memory_order_relaxed);
@@ -438,6 +463,7 @@ void DriveSession::reset_stats() noexcept
 void DriveSession::clear_caches()
 {
     std::unique_lock lock(cache_mutex_);
+    probe_cache_.clear();
     browse_cache_.clear();
     stat_cache_.clear();
     node_cache_.clear();
