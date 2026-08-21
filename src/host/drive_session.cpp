@@ -15,7 +15,7 @@ DriveSession::DriveSession(std::unique_ptr<BlockDevice> source)
 bool DriveSession::scan()
 {
     last_error_.clear();
-    ++apa_scans_;
+    apa_scans_.fetch_add(1, std::memory_order_relaxed);
     apa::Reader reader(instrumented_);
     scan_ = reader.scan();
     if (!scan_.mbr_valid) {
@@ -40,7 +40,7 @@ const apa::Partition* DriveSession::find_partition(std::string_view id) const no
 
 BrowseResult DriveSession::browse(std::string_view partition_id, std::string_view path)
 {
-    ++browse_operations_;
+    browse_operations_.fetch_add(1, std::memory_order_relaxed);
     BrowseResult result;
     const auto* partition = find_partition(partition_id);
     if (!partition) {
@@ -92,12 +92,96 @@ BrowseResult DriveSession::browse(std::string_view partition_id, std::string_vie
     return result;
 }
 
+StatResult DriveSession::stat(std::string_view partition_id, std::string_view path)
+{
+    stat_operations_.fetch_add(1, std::memory_order_relaxed);
+    StatResult result;
+    const auto* partition = find_partition(partition_id);
+    if (!partition) {
+        result.error = "Partition not found: " + std::string(partition_id);
+        return result;
+    }
+    if (partition->type != apa::kTypePfs) {
+        result.error = "Partition is not PFS: " + std::string(partition_id);
+        return result;
+    }
+
+    ApaVolume volume(instrumented_, *partition);
+    pfs::Reader reader(volume);
+    if (!reader.valid()) {
+        result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
+        return result;
+    }
+    auto node = reader.resolve(path);
+    if (!node) {
+        result.error = reader.last_error();
+        return result;
+    }
+
+    result.entry.name = std::string(path);
+    result.entry.inode = node->location;
+    result.entry.mode = static_cast<std::uint16_t>(node->inode.mode & pfs::kModeMask);
+    result.entry.size = node->inode.size;
+    result.entry.inode_readable = true;
+    result.ok = true;
+    return result;
+}
+
+ReadResult DriveSession::read_file(std::string_view partition_id, std::string_view path,
+                                   std::uint64_t offset, std::span<std::byte> out)
+{
+    read_operations_.fetch_add(1, std::memory_order_relaxed);
+    ReadResult result;
+    const auto* partition = find_partition(partition_id);
+    if (!partition) {
+        result.error = "Partition not found: " + std::string(partition_id);
+        return result;
+    }
+    if (partition->type != apa::kTypePfs) {
+        result.error = "Partition is not PFS: " + std::string(partition_id);
+        return result;
+    }
+
+    ApaVolume volume(instrumented_, *partition);
+    pfs::Reader reader(volume);
+    if (!reader.valid()) {
+        result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
+        return result;
+    }
+    auto node = reader.resolve(path);
+    if (!node) {
+        result.error = reader.last_error();
+        return result;
+    }
+    if ((node->inode.mode & pfs::kModeMask) != pfs::kModeRegular) {
+        result.error = "PFS path is not a regular file";
+        return result;
+    }
+
+    // Windows ReadFile requests beyond EOF are normal. Clamp the requested span
+    // here instead of weakening pfs::Reader::read(), whose strict bounds check is
+    // still useful for parser correctness and corruption detection.
+    if (offset >= node->inode.size || out.empty()) {
+        result.ok = true;
+        return result;
+    }
+    const auto take = static_cast<std::size_t>(
+        std::min<std::uint64_t>(out.size(), node->inode.size - offset));
+    if (!reader.read(*node, offset, out.first(take))) {
+        result.error = reader.last_error();
+        return result;
+    }
+    result.bytes_read = take;
+    result.ok = true;
+    return result;
+}
+
 pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
                                                std::string_view path,
                                                const std::filesystem::path& destination,
                                                pfs::ExportProgress progress)
 {
-    ++export_operations_;
+    export_operations_.fetch_add(1, std::memory_order_relaxed);
     pfs::ExportResult error_result;
 
     const auto* partition = find_partition(partition_id);
@@ -121,15 +205,24 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
 
 SessionStats DriveSession::stats() const noexcept
 {
-    return {instrumented_.stats(), apa_scans_, browse_operations_, export_operations_};
+    return {
+        instrumented_.stats(),
+        apa_scans_.load(std::memory_order_relaxed),
+        browse_operations_.load(std::memory_order_relaxed),
+        stat_operations_.load(std::memory_order_relaxed),
+        read_operations_.load(std::memory_order_relaxed),
+        export_operations_.load(std::memory_order_relaxed),
+    };
 }
 
 void DriveSession::reset_stats() noexcept
 {
     instrumented_.reset_stats();
-    apa_scans_ = 0;
-    browse_operations_ = 0;
-    export_operations_ = 0;
+    apa_scans_.store(0, std::memory_order_relaxed);
+    browse_operations_.store(0, std::memory_order_relaxed);
+    stat_operations_.store(0, std::memory_order_relaxed);
+    read_operations_.store(0, std::memory_order_relaxed);
+    export_operations_.store(0, std::memory_order_relaxed);
 }
 
 } // namespace ps2hdd

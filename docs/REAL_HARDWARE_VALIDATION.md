@@ -2,62 +2,51 @@
 
 PS2 DriveForge has been validated against a real **149.05 GiB APA v2 PlayStation 2 HDD** through the Windows `PhysicalDrive` backend.
 
-This file records observations from physical hardware separately from synthetic tests. A feature appearing in unit tests is not described as hardware-validated until it has actually run against a real disk.
+This file records physical-hardware observations separately from synthetic coverage. A feature is not called hardware-validated merely because a unit/generated-image test covers it.
 
-All source-device operations described below were read-only.
+All source-device operations described here were read-only.
 
 ## Test disk characteristics
 
-Observed layout characteristics that make this disk useful as a regression target:
+Observed regression target:
 
 - APA v2;
-- 190 APA headers detected by the Chisato discovery path;
-- 43 main partitions visible in the GUI;
-- multiple PFS v3 system/user partitions;
-- 8 KiB PFS zones on observed PFS partitions;
-- matching primary/backup PFS superblocks on observed PFS partitions;
+- 190 APA headers;
+- 43 main partitions in the GUI;
+- PFS v3 system/user partitions;
+- 8 KiB PFS zones on observed PFS volumes;
+- matching primary/backup PFS superblocks;
 - many HDL game partitions and APA sub-partitions;
-- main/sub layouts that demonstrate physical extents must not be assumed contiguous;
-- `+OPL` PFS partition suitable for directory/export validation;
-- `__common` PFS partition containing at least one real regular file suitable for extraction validation.
+- non-contiguous APA layouts;
+- `+OPL` PFS partition for directory/export tests;
+- `__common:/OPL/conf_hdd.cfg` as a stable real regular-file payload.
 
-The report includes `__net`, `__system`, `__sysconf`, `__common`, `__boot`, `HDLoader Settings`, `+OPL`, and many HDL game partitions.
+The disk includes `__net`, `__system`, `__sysconf`, `__common`, `__boot`, `HDLoader Settings`, `+OPL`, and many HDL game partitions.
 
 ## 0.1.0-dev "Ayanami"
 
-Validated path:
+Hardware-validated:
 
 ```text
 Windows PhysicalDrive
-        -> raw byte reads
-        -> APA MBR/header parser
-        -> linked-list traversal
-        -> partition/sub-partition model
-        -> PFS superblock probe
+  -> raw read-only byte access
+  -> APA MBR/header parser
+  -> linked-list traversal
+  -> partition/sub-partition model
+  -> PFS superblock probe
 ```
 
-Observed successfully:
-
-- APA v2 MBR detection;
-- full linked-list traversal;
-- PFS v3 detection on system/user partitions;
-- 8 KiB PFS zone-size validation;
-- matching primary and backup PFS superblocks;
-- HDL main/sub partition association;
-- non-contiguous physical layouts handled without assuming adjacency;
-- no write access requested by the Windows backend.
+Observed successfully: APA v2 MBR detection, full linked-list traversal, PFS v3 detection, 8 KiB zones, matching PFS backups, HDL main/sub association, non-contiguous layout handling, and `GENERIC_READ`-only physical access.
 
 ## 0.2.0-dev "Bocchi"
 
-The same disk was used to validate the native PFS read path.
-
-Command:
+The same disk validated the native PFS read path.
 
 ```powershell
 ps2-driveforge-inspect.exe --physical 3 --browse +OPL
 ```
 
-Observed PFS root:
+Observed root:
 
 ```text
 PFS browse: +OPL:/
@@ -73,36 +62,13 @@ DIR     512 B         0         544           APPS
 7 entries
 ```
 
-A second lookup resolved and enumerated the real `CFG` inode:
-
-```powershell
-ps2-driveforge-inspect.exe --physical 3 --browse +OPL CFG
-```
-
-`CFG` was expected to be empty and correctly returned `0 entries`.
-
-This gives real-hardware evidence for root/child inode addressing, SEGD checksum/magic validation on the observed nodes, directory payload reads, dentry parsing, child inode resolution, and explicit path traversal.
+`+OPL:/CFG` was expected to be empty and correctly returned `0 entries`. This gives real-hardware evidence for observed root/child inode addressing, SEGD checksum/magic validation, directory payload reads, dentry parsing, child inode resolution, and explicit path traversal.
 
 ## 0.3.0-dev "Chisato" — hardware validated
 
-Chisato was validated on the same physical disk after the pre-hardware hardening pass.
+### Physical discovery and scan
 
-The tested build included:
-
-- shared `DriveSession` for CLI and GUI;
-- read-only physical-drive discovery;
-- backing-I/O counters;
-- recursive host export;
-- generated-image E2E coverage for main/sub and SEGI;
-- APA/PFS corruption regression tests.
-
-### Physical-drive discovery
-
-```powershell
-ps2-driveforge-inspect.exe --detect-physical
-```
-
-Observed:
+The original Chisato discovery pass observed:
 
 ```text
 PhysicalDrive0    931.51 GiB    not APA
@@ -115,28 +81,9 @@ PhysicalDrive5    223.57 GiB    not APA
 Openable drives: 6, PS2 APA candidates: 1
 ```
 
-The discovery pass therefore selected exactly the expected PS2 HDD and did not misidentify the other openable Windows disks. Discovery remained `GENERIC_READ` only.
+The full scan completed without fatal APA diagnostics. Observed PFS partitions reported PFS v3, 8 KiB zones, and matching primary/backup superblocks. The GUI showed 43 main partitions.
 
-### Full APA/PFS scan
-
-The complete physical scan succeeded without fatal APA diagnostics.
-
-Observed PFS partitions (`__net`, `__system`, `__sysconf`, `__common`, `__boot`, `HDLoader Settings`, `+OPL`) all reported:
-
-- PFS v3;
-- 8 KiB zones;
-- filesystem sub count 0 for these observed volumes;
-- matching primary/backup superblocks.
-
-The GUI presented **43 main partitions** and reported diagnostics as clean.
-
-### Instrumented `+OPL` browse baseline
-
-```powershell
-ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
-```
-
-The expected seven directories were returned again. The first recorded physical browse baseline is:
+### `+OPL` backing-I/O baseline
 
 ```text
 APA scans:             1
@@ -149,26 +96,13 @@ Largest backing read:  1.00 KiB
 Failed backing reads:  0
 ```
 
-This is a correctness/performance baseline for later Emilia work, **not** a throughput comparison against pfsshell/pfsfuse.
+This is a correctness/performance baseline for later Emilia work, not a benchmark claim against pfsshell/pfsfuse.
 
-### Native Win32 GUI
+### GUI/export validation
 
-The Chisato GUI successfully:
+The native GUI opened the disk read-only, displayed the partition tree, browsed `+OPL`, retained explicit `READ ONLY` status, and showed cumulative backing reads.
 
-- detected `PhysicalDrive3` as the only PS2 APA candidate;
-- opened the disk read-only;
-- displayed the full partition tree;
-- showed 43 main partitions;
-- browsed `+OPL` and its child directories;
-- retained explicit `READ ONLY` state;
-- displayed cumulative backing-read counters;
-- completed the planned GUI/navigation checks without crashes or filesystem errors.
-
-One presentation-only issue was found: UTF-8 punctuation in wide Win32 string literals was compiled with the wrong MSVC source character set and appeared as mojibake (`â€“`/`â€”`). This is not an APA/PFS data-decoding failure. The GUI target now explicitly builds with MSVC `/utf-8`.
-
-### Recursive `+OPL` export
-
-Recursive export of the real `+OPL` tree completed successfully and produced the expected host directories:
+Recursive `+OPL` export produced:
 
 ```text
 exported-OPL\
@@ -181,11 +115,7 @@ exported-OPL\
   APPS\
 ```
 
-This validates real-HDD traversal plus recursive host directory creation. The observed `+OPL` directories were empty, so this case alone does not validate file payload bytes.
-
-### Real regular-file export
-
-A non-empty PFS path under `__common` was successfully browsed/exported. The extracted file was:
+A real non-empty file was extracted from:
 
 ```text
 __common:/OPL/conf_hdd.cfg
@@ -194,52 +124,108 @@ content: hdd_partition=+OPL\r\n
 SHA-256: E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
 ```
 
-The SHA-256 was independently recomputed from the supplied extracted artifact and matches the recorded PowerShell hash. This confirms the extracted artifact is stable and exactly 20 bytes. It is not presented as a cross-tool source comparison because an independent pfsshell extraction/hash was not recorded for this file.
+The supplied artifact was independently re-hashed and matched.
 
-### Remaining real-hardware coverage gap: SEGI / large fragmented PFS
+### Remaining real-hardware coverage gap: PFS SEGI
 
-A sufficiently large or fragmented **PFS** file was not available on this disk. Large content on the disk is stored as HDL game partitions, which exercises a different future DriveForge subsystem and cannot be used as a PFS SEGI test.
+The disk does not contain a suitable large/fragmented **PFS** file; large content is stored as HDL game partitions. Direct real-HDD PFS SEGI remains unobserved. SEGI plus APA main/sub crossing remain protected by deterministic generated-image E2E.
 
-Therefore:
+This explicit gap does not block Darkness because the missing case has end-to-end synthetic coverage.
 
-- direct real-HDD PFS browsing/export is hardware validated;
-- regular-file payload extraction is hardware validated;
-- real PFS SEGI traversal remains **not hardware validated**;
-- SEGI, main-to-sub extent crossing, and large fragmented-file behavior remain protected by the generated sparse-image E2E regression test until suitable physical PFS data becomes available.
+## 0.4.0-dev "Darkness" — hardware validated
 
-This gap does **not** block Chisato 0.3 because Chisato's user-facing scope is read-only browsing/export, and the missing case has deterministic end-to-end synthetic coverage. It should remain listed as a coverage gap rather than being silently treated as proven.
+### Native GUI theme
 
-## Chisato validation conclusion
+Observed on Windows 11:
 
-For the tested physical HDD, Chisato validates the complete intended 0.3 path:
+- System/Light/Dark switching changes dynamically while the GUI is running;
+- dark title bar, TreeView, ListView/header, and status area render correctly enough for normal use;
+- the physical HDD remains browseable while themes change;
+- source access semantics are unchanged.
+
+### Initial mount regression
+
+The first `PhysicalDrive3 -> P:` mount registered successfully, but Explorer initially reported:
 
 ```text
-Windows physical discovery
-        -> PhysicalDrive GENERIC_READ
-        -> APA v2 scan
-        -> DriveSession
-        -> PFS v3 probe
-        -> directory/path resolution
-        -> native GUI browse
-        -> recursive host export
-        -> real regular-file extraction
+P:\ is not accessible.
+The file exists.
 ```
 
-No source write path was enabled or used.
+Cause: Dokany `ZwCreateFile` passes NT `FILE_*` create dispositions, while the first adapter compared them with Win32 `CreateFileW` constants. `FILE_OPEN == 1` was mistaken for `CREATE_NEW == 1`, returning `STATUS_OBJECT_NAME_COLLISION` for the root.
 
-## When to update this document
+The corrected policy models NT dispositions explicitly and has portable regression coverage under MSVC and Linux sanitizers.
 
-Update this file whenever a real disk validates or disproves an assumption about:
+### Corrected real-HDD Explorer mount — passed
 
-- APA chain/layout behavior;
-- PFS version/zone behavior;
-- SEGD/SEGI traversal;
-- directory parsing;
-- sub-partition addressing;
-- GUI/Dokany visibility;
-- extraction correctness;
-- physical-drive discovery;
-- backing-I/O baseline behavior;
-- future write/recovery behavior.
+Observed successfully:
 
-If a hardware failure changes format interpretation, add a synthetic regression test and update the relevant format/testing note in the same change.
+- `P:` appeared as PS2 DriveForge / `PS2PFS`;
+- Windows reported roughly 149 GiB total size and intentionally 0 bytes free for the read-only view;
+- `P:\` opened normally;
+- `P:\Partitions` enumerated;
+- `P:\Partitions\+OPL` showed `CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`;
+- `P:\Partitions\__common\OPL` resolved;
+- Explorer copied `conf_hdd.cfg` through the mount;
+- the mounted copy was 20 bytes with SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
+- creating `write-test.txt` was rejected;
+- Dokany write-protect stopped creation before any source write path;
+- callback-level mutation rejection remained active;
+- the project still had no `BlockDevice::write()` API;
+- `PhysicalDrive` still requested `GENERIC_READ` only;
+- unmount completed cleanly and the drive letter disappeared.
+
+Validated end-to-end path:
+
+```text
+PhysicalDrive3 / GENERIC_READ
+ -> APA v2
+ -> PFS
+ -> DriveSession
+ -> ReadOnlyMountView
+ -> DokanyMountController
+ -> Explorer
+ -> copied host file
+ -> matching SHA-256
+```
+
+### Integrated GUI workflow — passed
+
+The final Windows 11 hardware pass also validated the user-facing workflow added at the end of Darkness:
+
+- launching `PS2-DriveForge.exe` as a normal user performs one controlled UAC relaunch without a loop;
+- SetupAPI enumerates actual `GUID_DEVINTERFACE_DISK` devices instead of exposing a fixed `PhysicalDrive0..31` list;
+- the DriveForge APA probe identifies the sole PS2 HDD candidate and the GUI opens it automatically;
+- the opened device reports the expected approximately 149.05 GiB, APA v2, and 43 main partitions;
+- GUI `Mount read-only` selects an available drive letter automatically, preferring `P:`;
+- GUI `Open mounted volume in Explorer` opens the same read-only `Partitions` namespace already validated through the standalone frontend;
+- known `+OPL` and `__common\OPL` paths remain browseable and file access remains correct;
+- create/write operations remain rejected;
+- GUI `Unmount` removes the drive cleanly;
+- rescanning does not silently replace an already-open source;
+- cancelling elevation leaves the image-capable limited mode usable and manual `Restart as Administrator` recovers raw-disk access;
+- occupied preferred-letter handling falls back to another free data-drive letter as designed.
+
+This closes the 0.4 hardware gate. The GUI and diagnostic mount frontend now exercise the same shared `DokanyMountController`; no helper process or second filesystem implementation is involved.
+
+## Emilia baseline handoff
+
+Preserve the final successful Darkness workload:
+
+```text
+cold GUI start
+ -> discovery/open
+ -> mount
+ -> root
+ -> Partitions
+ -> +OPL
+ -> __common\OPL
+ -> read/copy conf_hdd.cfg
+ -> unmount
+```
+
+Explorer issues many repeated metadata/open/enumeration callbacks. This workload plus existing backing-I/O counters and the 215-read Chisato browse baseline is the reference for 0.5 Emilia.
+
+## Update rule
+
+When hardware validates or disproves an APA/PFS, discovery/elevation, GUI/Dokany, extraction/copy, mount-lifecycle, or performance assumption, update this file and add a deterministic regression where possible. Hardware and synthetic evidence must remain explicitly distinguished.

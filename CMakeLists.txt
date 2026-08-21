@@ -1,11 +1,21 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.3.0 LANGUAGES CXX)
+if(POLICY CMP0144)
+    # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
+    # Darkness passes DOKANY_ROOT explicitly in CI, so opt into the policy
+    # instead of emitting a developer warning on newer CMake releases.
+    cmake_policy(SET CMP0144 NEW)
+endif()
 
-set(PS2DF_CODENAME "Chisato" CACHE STRING "Release codename")
+project(ps2_driveforge VERSION 0.4.0 LANGUAGES CXX)
+
+set(PS2DF_CODENAME "Darkness" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
+option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ps2hdd/version.hpp.in
@@ -47,11 +57,13 @@ endif()
 add_library(ps2driveforge_host
     src/host/pfs_export.cpp
     src/host/drive_session.cpp
+    src/host/mount_view.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
 if(WIN32)
     target_sources(ps2driveforge_host PRIVATE src/platform/windows/physical_discovery.cpp)
+    target_link_libraries(ps2driveforge_host PUBLIC setupapi)
 endif()
 if(MSVC)
     target_compile_options(ps2driveforge_host PRIVATE /W4 /permissive-)
@@ -70,17 +82,64 @@ target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(WIN32)
-    add_executable(ps2-driveforge-gui WIN32 src/gui/windows_main.cpp)
+    add_executable(ps2-driveforge-gui WIN32
+        src/gui/windows_main.cpp
+        src/gui/windows_theme.cpp
+        src/gui/windows_elevation.cpp
+    )
     set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
-    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_host comctl32 comdlg32 uxtheme shell32 ole32)
+    target_link_libraries(ps2-driveforge-gui PRIVATE
+        ps2driveforge_host
+        comctl32
+        comdlg32
+        dwmapi
+        uxtheme
+        shell32
+        ole32
+    )
     target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
     if(MSVC)
-        # Keep source/exec character sets explicitly UTF-8 so non-ASCII UI literals
-        # (for example em dashes in the title/status text) survive MSVC compilation.
         target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive- /utf-8)
         if(PS2DF_WARNINGS_AS_ERRORS)
             target_compile_options(ps2-driveforge-gui PRIVATE /WX)
+        endif()
+    endif()
+endif()
+
+if(PS2DF_BUILD_DOKANY)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PS2DF_BUILD_DOKANY is only supported on Windows")
+    endif()
+
+    find_package(Dokany REQUIRED)
+
+    add_library(ps2driveforge_dokany
+        src/mount/dokany_controller.cpp
+    )
+    target_include_directories(ps2driveforge_dokany PRIVATE src/mount)
+    target_link_libraries(ps2driveforge_dokany PUBLIC ps2driveforge_host Dokany::Dokany)
+    target_compile_features(ps2driveforge_dokany PUBLIC cxx_std_20)
+    target_compile_definitions(ps2driveforge_dokany PUBLIC PS2DF_HAS_DOKANY=1 UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2driveforge_dokany PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2driveforge_dokany PRIVATE /WX)
+        endif()
+    endif()
+
+    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_dokany)
+    target_compile_definitions(ps2-driveforge-gui PRIVATE PS2DF_HAS_DOKANY=1)
+
+    add_executable(ps2-driveforge-mount src/mount/dokany_main.cpp)
+    set_target_properties(ps2-driveforge-mount PROPERTIES OUTPUT_NAME "PS2-DriveForge-Mount")
+    target_link_libraries(ps2-driveforge-mount PRIVATE ps2driveforge_dokany)
+    target_compile_features(ps2-driveforge-mount PRIVATE cxx_std_20)
+    target_compile_definitions(ps2-driveforge-mount PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2-driveforge-mount PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2-driveforge-mount PRIVATE /WX)
         endif()
     endif()
 endif()
@@ -122,6 +181,20 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-session-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-session-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-session-tests COMMAND ps2-driveforge-session-tests)
+
+    # This test is deliberately portable even though the policy belongs to the
+    # Dokany frontend. It protects the NT FILE_OPEN/FILE_CREATE numeric contract
+    # under Linux sanitizers as well as MSVC, without requiring Dokany itself.
+    add_executable(ps2-driveforge-dokany-open-policy-tests tests/dokany_open_policy_tests.cpp)
+    target_include_directories(ps2-driveforge-dokany-open-policy-tests PRIVATE src/mount)
+    target_compile_features(ps2-driveforge-dokany-open-policy-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-dokany-open-policy-tests COMMAND ps2-driveforge-dokany-open-policy-tests)
+
+    # Keep startup auto-open and drive-letter selection deterministic and
+    # testable without SetupAPI, Dokany, or a particular runner drive layout.
+    add_executable(ps2-driveforge-darkness-policy-tests tests/darkness_policy_tests.cpp)
+    target_compile_features(ps2-driveforge-darkness-policy-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-darkness-policy-tests COMMAND ps2-driveforge-darkness-policy-tests)
 endif()
 
 if(PS2DF_BUILD_FUZZERS)
