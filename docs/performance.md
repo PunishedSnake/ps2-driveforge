@@ -8,13 +8,15 @@ For a physical Windows disk today:
 
 ```text
 GUI / CLI
-  -> pfs::Reader::read
-    -> read_zone_bytes
-      -> ApaVolume::read_sectors
-        -> PhysicalDrive::read
-          -> mutex
-          -> SetFilePointerEx
-          -> synchronous ReadFile
+  -> DriveSession
+    -> pfs::Reader::read
+      -> read_zone_bytes
+        -> ApaVolume::read_sectors
+          -> InstrumentedBlockDevice::read
+            -> PhysicalDrive::read
+              -> mutex
+              -> SetFilePointerEx
+              -> synchronous ReadFile
 ```
 
 For an image file the final layer is a mutex-protected `std::ifstream` seek/read.
@@ -29,15 +31,51 @@ Current relevant sizes:
 
 The 1 MiB exporter buffer does **not** mean one 1 MiB device read. The current PFS layer can split it into multiple 64 KiB lower-level reads and additional reads when the file crosses PFS extents.
 
+## Instrumentation implemented in Chisato
+
+The first instrumentation layer is now implemented rather than merely planned.
+
+`InstrumentedBlockDevice` measures the actual calls reaching the backing `BlockDevice` after PFS batching and APA translation. `DriveSession` also tracks high-level operation counts.
+
+Current counters:
+
+- APA scans;
+- PFS browse operations;
+- PFS export operations;
+- backing `read()` calls;
+- backing bytes requested;
+- failed backing reads;
+- largest backing read.
+
+CLI derives average backing-read size and exposes the counters with:
+
+```powershell
+ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
+ps2-driveforge-inspect.exe --stats --physical 3 --extract +OPL / exported-OPL
+```
+
+The GUI status bar also exposes cumulative backing reads/bytes for the current session.
+
+These counters are **measurement plumbing**, not evidence that DriveForge is faster than pfsshell/pfsfuse.
+
+Still missing before deeper Emilia profiling:
+
+- logical `Reader::read()` calls/bytes separated from backend bytes;
+- metadata vs payload read classification;
+- APA translation count;
+- elapsed operation timings;
+- cache hit/miss counters once caches exist.
+
 ## Current strengths
 
 Even before a cache exists, the current API enables optimizations that would be awkward if every frontend had to reproduce a selected-device/current-mount/current-directory model:
 
 - byte-range reads carry explicit offsets;
-- PFS logical extents are already separated from APA physical extents;
-- the caller can keep a `Reader`/`Node` and issue repeated reads without re-resolving a shell path;
+- PFS logical extents are separated from APA physical extents;
+- GUI and CLI now share `DriveSession` and the same parser/export path;
 - host export can request large sequential ranges;
-- GUI, CLI, and future Dokany code share the same reader.
+- instrumentation is transparent below format parsing;
+- future Dokany code can reuse the same explicit-path/session model.
 
 These are **enablers**, not benchmark results.
 
@@ -45,7 +83,7 @@ These are **enablers**, not benchmark results.
 
 ### Global serialization per backing device
 
-`PhysicalDrive` and `FileBlockDevice` currently protect seek/read operations with a mutex. This is correct for the current synchronous implementation, but it means parallel filesystem requests will serialize at the backing device.
+`PhysicalDrive` and `FileBlockDevice` currently protect seek/read operations with a mutex. This is correct for the current synchronous implementation, but it means parallel filesystem requests serialize at the backing device.
 
 ### No metadata caching
 
@@ -62,22 +100,6 @@ Repeated or overlapping small reads can cause repeated host I/O even when the re
 ### Synchronous Windows API
 
 The Windows physical backend uses `SetFilePointerEx` + `ReadFile`. No overlapped I/O or queued request model exists yet.
-
-## Instrument before optimizing
-
-Before changing the I/O strategy, add counters that can answer:
-
-- total logical PFS bytes requested;
-- number of `Reader::read()` calls;
-- number of APA extent translations;
-- number of backing-device reads;
-- backing-device bytes read;
-- average and maximum backing read size;
-- metadata reads versus payload reads;
-- cache hit/miss counts once caches exist;
-- elapsed wall time for export/mounted reads.
-
-Without these counters it is too easy to "optimize" code that is not on the hot path.
 
 ## Benchmark workloads
 
@@ -135,37 +157,44 @@ When we publish a comparison, record:
 - source partition and workload;
 - host destination medium;
 - cold-cache and warm-cache results separately;
-- at least three runs when variance matters.
+- `--stats` backing-read results for DriveForge;
+- at least three timed runs when variance matters.
 
 Do not compare a warm DriveForge run to a cold pfsshell run.
 
 ## Optimization order
 
-The current preferred order is:
+The preferred order is now:
 
-1. counters/trace points;
-2. immutable inode metadata cache;
-3. directory cache;
-4. block/read-window cache;
-5. adaptive sequential read size;
-6. coalescing reads within one APA extent;
-7. Windows offset-based/overlapped device reads;
-8. concurrent read scheduling;
-9. only then consider deeper platform-specific changes.
+1. **backing-I/O counters — implemented in Chisato**;
+2. add logical/metadata/payload/timing counters;
+3. immutable inode metadata cache;
+4. directory cache;
+5. block/read-window cache;
+6. adaptive sequential read size;
+7. coalescing reads within one APA extent;
+8. Windows offset-based/overlapped device reads;
+9. concurrent read scheduling;
+10. only then consider deeper platform-specific changes.
 
-A custom Windows kernel filesystem/storage driver is **not** the performance plan. Dokany remains the preferred Explorer bridge; the intended gains are in the userspace data path.
+A custom Windows kernel filesystem/storage driver is **not** the performance plan. Dokany remains the preferred Explorer bridge; intended gains are in the userspace data path.
 
 ## Correctness gates
 
 An optimization is not accepted if it breaks any of these:
 
-- APA chain validation;
+- APA chain and extent-bounds validation;
 - PFS checksum validation;
 - arbitrary unaligned byte reads;
 - reads crossing file extents;
+- main/sub-partition translation;
 - SEGI traversal;
+- generated-image SHA-256 end-to-end test;
+- corruption regression corpus;
 - physical-device read-only invariant;
 - sanitizer CI;
 - hardware validation cases.
+
+See [`testing.md`](testing.md) for the concrete regression workflow.
 
 Fast corruption is not a feature.
