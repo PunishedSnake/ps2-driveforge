@@ -22,15 +22,26 @@ jobs:
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Restore and build WinUI frontend
+      - name: Restore native WinUI packages
+        shell: pwsh
+        run: |
+          $packages = Join-Path $PWD 'src\winui\packages'
+          New-Item -ItemType Directory -Force -Path $packages | Out-Null
+          nuget install Microsoft.WindowsAppSDK -Version 2.3.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw "Windows App SDK restore failed with exit code $LASTEXITCODE" }
+          nuget install Microsoft.Windows.CppWinRT -Version 3.0.260715.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw "C++/WinRT restore failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $packages 'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654'))) {
+            throw 'Expected Microsoft.Windows.SDK.BuildTools 10.0.26100.4654 dependency was not restored.'
+          }
+
+      - name: Build WinUI frontend
         shell: pwsh
         run: |
           msbuild .\src\winui\PS2DriveForge.WinUI.vcxproj `
-            /restore `
             /m `
             /p:Configuration=Release `
-            /p:Platform=x64 `
-            /p:RestorePackagesConfig=false
+            /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { throw "WinUI MSBuild failed with exit code $LASTEXITCODE" }
 
       - name: Verify frontend executable
