@@ -2,16 +2,16 @@
 
 ## Goal
 
-Build a Windows-first PS2 HDD management stack that can eventually expose an APA disk to Windows Explorer while keeping parsing, host operations and presentation independent.
+Build a Windows-first PS2 HDD management stack that can expose an APA/PFS disk to Windows Explorer while keeping parsing, host operations and presentation independent.
 
 The architecture is intentionally different from wrapping pfsshell's interactive device/mount/current-directory model. See [`pfsshell-comparison.md`](pfsshell-comparison.md) for the evidence and the distinction between implemented behavior and future performance targets.
 
 ## Current layers
 
 ```text
- Native Win32 GUI          CLI          future Dokany provider
-        |                   |                   |
-        +------------- DriveSession -----------+
+ Native Win32 GUI          CLI          Dokany mount
+        |                   |                 |
+        +------------- DriveSession ---------+
                             |
                    ps2driveforge_host
                             |
@@ -92,7 +92,7 @@ superblock
   -> path resolution
 ```
 
-It does **not** own Windows filename policy or host file creation.
+It does **not** own Windows filename policy, GUI themes or host file creation.
 
 ### `ps2driveforge_host`
 
@@ -106,13 +106,14 @@ The host layer intentionally knows about host/frontend operations rather than ra
 - cycle/depth protection;
 - cleanup of partial files after failure;
 - `DriveSession` orchestration;
-- Windows read-only physical-drive discovery.
+- Windows read-only physical-drive discovery;
+- Darkness `ReadOnlyMountView` path/list/read mapping.
 
-This separation is important for GUI drag/drop and future Dokany work: frontends share host policy without contaminating on-disk parsing.
+This separation is important for GUI, Dokany and later drag/drop work: frontends share host policy without contaminating on-disk parsing.
 
 ### `DriveSession`
 
-`DriveSession` owns one opened source plus the reusable frontend operations around it:
+`DriveSession` owns one opened source plus reusable frontend operations around it:
 
 ```text
 DriveSession
@@ -120,70 +121,96 @@ DriveSession
   -> APA scan result
   -> find partition
   -> PFS browse(partition, path)
+  -> PFS stat(partition, path)
+  -> PFS read_file(partition, path, offset, span)
   -> host export(partition, path, destination)
   -> operation / backing-I/O statistics
 ```
 
-The session does **not** maintain a filesystem-global current directory. Paths remain explicit call arguments. GUI navigation state stays in the GUI; future Dokany callbacks can resolve independent paths through the same session model.
+The session does **not** maintain a filesystem-global current directory. Paths remain explicit call arguments. GUI navigation state stays in the GUI and concurrent Dokany callbacks resolve independent paths through the same session model.
 
-The Win32 GUI and CLI now both use `DriveSession`, so one frontend cannot accidentally acquire a different PFS traversal/export implementation.
+## Windows GUI boundary
+
+The native GUI is intentionally thin: it opens sources, shows `DriveSession` results, performs navigation/export and renders host UI state.
+
+Darkness adds a Windows-only theme controller beside the GUI rather than inside host/core code:
+
+- persistent **System / Light / Dark** preference;
+- System mode follows Windows `AppsUseLightTheme`;
+- High Contrast always wins over DriveForge overrides;
+- explicit client/TreeView/ListView/header/status palettes;
+- documented Windows 11 DWM dark-titlebar support;
+- dynamically resolved UxTheme helpers used only as a best-effort enhancement for native dark menus/common controls.
+
+If the optional UxTheme helpers change in a future Windows version, only that visual enhancement may disappear. Filesystem behavior and GUI startup must remain unaffected.
+
+## Darkness Dokany boundary
+
+Dokany callbacks are adapters above `ReadOnlyMountView` and `DriveSession`:
+
+```text
+Explorer request
+      |
+      v
+Dokany callback
+      |
+      v
+ReadOnlyMountView
+      |
+      v
+DriveSession
+      |
+      v
+APA/PFS core
+```
+
+Callback code converts UTF-16 paths/status values and must not acquire its own knowledge of PFS zones, inode arithmetic or APA sub-partitions.
+
+The mount has multiple independent read-only barriers:
+
+1. no `BlockDevice::write()` API exists;
+2. `PhysicalDrive` requests `GENERIC_READ` only;
+3. Dokany is mounted with `DOKAN_OPTION_WRITE_PROTECT`;
+4. mutation callbacks reject create/write/delete/rename/truncate/metadata writes.
 
 ## Release-train implementation map
 
 ### 0.1 Ayanami: APA read-only core
 
-Implemented and hardware validated:
-
-- file-backed disk images;
-- read-only `\\.\PhysicalDriveN` backend on Windows;
-- exact 1024-byte APA header layout;
-- APA checksum validation;
-- Sony MBR signature validation;
-- linked-list traversal with cycle/out-of-range detection;
-- `next`/`prev` consistency diagnostics;
-- main/sub partition metadata and logical size accounting;
-- APA extent translator (`main + sub` addressing);
-- PFS primary/backup superblock probe and validation.
+Implemented and hardware validated.
 
 ### 0.2 Bocchi: PFS read path
 
+Implemented and hardware validated, including direct file/directory read behavior; generated tests cover SEGI and main/sub crossings.
+
+### 0.3 Chisato: Windows browser, host/session layer and hardening
+
 Implemented and hardware validated:
 
-```text
-ApaVolume
-  -> PFS SuperBlock
-  -> root SEGD inode
-  -> direct data extents
-  -> optional SEGI chains
-  -> byte-range reader
-  -> directory iterator
-  -> path resolver
-```
-
-The reader validates inode checksum/magic, sub-part references, address overflow, descriptor ranges, directory-entry boundaries and SEGI metadata.
-
-### 0.3 Chisato: Windows browser, host/session layer and pre-hardware hardening
-
-Implemented and CI-validated; real-HDD GUI/export validation is still pending:
-
-```text
-Main window
-  +-- TreeView      APA main partitions
-  +-- ListView      PFS directory contents / metadata
-  +-- Status bar    path + READ ONLY + backing-I/O counters
-```
-
-The GUI uses `DriveSession::browse()` and `DriveSession::export_to_host()`. It no longer constructs a separate `ApaVolume`/`pfs::Reader` path or manual copy loop.
-
-Chisato also adds:
-
+- native Win32 APA/PFS browser;
 - read-only physical-drive discovery;
+- shared `DriveSession` and recursive host export;
 - generated-image end-to-end validation;
-- deterministic malformed-metadata regression corpus;
-- optional APA libFuzzer target;
-- backend read instrumentation.
+- deterministic malformed-metadata corpus;
+- backing-read instrumentation;
+- real-HDD recursive export and regular-file SHA-256 validation.
 
-See [`testing.md`](testing.md).
+### 0.4 Darkness: Dokany read-only Explorer provider
+
+Current development state:
+
+- portable mount namespace/view implemented;
+- case-insensitive host aliases implemented;
+- thread-safe session stat/random-offset read entry points implemented;
+- Dokany 2.3.1 adapter implemented and linked in Windows CI;
+- read-only mount executable implemented;
+- mutation callbacks and global Dokany write-protect implemented;
+- pinned Dokany SDK/runtime CI install and packaging implemented;
+- System/Light/Dark native GUI theming implemented;
+- portable mount-view tests and both CI platforms green;
+- real-HDD Explorer mount validation still pending.
+
+See [`darkness-plan.md`](darkness-plan.md).
 
 ## Dependency rules
 
@@ -193,10 +220,11 @@ These are architecture invariants, not suggestions:
 2. PFS must access physical data through `ApaVolume`, never by adding APA LBAs itself.
 3. Frontends must not reimplement APA/PFS parsing.
 4. Windows filename conversion must not alter PFS-visible names.
-5. Read-only parsing must remain usable without loading GUI code.
+5. Read-only parsing must remain usable without loading GUI or Dokany code.
 6. `DriveSession` may orchestrate parser/host operations but must not become a shell-global mount/current-directory model.
 7. Instrumentation/caches must remain transparent to parser correctness and safety checks.
-8. Future write support must be a separate capability with backup/recovery semantics.
+8. GUI theme/platform policy must stay above the host/core filesystem layers.
+9. Future write support must be a separate capability with backup/recovery semantics.
 
 If a feature appears to require violating one of these, update the architecture deliberately rather than creating an accidental dependency.
 
@@ -224,9 +252,7 @@ See [`apa-format-notes.md`](apa-format-notes.md) and [`pfs-format-notes.md`](pfs
 
 ## Current concurrency/performance reality
 
-The API is designed so future Dokany callbacks do not require a global shell mount/current directory, but backing I/O is not yet highly concurrent.
-
-Today:
+Dokany may issue concurrent callbacks, so no frontend-global PFS current directory is introduced. Backing I/O is still deliberately conservative:
 
 ```text
 DriveSession
@@ -239,13 +265,11 @@ DriveSession
 
 The image backend similarly serializes one `ifstream` seek/read state.
 
-This is correct for Chisato and is a known performance limit. The new counters finally make the lower-level request pattern visible. See [`performance.md`](performance.md) before changing batching, caching or Windows I/O primitives.
+That is acceptable for Darkness correctness work and is a known performance limit. Cache design, request coalescing, read-ahead and overlapped physical I/O belong to 0.5 Emilia and should be driven by the backing-I/O statistics collected during Explorer workloads.
 
-## Explorer integration
+## Explorer namespace
 
-Dokany belongs above `DriveSession`/host/core, not inside format parsing.
-
-Proposed Darkness namespace:
+Darkness currently exposes:
 
 ```text
 P:\
@@ -253,14 +277,12 @@ P:\
     __system\
     __common\
     +OPL\
-  Games\                # synthetic HDL view, later
-  System\
-    MBR.bin              # controlled metadata/recovery view, later
+    ...
 ```
 
-The GUI may present a friendlier flat view while the filesystem provider uses explicit namespaces to avoid collisions between partition names and synthetic folders.
+`Games\` and HDL virtual ISO views remain 0.7 Guts. Synthetic recovery/MBR views remain later work.
 
-This namespace is a design target, not a Chisato feature.
+Explicit namespaces avoid collisions between real partition names and future synthetic views while allowing the GUI to remain friendlier and flatter.
 
 ## Safety invariants before write support
 
@@ -289,7 +311,9 @@ The current source-device path remains read-only end to end.
 | directory garbage | 512-byte dentry boundary parsing |
 | export path/name failure | `ps2driveforge_host`, not PFS core |
 | CLI/GUI disagreement | `DriveSession` call inputs/results first |
-| slow sequential reads | `--stats` + `performance.md` |
-| GUI-only issue | Win32 presentation; reproduce via `DriveSession`/CLI first |
+| direct reader works but Explorer lookup fails | `ReadOnlyMountView` / Dokany adapter |
+| Explorer copy differs from direct export | Dokany random-offset reads, then PFS byte-range read |
+| slow mounted reads | backing-I/O stats + `performance.md` |
+| GUI-only colour/rendering issue | Windows theme/UI boundary, never APA/PFS |
 
 The goal is to identify which abstraction is wrong before adding compatibility hacks to the layer above it.
