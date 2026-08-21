@@ -8,6 +8,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ps2hdd::pfs {
@@ -132,7 +133,13 @@ public:
     // Read-only frontends may reuse a ProbeResult already validated against the
     // same immutable APA volume. This avoids rereading primary/backup superblocks
     // for every Explorer stat/read without weakening the normal probing API.
-    Reader(ApaVolume& volume, ProbeResult validated_probe);
+    Reader(ApaVolume& volume, ProbeResult validated_probe)
+        : volume_(volume), probe_(std::move(validated_probe))
+    {
+        if (!probe_.valid && !probe_.errors.empty()) {
+            last_error_ = probe_.errors.front();
+        }
+    }
 
     [[nodiscard]] bool valid() const noexcept { return probe_.valid; }
     [[nodiscard]] const ProbeResult& probe_result() const noexcept { return probe_; }
