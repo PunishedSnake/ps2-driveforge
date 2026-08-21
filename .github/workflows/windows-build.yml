@@ -20,7 +20,24 @@ jobs:
 
       - name: Install Dokany 2.3.1 SDK/runtime
         shell: pwsh
-        run: choco install dokany2 --version=2.3.1.1000 -y --no-progress
+        run: |
+          $url = 'https://github.com/dokan-dev/dokany/releases/download/v2.3.1.1000/Dokan_x64.msi'
+          $msi = Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi'
+          Invoke-WebRequest $url -OutFile $msi
+          $expected = '69FF8CB37BFEC3A75921C85FFD1C6370B50A9EC4ECEF2CF3A009D488DCBF5465'
+          $actual = (Get-FileHash $msi -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "Dokany MSI SHA-256 mismatch: expected $expected, got $actual"
+          }
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            '/i', $msi,
+            'INSTALLDEVFILES=1',
+            '/passive',
+            '/norestart'
+          )
+          if ($process.ExitCode -notin @(0, 3010, 1641)) {
+            throw "Dokany MSI installation failed with exit code $($process.ExitCode)"
+          }
 
       - name: Locate Dokany SDK
         id: dokany
@@ -32,9 +49,16 @@ jobs:
             Select-Object -First 1
           if (-not $root) { throw 'Dokany SDK root was not found after installation.' }
           Write-Host "Dokany root: $($root.FullName)"
-          Get-ChildItem $root.FullName -Recurse -File |
-            Where-Object { $_.Name -match '^dokan.*\.(h|lib|dll)$' } |
-            ForEach-Object { Write-Host $_.FullName }
+          $header = Get-ChildItem $root.FullName -Recurse -File -Filter 'dokan.h' | Select-Object -First 1
+          $library = Get-ChildItem $root.FullName -Recurse -File -Filter 'dokan2.lib' |
+            Where-Object { $_.FullName -notmatch '\\x86\\' } |
+            Select-Object -First 1
+          if (-not $header -or -not $library) {
+            Get-ChildItem $root.FullName -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw 'Dokany development header/import library was not installed.'
+          }
+          Write-Host "Dokany header: $($header.FullName)"
+          Write-Host "Dokany library: $($library.FullName)"
           "root=$($root.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Build, test and package
