@@ -7,7 +7,7 @@ DriveForge is intended to become substantially more convenient and, where the ho
 For a physical Windows disk today:
 
 ```text
-GUI / CLI
+GUI / CLI / Dokany
   -> DriveSession
     -> pfs::Reader::read
       -> read_zone_bytes
@@ -29,13 +29,11 @@ Current relevant sizes:
 - aligned PFS lower-level read batch: up to 128 sectors = 64 KiB;
 - host export request buffer: 1 MiB.
 
-The 1 MiB exporter buffer does **not** mean one 1 MiB device read. The current PFS layer can split it into multiple 64 KiB lower-level reads and additional reads when the file crosses PFS extents.
+The 1 MiB exporter buffer does **not** imply a single 1 MiB device read. The current PFS layer may split it into multiple 64 KiB lower-level reads plus extent-transition reads.
 
-## Instrumentation implemented in Chisato
+## Instrumentation implemented
 
-The first instrumentation layer is now implemented rather than merely planned.
-
-`InstrumentedBlockDevice` measures the actual calls reaching the backing `BlockDevice` after PFS batching and APA translation. `DriveSession` also tracks high-level operation counts.
+`InstrumentedBlockDevice` measures actual calls reaching the backing `BlockDevice` after PFS batching and APA translation. `DriveSession` tracks high-level operation counts.
 
 Current counters:
 
@@ -45,156 +43,165 @@ Current counters:
 - backing `read()` calls;
 - backing bytes requested;
 - failed backing reads;
-- largest backing read.
+- largest backing read;
+- derived average backing-read size.
 
-CLI derives average backing-read size and exposes the counters with:
+CLI exposes them with:
 
 ```powershell
 ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
 ps2-driveforge-inspect.exe --stats --physical 3 --extract +OPL / exported-OPL
 ```
 
-The GUI status bar also exposes cumulative backing reads/bytes for the current session.
+The GUI status bar also exposes cumulative backing reads/bytes for its active `DriveSession`.
 
-These counters are **measurement plumbing**, not evidence that DriveForge is faster than pfsshell/pfsfuse.
+These counters are measurement plumbing, not proof that DriveForge is already faster than pfsshell/pfsfuse.
 
-Still missing before deeper Emilia profiling:
+Still missing for Emilia profiling:
 
-- logical `Reader::read()` calls/bytes separated from backend bytes;
+- logical reader calls/bytes separated from backend bytes;
 - metadata vs payload read classification;
-- APA translation count;
-- elapsed operation timings;
-- cache hit/miss counters once caches exist.
+- elapsed-operation timings;
+- inode/directory/block cache hit/miss counters;
+- coalescing/read-ahead usefulness counters;
+- concurrency/queue information after overlapped I/O exists.
+
+## Existing real-HDD baseline
+
+The Chisato `+OPL` browse workload recorded:
+
+```text
+APA scans:             1
+PFS browse operations: 1
+Backing read calls:    215
+Backing bytes read:    206.50 KiB
+Average backing read:  983 B
+Largest backing read:  1.00 KiB
+Failed backing reads:  0
+```
+
+This already demonstrates a metadata-heavy pattern dominated by roughly 1 KiB backing requests.
+
+## Darkness Explorer baseline
+
+Explorer is now hardware-validated through the Darkness Dokany path and is noticeably more metadata-hungry than the DriveForge GUI/CLI. Before merging 0.4 and changing cache/I/O behavior in 0.5, preserve this final real-machine workload:
+
+```text
+cold GUI start
+ -> UAC / SetupAPI discovery / auto-open
+ -> Mount read-only
+ -> Explorer root
+ -> Partitions
+ -> +OPL
+ -> __common\OPL
+ -> read/copy conf_hdd.cfg
+ -> Unmount
+```
+
+For the final Darkness validation preserve, where practical:
+
+- the callback/debug trace for the workload;
+- backing-I/O totals visible from the session/tooling;
+- the copied file hash;
+- whether the run started cold or followed previous browsing.
+
+Emilia should repeat the same navigation/copy sequence before and after optimization classes. Subjective Explorer responsiveness is useful context, but not the benchmark by itself.
 
 ## Current strengths
 
-Even before a cache exists, the current API enables optimizations that would be awkward if every frontend had to reproduce a selected-device/current-mount/current-directory model:
+The current API enables optimization without changing format semantics:
 
 - byte-range reads carry explicit offsets;
-- PFS logical extents are separated from APA physical extents;
-- GUI and CLI now share `DriveSession` and the same parser/export path;
-- host export can request large sequential ranges;
+- PFS logical extents are separate from APA physical extents;
+- GUI, CLI, export, and Dokany use the same session/parser path;
 - instrumentation is transparent below format parsing;
-- future Dokany code can reuse the same explicit-path/session model.
+- mounted reads do not require a process-global current directory;
+- validated read-only metadata is suitable for immutable caching in Emilia.
 
-These are **enablers**, not benchmark results.
+These are enablers, not benchmark results.
 
 ## Known bottlenecks
 
 ### Global serialization per backing device
 
-`PhysicalDrive` and `FileBlockDevice` currently protect seek/read operations with a mutex. This is correct for the current synchronous implementation, but it means parallel filesystem requests serialize at the backing device.
+`PhysicalDrive` and `FileBlockDevice` currently protect seek/read operations with a mutex. Parallel filesystem callbacks therefore serialize at the backing device.
 
 ### No metadata caching
 
-Repeated directory traversal can reread inode metadata. A Dokany workload can ask for attributes and directory data many times for the same nodes, so this will matter much more under Explorer than in the current CLI.
+Explorer repeatedly opens/stats/enumerates the same nodes. Inode and directory metadata can currently be reread many times.
 
-### No read window cache
+### No read-window cache
 
-Repeated or overlapping small reads can cause repeated host I/O even when the requested bytes were just read.
+Repeated or overlapping small reads can cause repeated host I/O for bytes that were just fetched.
 
 ### Fixed 64 KiB aligned batch
 
-`read_zone_bytes()` currently limits a lower-level aligned batch to 128 sectors. That number was chosen as a conservative first implementation and has not been tuned.
+`read_zone_bytes()` currently caps an aligned lower-level batch at 128 sectors. This was a conservative correctness choice, not a tuned optimum.
 
 ### Synchronous Windows API
 
-The Windows physical backend uses `SetFilePointerEx` + `ReadFile`. No overlapped I/O or queued request model exists yet.
+The physical backend uses `SetFilePointerEx` + synchronous `ReadFile`; no offset/overlapped or queued model exists yet.
+
+## Emilia optimization order
+
+Unless measurements contradict it, 0.5 should proceed in this order:
+
+1. add missing logical/metadata/payload/timing counters;
+2. immutable inode metadata cache;
+3. directory cache;
+4. block/read-window cache;
+5. adjacent request coalescing inside validated APA extents;
+6. adaptive sequential read-ahead;
+7. Windows offset-based/overlapped physical reads;
+8. concurrent scheduling where safe;
+9. benchmark the preserved Darkness workload and representative export workloads;
+10. compare against pfsshell/pfsfuse-equivalent operations only with controlled conditions.
+
+A custom kernel filesystem/storage driver is **not** the performance plan. Dokany remains the Explorer bridge; intended gains are in the userspace data path.
 
 ## Benchmark workloads
 
-At minimum, performance comparisons should contain four different workloads.
+At minimum keep distinct workloads for:
 
 ### A. Large sequential file
 
-Export one large file from a PFS partition to a fast host filesystem.
-
-Measures:
-
-- sequential throughput;
-- request coalescing;
-- USB/SATA/IDE bridge behavior.
+Measures sequential throughput, request size/coalescing, and bridge/device behavior.
 
 ### B. Many small files
 
-Recursively export a tree containing many small files.
-
-Measures:
-
-- metadata overhead;
-- inode/directory caching;
-- host file creation overhead.
+Measures metadata and host-file-creation overhead.
 
 ### C. Directory browsing
 
-Enumerate the same large directory repeatedly and resolve file metadata.
+Repeated enumeration/stat of the same directory measures inode/directory cache value.
 
-Measures:
+### D. Mounted Explorer reads
 
-- metadata cache value;
-- frontend overhead independent of bulk copying.
-
-### D. Random mounted reads
-
-Use the future Dokany provider to issue small random reads and attribute queries.
-
-Measures:
-
-- cache behavior;
-- concurrency;
-- Windows filesystem-provider overhead.
+The preserved Darkness navigation/copy workload measures real Dokany metadata churn, random reads, and mount overhead.
 
 ## Comparison rules for pfsshell/pfsfuse
 
-When we publish a comparison, record:
+When publishing comparisons, record exact DriveForge and pfsshell versions/commits, physical HDD and bridge/adapter, Windows version, source path/workload, host destination, cold/warm cache state, DriveForge backing-I/O counters, and multiple timed runs where variance matters.
 
-- exact DriveForge commit/version;
-- exact pfsshell commit/release;
-- physical HDD model/capacity;
-- PS2 network adapter or SATA/IDE adapter if relevant;
-- USB bridge model and USB link speed if used;
-- Windows version;
-- source partition and workload;
-- host destination medium;
-- cold-cache and warm-cache results separately;
-- `--stats` backing-read results for DriveForge;
-- at least three timed runs when variance matters.
-
-Do not compare a warm DriveForge run to a cold pfsshell run.
-
-## Optimization order
-
-The preferred order is now:
-
-1. **backing-I/O counters — implemented in Chisato**;
-2. add logical/metadata/payload/timing counters;
-3. immutable inode metadata cache;
-4. directory cache;
-5. block/read-window cache;
-6. adaptive sequential read size;
-7. coalescing reads within one APA extent;
-8. Windows offset-based/overlapped device reads;
-9. concurrent read scheduling;
-10. only then consider deeper platform-specific changes.
-
-A custom Windows kernel filesystem/storage driver is **not** the performance plan. Dokany remains the preferred Explorer bridge; intended gains are in the userspace data path.
+Do not compare a warm DriveForge run with a cold pfsshell run.
 
 ## Correctness gates
 
-An optimization is not accepted if it breaks any of these:
+An optimization is not accepted if it breaks:
 
-- APA chain and extent-bounds validation;
-- PFS checksum validation;
-- arbitrary unaligned byte reads;
-- reads crossing file extents;
-- main/sub-partition translation;
+- APA chain/extent validation;
+- PFS checksum/magic validation;
+- arbitrary unaligned reads;
+- extent crossing;
+- APA main/sub translation;
 - SEGI traversal;
-- generated-image SHA-256 end-to-end test;
-- corruption regression corpus;
-- physical-device read-only invariant;
-- sanitizer CI;
-- hardware validation cases.
+- generated-image SHA-256 E2E;
+- corruption corpus;
+- Dokany read-only semantics;
+- physical `GENERIC_READ` invariant;
+- sanitizer/MSVC CI;
+- recorded hardware cases.
 
-See [`testing.md`](testing.md) for the concrete regression workflow.
+A cache may memoize validated information; it must not become a second, weaker parser.
 
 Fast corruption is not a feature.
