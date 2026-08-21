@@ -56,25 +56,37 @@ void cache_contract()
     ps2hdd::ReadCacheBlockDevice cache(backing);
 
     std::array<std::byte, 5> first{};
-    check(cache.read(123, first), "first small read succeeds");
+    check(cache.read(123, first), "first tiny read succeeds");
     check(backing.calls == 1 && backing.last_size == ps2hdd::ReadCacheBlockDevice::kPageSize,
-          "first small read fills exactly one 4 KiB page");
+          "tiny read fills exactly one 4 KiB page");
     check(first[0] == static_cast<std::byte>(123), "first payload byte is correct");
 
     cache.reset_stats();
     std::array<std::byte, 5> second{};
-    check(cache.read(123, second), "repeat small read succeeds");
-    check(backing.calls == 1, "repeat small read performs zero extra backing reads");
+    check(cache.read(123, second), "repeat tiny read succeeds");
+    check(backing.calls == 1, "repeat tiny read performs zero extra backing reads");
     const auto warm = cache.stats();
     check(warm.hits == 1 && warm.misses == 0 && warm.bytes_served == second.size(),
-          "repeat small read is counted as a cache hit");
+          "repeat tiny read is counted as a cache hit");
+
+    // APA headers and PFS metadata records are 1 KiB. They already become
+    // semantic objects in higher caches, so a raw 4 KiB page fill would only
+    // amplify device traffic. The threshold must preserve the caller's exact
+    // request size as one direct backing read.
+    cache.reset_stats();
+    std::array<std::byte, 1024> metadata{};
+    check(cache.read(8192, metadata), "1 KiB metadata read succeeds");
+    check(backing.calls == 2 && backing.last_size == metadata.size(),
+          "1 KiB metadata bypasses without 4x read amplification");
+    check(cache.stats().bypass_reads == 1 && cache.stats().fill_bytes == 0,
+          "metadata bypass does not populate a 4 KiB page");
 
     // Large existing PFS batches must remain one direct backend request rather
     // than being fragmented into cache-page reads.
     cache.reset_stats();
     std::array<std::byte, 8192> large{};
-    check(cache.read(8192, large), "large read succeeds");
-    check(backing.calls == 2 && backing.last_size == large.size(),
+    check(cache.read(12288, large), "large read succeeds");
+    check(backing.calls == 3 && backing.last_size == large.size(),
           "large read bypasses cache as one backing request");
     check(cache.stats().bypass_reads == 1, "large bypass is counted");
 
@@ -83,7 +95,7 @@ void cache_contract()
     cache.reset_stats();
     std::array<std::byte, 4> crossing{};
     check(cache.read(4094, crossing), "cross-page read succeeds");
-    check(backing.calls == 3 && backing.last_size == crossing.size(),
+    check(backing.calls == 4 && backing.last_size == crossing.size(),
           "cross-page read remains one direct backing request");
     check(cache.stats().bypass_reads == 1, "cross-page bypass is counted");
 
@@ -91,9 +103,9 @@ void cache_contract()
     cache.reset_stats();
     std::array<std::byte, 5> after_clear{};
     check(cache.read(123, after_clear), "read after clear succeeds");
-    check(backing.calls == 4, "cache clear restores a backing page fill");
+    check(backing.calls == 5, "cache clear restores a backing page fill");
     check(cache.stats().misses == 1 && cache.stats().fill_bytes == 4096,
-          "cold page fill after clear is instrumented");
+          "cold tiny page fill after clear is instrumented");
 
     std::array<std::byte, 8> invalid{};
     check(!cache.read(backing.size_bytes() - 4, invalid), "out-of-range read remains rejected");
