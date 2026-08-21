@@ -98,11 +98,12 @@ StorageCharacteristics query_characteristics(HANDLE handle) noexcept
         result.trim_enabled = trim.TrimEnabled != FALSE;
     }
 
-    STORAGE_DEVICE_DESCRIPTOR device{};
-    device.Size = sizeof(device);
-    if (query_storage_property(handle, StorageDeviceProperty, device)) {
+    // Adapter descriptors have a fixed portion containing BusType and avoid the
+    // variable vendor/product strings present in STORAGE_DEVICE_DESCRIPTOR.
+    STORAGE_ADAPTER_DESCRIPTOR adapter{};
+    if (query_storage_property(handle, StorageAdapterProperty, adapter)) {
         result.bus_type_known = true;
-        result.bus_type = static_cast<std::uint32_t>(device.BusType);
+        result.bus_type = static_cast<std::uint32_t>(adapter.BusType);
     }
 
     return result;
