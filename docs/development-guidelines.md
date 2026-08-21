@@ -8,15 +8,16 @@ A feature or refactor is not complete until the relevant items below are handled
 
 1. implementation;
 2. unit/synthetic tests where practical;
-3. Windows CI and sanitizer CI;
-4. hardware validation when the change touches on-disk interpretation;
-5. README update if user-visible behavior changed;
-6. changelog update for the current release train;
-7. architecture/format/performance docs when an invariant or design decision changed;
-8. comments next to non-obvious code;
-9. known limitations recorded instead of hidden in chat/commit history.
+3. generated-image end-to-end coverage when multiple storage/filesystem layers interact;
+4. Windows CI and sanitizer CI;
+5. hardware validation when the change touches on-disk interpretation or frontend/physical-drive behavior;
+6. README update if user-visible behavior changed;
+7. changelog update for the current release train;
+8. architecture/format/performance/testing docs when an invariant or design decision changed;
+9. comments next to non-obvious code;
+10. known limitations recorded instead of hidden in chat/commit history.
 
-Not every typo needs all nine steps. Anything that changes APA/PFS interpretation, I/O semantics, safety, performance strategy, or frontend behavior probably does.
+Not every typo needs all ten steps. Anything that changes APA/PFS interpretation, I/O semantics, safety, performance strategy, or frontend behavior probably does.
 
 ## What deserves a code comment
 
@@ -82,18 +83,34 @@ If a new component starts depending on another layer, update the diagram. Exampl
 - core parser must not depend on GUI;
 - PFS should not know Windows paths;
 - host export may know host filesystem policy but should not mutate source PFS;
-- Dokany belongs above core/host abstractions.
+- `DriveSession` may orchestrate frontends but must not become process-global mount/current-directory state;
+- Dokany belongs above core/host/session abstractions.
 
 ## Format-note responsibilities
 
-`pfs-format-notes.md` (and future APA notes) should document only behavior we have evidence for. Link upstream references and tests when possible.
+`pfs-format-notes.md` and `apa-format-notes.md` should document only behavior we have evidence for. Link upstream references and tests when possible.
 
 When a real disk disproves an assumption:
 
 1. preserve the failing sample/log if possible;
-2. write a regression test;
-3. correct the implementation;
-4. correct the format note in the same change.
+2. write a deterministic regression test;
+3. add/extend the generated-image fixture if the bug crosses several layers;
+4. correct the implementation;
+5. correct the format/testing note in the same change.
+
+## Testing responsibilities
+
+[`testing.md`](testing.md) owns the concrete regression workflow.
+
+Use the smallest appropriate level:
+
+- focused in-memory test for one format invariant;
+- corruption corpus for malformed metadata;
+- generated `.img` E2E for cross-layer behavior and export integrity;
+- optional fuzzing to discover new parser cases;
+- real HDD only after deterministic CI gates are green.
+
+A fuzz crash or hardware failure should become a deterministic regression case whenever practical.
 
 ## pfsshell comparison responsibilities
 
@@ -120,6 +137,7 @@ For physical HDD validation record:
 - exact operation used;
 - successful observations;
 - errors/warnings;
+- `--stats` output when relevant;
 - whether the test was read-only;
 - anything unusual in the disk layout that makes it valuable as a regression case.
 
