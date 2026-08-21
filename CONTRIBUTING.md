@@ -9,6 +9,7 @@ Read:
 - [`docs/architecture.md`](docs/architecture.md)
 - [`docs/apa-format-notes.md`](docs/apa-format-notes.md)
 - [`docs/pfs-format-notes.md`](docs/pfs-format-notes.md)
+- [`docs/testing.md`](docs/testing.md)
 - [`docs/development-guidelines.md`](docs/development-guidelines.md)
 
 If the change is motivated by pfsshell behavior or performance, also read:
@@ -30,6 +31,10 @@ Run a normal build and CTest locally when possible. Pull requests are also check
 - Clang + AddressSanitizer + UndefinedBehaviorSanitizer + warnings-as-errors.
 
 A change to APA/PFS interpretation should include a synthetic regression test when practical.
+
+The generated-image end-to-end test is the preferred place to verify interactions spanning `FileBlockDevice -> APA -> ApaVolume -> PFS -> host export`. Corruption fixes should preserve the failure as a deterministic malformed-metadata test.
+
+Optional parser fuzzing is documented in [`docs/testing.md`](docs/testing.md); interesting fuzz cases must become deterministic regression tests before the fix is considered complete.
 
 ## Hardware evidence
 
@@ -58,4 +63,4 @@ After a release-train branch is validated and merged, delete it. Merged PRs and 
 
 Do not claim DriveForge is faster than pfsshell/pfsfuse based only on architecture or one informal copy test.
 
-Follow [`docs/performance.md`](docs/performance.md): record versions, hardware, workload, cache state and repeated measurements.
+Use `--stats` to record the current backing-I/O pattern, then follow [`docs/performance.md`](docs/performance.md): record versions, hardware, workload, cache state and repeated timed measurements.
