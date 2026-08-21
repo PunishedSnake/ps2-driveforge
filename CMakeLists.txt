@@ -43,9 +43,15 @@ if(WIN32)
     target_compile_definitions(ps2driveforge_core PUBLIC PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE=1)
 endif()
 
-add_library(ps2driveforge_host src/host/pfs_export.cpp)
+add_library(ps2driveforge_host
+    src/host/pfs_export.cpp
+    src/host/drive_session.cpp
+)
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
+if(WIN32)
+    target_sources(ps2driveforge_host PRIVATE src/platform/windows/physical_discovery.cpp)
+endif()
 if(MSVC)
     target_compile_options(ps2driveforge_host PRIVATE /W4 /permissive-)
     if(PS2DF_WARNINGS_AS_ERRORS)
