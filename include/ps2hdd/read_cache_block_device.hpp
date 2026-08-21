@@ -26,13 +26,15 @@ struct ReadCacheStats {
     std::uint64_t fill_bytes{};
 };
 
-// A deliberately small, platform-neutral first-level cache for metadata-shaped
-// reads. Requests that fit inside one 4 KiB page are cached; larger/cross-page
-// requests bypass directly to the inner device so Emilia does not fragment the
-// existing 64 KiB sequential PFS path into tiny backend calls.
+// A deliberately small first-level cache for tiny metadata-shaped reads. Very
+// small requests may fill one 4 KiB page to exploit locality, but requests of
+// 1 KiB or more go directly to the inner device. This prevents APA/PFS metadata
+// reads from being amplified 4x merely to populate a cache when semantic caches
+// above this layer already retain the parsed structures.
 class ReadCacheBlockDevice final : public BlockDevice {
 public:
     static constexpr std::size_t kPageSize = 4096;
+    static constexpr std::size_t kDirectReadThreshold = 1024;
     static constexpr std::size_t kMaxPages = 4096; // 16 MiB maximum payload.
 
     explicit ReadCacheBlockDevice(BlockDevice& inner) : inner_(inner) {}
@@ -56,7 +58,8 @@ public:
 
         const auto page_start = offset - (offset % kPageSize);
         const auto last_byte = offset + out.size() - 1;
-        if (out.size() > kPageSize || last_byte / kPageSize != page_start / kPageSize) {
+        if (out.size() >= kDirectReadThreshold ||
+            last_byte / kPageSize != page_start / kPageSize) {
             bypass_reads_.fetch_add(1, std::memory_order_relaxed);
             return inner_.read(offset, out);
         }
