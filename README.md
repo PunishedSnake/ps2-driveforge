@@ -5,31 +5,34 @@
 Current development train: **0.3.x — “Chisato”**  
 Current source version: **0.3.0-dev**
 
-PS2 DriveForge is a Windows-first PS2 HDD management stack. It is being built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`: one core parser/reader shared by a native GUI, CLI, host export layer, and later a Dokany Explorer provider.
+PS2 DriveForge is a Windows-first PS2 HDD management stack. It is being built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`: one read-only parser/reader stack shared by a native GUI, CLI, host export layer, and later a Dokany Explorer provider.
 
 > **Safety status:** source devices remain read-only. There is no public HDD write API and the Windows physical-drive backend requests `GENERIC_READ` only. Export writes only to user-selected host-side files/directories.
 
 ## Why another APA/PFS tool?
 
-`pfsshell` remains useful and is one of DriveForge's compatibility references. DriveForge deliberately changes the host-side architecture rather than trying to wrap the interactive shell model in a prettier frontend.
+`pfsshell` remains useful and is one of DriveForge's compatibility references. DriveForge deliberately changes the host-side architecture rather than wrapping the interactive shell model in a prettier frontend.
 
-The core differences today are:
+The important differences today are:
 
 - no process-global selected-device/current-mount/current-directory model in the parser;
 - a byte-addressed `BlockDevice` boundary instead of exposing iomanX semantics to frontends;
 - APA main/sub-partition translation isolated in `ApaVolume`;
 - explicit `PFS Reader + Node + offset + span` byte-range reads;
-- GUI/CLI/host export sharing the same parser instead of reproducing filesystem behavior;
+- a reusable `DriveSession` shared by CLI and GUI for APA scan, PFS browsing, export and diagnostics;
+- host filename/export policy isolated above the parser;
 - structural read-only safety while the parser is still maturing.
 
-This does **not** mean DriveForge has already benchmarked faster throughput than pfsshell/pfsfuse. Current physical-drive I/O is synchronous and deliberately conservative. The performance plan and the rules for making honest comparisons are documented in [`docs/performance.md`](docs/performance.md) and [`docs/pfsshell-comparison.md`](docs/pfsshell-comparison.md).
+This does **not** mean DriveForge has already benchmarked faster throughput than pfsshell/pfsfuse. Current physical-drive I/O is synchronous and deliberately conservative. DriveForge now has backing-I/O counters so later optimization can be measured instead of guessed. See [`docs/performance.md`](docs/performance.md) and [`docs/pfsshell-comparison.md`](docs/pfsshell-comparison.md).
 
 ## What works now
 
 - open PS2 HDD images on Windows, Linux and macOS;
 - open `\\.\PhysicalDriveN` read-only on Windows;
+- read-only detection of PS2 APA candidates across Windows physical drives;
 - detect and validate the APA v2 MBR;
 - enumerate and diagnose APA partition chains;
+- reject APA main/sub extents that leave the backing device;
 - recognize MBR, PFS, HDL and free partitions;
 - account for APA sub-partitions and non-contiguous extents;
 - probe PFS primary/backup superblocks and validate zone size;
@@ -37,27 +40,31 @@ This does **not** mean DriveForge has already benchmarked faster throughput than
 - follow indirect SEGI descriptor chains for large/fragmented files;
 - enumerate PFS directories and resolve paths;
 - read arbitrary byte ranges, including cross-sector ranges;
-- browse PFS partitions from the CLI;
+- browse PFS partitions from the CLI and native GUI;
 - recursively export PFS files/directories to the host;
 - sanitize PS2 filenames for Windows host restrictions;
 - detect export directory cycles and host-name collisions;
-- native Windows GUI with APA partition tree and PFS file browser;
-- double-click file extraction from the GUI;
+- collect backing-I/O statistics for browse/export operations;
+- native Windows GUI with APA partition tree, PFS browser, source detection and shared `DriveSession` path;
 - build/test on Windows x64 with MSVC;
-- run Clang ASan + UBSan with warnings-as-errors in CI.
+- run Clang ASan + UBSan with warnings-as-errors in CI;
+- generate a complete APA/PFS `.img` during tests and verify recursive exports by SHA-256;
+- run a deterministic malformed-metadata regression corpus;
+- optionally build an APA libFuzzer target under Clang.
 
-Ayanami and Bocchi were validated against a real **149.05 GiB PS2 HDD**. Bocchi successfully enumerated the real `+OPL` root (`CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`) and correctly reported the empty `CFG` directory. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md).
+Ayanami and Bocchi were validated against a real **149.05 GiB PS2 HDD**. Bocchi successfully enumerated the real `+OPL` root (`CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`) and correctly reported the empty `CFG` directory. Chisato's new GUI/export/session/discovery path is CI-validated but still awaiting its next real-HDD validation pass. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md).
 
 ## Current limitations
 
 These are deliberate or known gaps, not hidden TODOs:
 
 - source HDD/image mutation is not implemented;
-- Chisato's GUI is the first functional browser shell, not the final UX;
+- Chisato's GUI is still the first functional management shell, not the final UX;
 - recursive export has not yet been hardware-validated on a non-empty PFS tree;
 - Windows physical-drive reads are currently synchronous and serialized per device;
 - no inode/directory/block cache exists yet;
 - no read-ahead or overlapped I/O exists yet;
+- current instrumentation measures backing reads, but not yet metadata-vs-payload/cache counters;
 - Dokany Explorer mounting belongs to the next release train (`0.4 Darkness`);
 - HDL virtual ISO browsing/import/export is a later milestone;
 - project licensing remains intentionally TBD until the upstream-code/definition audit is complete.
@@ -68,16 +75,18 @@ The Windows package contains `PS2-DriveForge.exe` in addition to the CLI inspect
 
 Current GUI behavior:
 
+- starts without forcing an image-selection dialog;
 - `File -> Open disk image...` opens a raw PS2 HDD image;
-- `File -> Open physical drive -> PhysicalDriveN` opens a physical disk read-only;
+- `File -> Detect PS2 HDDs...` scans accessible `PhysicalDrive0..31` read-only and lists PS2 APA candidates;
+- `File -> Open physical drive -> PhysicalDriveN` opens a selected physical disk read-only;
 - the left pane lists APA main partitions;
 - selecting a PFS partition opens its root directory in the right pane;
 - double-click a folder to navigate into it;
 - use `..` to navigate upward;
-- double-click a regular file to extract it with a normal Windows **Save As** dialog;
-- status text identifies the current PFS path and read-only state.
+- double-click a regular file to export it with a normal Windows **Save As** dialog;
+- status text identifies the current PFS path, read-only state, and cumulative backing read count/bytes.
 
-The GUI owns no APA/PFS parser logic. It consumes the same core API as the CLI and future filesystem-provider code.
+The GUI no longer constructs its own PFS stack or duplicate file-copy loop. GUI and CLI now use the same `DriveSession`/host exporter path, reducing the chance that one frontend quietly behaves differently from the other.
 
 ## Windows x64 build
 
@@ -105,6 +114,14 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## CLI
 
+### Detect PS2 HDD candidates on Windows
+
+```powershell
+.\ps2-driveforge-inspect.exe --detect-physical
+```
+
+This scans accessible Windows physical disks using `GENERIC_READ` only and reports size, APA detection/version and header count. It never selects or enables a write target.
+
 ### Inspect an image
 
 ```bash
@@ -113,9 +130,10 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### Inspect a physical drive on Windows
 
-Run an elevated terminal if Windows requires it and always verify the disk number first:
+Run an elevated terminal if Windows requires it. Detection is preferable to guessing the disk number:
 
 ```powershell
+.\ps2-driveforge-inspect.exe --detect-physical
 .\ps2-driveforge-inspect.exe --physical 3
 ```
 
@@ -144,20 +162,41 @@ Whole directory tree:
 
 Directory export is recursive, streams files in 1 MiB host-side chunks, converts illegal Windows filename characters, protects reserved DOS device names such as `CON`/`NUL`/`LPT1`, avoids host-side case-insensitive name collisions, and refuses PFS directory cycles. The PS2 source is never opened for writing.
 
+### Collect backing-I/O statistics
+
+Put `--stats` before the source selector:
+
+```powershell
+.\ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
+.\ps2-driveforge-inspect.exe --stats --physical 3 --extract +OPL / exported-OPL
+```
+
+Current output includes APA scan count, browse/export operation counts, backing `read()` calls, bytes read, average/largest backing read and failures. These numbers establish a baseline for future Emilia optimization; they are not a performance claim by themselves.
+
 ## Test coverage
 
-Current synthetic coverage includes:
+The normal CTest suite currently contains **7 test executables** and is run under both Windows/MSVC and Clang ASan+UBSan.
 
-- valid and invalid APA chains;
-- APA checksum and cycle detection;
+Coverage includes:
+
+- valid/invalid APA chains, checksum and cycle detection;
+- APA main/sub extent bounds validation;
 - PFS primary/backup superblocks;
+- invalid PFS zone and missing-subpart rejection;
 - root inode and directory enumeration;
 - path resolution;
+- bad inode checksum and malformed dentry rejection;
 - unaligned reads crossing a 512-byte sector boundary;
 - indirect SEGI descriptor traversal;
-- Windows-safe host filename conversion.
+- Windows-safe host filename conversion;
+- `DriveSession` scan/browse/export and I/O counters;
+- generated real `.img` end-to-end traversal through `FileBlockDevice`;
+- nested directories and empty directories;
+- a file crossing APA main/sub-partition extents;
+- generated SEGI-backed file export;
+- recursive host export integrity verified by SHA-256.
 
-CI runs the tests both under Windows/MSVC and under Clang with AddressSanitizer + UndefinedBehaviorSanitizer.
+An optional Clang/libFuzzer APA target is also available. See [`docs/testing.md`](docs/testing.md) for the exact fixture, corruption corpus, fuzz commands, statistics, and hardware-test workflow.
 
 ## Developer documentation
 
@@ -169,7 +208,8 @@ Start here when changing core behavior rather than guessing from old chat/commit
 | [`docs/apa-format-notes.md`](docs/apa-format-notes.md) | APA units, links, checksums and main/sub extents |
 | [`docs/pfs-format-notes.md`](docs/pfs-format-notes.md) | PFS zones, metadata, SEGD/SEGI and dentry traps |
 | [`docs/pfsshell-comparison.md`](docs/pfsshell-comparison.md) | What we changed relative to the pfsshell architecture |
-| [`docs/performance.md`](docs/performance.md) | Current bottlenecks, instrumentation and benchmark plan |
+| [`docs/performance.md`](docs/performance.md) | Current bottlenecks, implemented instrumentation and benchmark plan |
+| [`docs/testing.md`](docs/testing.md) | E2E image fixture, corruption corpus, fuzzing and hardware-test workflow |
 | [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) | What has actually worked on a physical PS2 HDD |
 | [`docs/development-guidelines.md`](docs/development-guidelines.md) | Documentation/comment/testing definition of done |
 | [`docs/release-codenames.md`](docs/release-codenames.md) | The regrettably permanent anime release train |
@@ -178,7 +218,7 @@ Start here when changing core behavior rather than guessing from old chat/commit
 
 1. **0.1 “Ayanami”** — APA read-only core, diagnostics and initial PFS probing. **Done.**
 2. **0.2 “Bocchi”** — PFS inode/directory/file read path. **Done / hardware validated.**
-3. **0.3 “Chisato”** — native Windows GUI browser + reusable host export. **In progress.**
+3. **0.3 “Chisato”** — native Windows GUI browser, reusable host/session layer, discovery, diagnostics and pre-hardware hardening. **In progress / awaiting hardware validation.**
 4. **0.4 “Darkness”** — Dokany Explorer mount, read-only first.
 5. **0.5 “Emilia”** — cache, read-ahead and overlapped-I/O performance pass.
 6. **0.6 “Frieren”** — carefully gated PFS/APA write path with automatic metadata backup.
@@ -190,24 +230,28 @@ Release train names proceed alphabetically by anime character. Patch releases in
 ## Architecture
 
 ```text
- Native Win32 GUI        CLI        future Dokany
-        |                 |                 |
-        +-------- ps2driveforge_host -------+
-                          |
-                 ps2driveforge_core
-                          |
-               +----------+----------+
-               |          |          |
-              APA        PFS       HDL/MBR
-               |          |          |
-               +----------+----------+
-                          |
+ Native Win32 GUI         CLI        future Dokany
+        |                  |                 |
+        +----------- DriveSession -----------+
+                           |
+                ps2driveforge_host
+                           |
+                ps2driveforge_core
+                           |
+             +-------------+-------------+
+             |             |             |
+            APA           PFS         HDL/MBR
+             |             |             |
+             +-------------+-------------+
+                           |
+               InstrumentedBlockDevice
+                           |
                      BlockDevice
                    /             \
              disk image      PhysicalDriveN
 ```
 
-Format code does not know about Win32 controls, Windows filenames, or Dokany. Frontends do not implement APA/PFS parsing.
+Format code does not know about Win32 controls, Windows filenames, or Dokany. Frontends do not implement APA/PFS parsing. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not a new on-disk abstraction.
 
 ## Format references
 
