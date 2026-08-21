@@ -1,4 +1,5 @@
 #include "ps2hdd/hdl.hpp"
+#include "ps2hdd/management_model.hpp"
 #include "ps2hdd/partition_catalog.hpp"
 
 #include <array>
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -71,6 +73,26 @@ void catalog_roundtrip()
     check(mains.sub_partitions == 1, "main-only catalog still reports hidden sub count");
     check(mains.entries[2].kind == ps2hdd::PartitionCatalogKind::hdl,
           "HDL rows are classified directly from APA type");
+
+    ps2hdd::ManagementModel model(full);
+    const auto initial = model.progress();
+    check(model.rows().size() == 5, "management model first paint uses complete in-memory catalog");
+    check(initial.total_hdl == 1 && initial.pending_hdl == 1 && initial.ready_hdl == 0,
+          "HDL game rows start pending without blocking initial list construction");
+
+    ps2hdd::hdl::GameResult enriched;
+    enriched.ok = true;
+    enriched.game.partition_id = hdl.id;
+    enriched.game.start_lba = hdl.start_lba;
+    enriched.game.title = "Instant Game";
+    const auto updated = model.apply_hdl_result(enriched);
+    check(updated.has_value() && model.rows()[*updated].hdl_state == ps2hdd::EnrichmentState::ready,
+          "one progressive HDL result updates exactly one management row");
+    check(model.rows()[*updated].hdl_game && model.rows()[*updated].hdl_game->title == "Instant Game",
+          "management row exposes enriched game title without rebuilding catalog");
+    const auto after = model.progress();
+    check(after.pending_hdl == 0 && after.ready_hdl == 1 && after.failed_hdl == 0,
+          "management progress tracks incremental enrichment state");
 }
 
 class MemoryDevice final : public ps2hdd::BlockDevice {
@@ -185,15 +207,38 @@ void native_hdl_metadata_contract()
 
     device.read_calls = 0;
     device.read_offsets.clear();
-    const auto catalog = ps2hdd::hdl::read_catalog(device, scan);
-    check(catalog.entries.size() == 2 && catalog.readable == 2 && catalog.unreadable == 0,
+    std::size_t progress_calls = 0;
+    const auto catalog = ps2hdd::hdl::read_catalog(
+        device, scan,
+        [&](std::size_t completed, std::size_t total, const ps2hdd::hdl::GameResult& game) {
+            ++progress_calls;
+            check(completed == progress_calls && total == 2 && game.ok,
+                  "progress callback reports deterministic completed/total counts");
+        });
+    check(catalog.entries.size() == 2 && catalog.total_candidates == 2 &&
+              catalog.readable == 2 && catalog.unreadable == 0 && !catalog.cancelled,
           "native HDL catalog enriches all main game partitions");
+    check(progress_calls == 2, "progressive HDL loader reports each completed game once");
     check(catalog.entries[0].game.partition_id == early.id &&
               catalog.entries[1].game.partition_id == late.id,
           "HDL enrichment is scheduled in ascending physical LBA order");
     check(device.read_calls == 2, "two games require exactly two in-process metadata reads");
     check(device.read_offsets[0] < device.read_offsets[1],
           "backing reads follow physical order rather than source list order");
+
+    std::stop_source stop;
+    device.read_calls = 0;
+    device.read_offsets.clear();
+    const auto cancelled = ps2hdd::hdl::read_catalog(
+        device, scan,
+        [&](std::size_t completed, std::size_t, const ps2hdd::hdl::GameResult&) {
+            if (completed == 1) {
+                stop.request_stop();
+            }
+        },
+        stop.get_token());
+    check(cancelled.cancelled && cancelled.entries.size() == 1 && device.read_calls == 1,
+          "HDL enrichment cancellation stops before reading the next game");
 
     auto damaged = late;
     std::array<std::byte, 4> zero{};
@@ -211,7 +256,7 @@ int main()
     try {
         catalog_roundtrip();
         native_hdl_metadata_contract();
-        std::cout << "Emilia zero-I/O partition catalog and native HDL metadata tests passed.\n";
+        std::cout << "Emilia zero-I/O catalog, management model and native HDL metadata tests passed.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Test failure: " << error.what() << '\n';
