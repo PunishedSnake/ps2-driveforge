@@ -123,6 +123,8 @@ void write_header(ProfiledMemoryDevice& device, const ps2hdd::apa::Partition& pa
     std::array<std::byte, ps2hdd::hdl::kMetadataBytes> header{};
     store_u32(header.data(), ps2hdd::hdl::kMagic);
     std::memcpy(header.data() + ps2hdd::hdl::kTitleOffset, title.data(), title.size());
+    header[ps2hdd::hdl::kPartCountOffset] = std::byte{1};
+    store_u32(header.data() + ps2hdd::hdl::kAllocTableOffset + 8, 0x1000);
     const auto offset = static_cast<std::uint64_t>(partition.start_lba) * ps2hdd::apa::kSectorSize +
                         ps2hdd::hdl::kMetadataOffset;
     device.write(offset, header);
