@@ -8,6 +8,8 @@ A supported PS2 HDD image or physical Windows disk can be discovered, opened, mo
 
 The native Windows GUI also supports persistent System/Light/Dark themes with High Contrast passthrough.
 
+**Status: complete and hardware validated.**
+
 ## Namespace
 
 ```text
@@ -28,17 +30,17 @@ The native Windows GUI also supports persistent System/Light/Dark themes with Hi
 5. **Done / hardware validated:** layered write protection: no `BlockDevice::write()`, `GENERIC_READ` raw handles, `DOKAN_OPTION_WRITE_PROTECT`, and callback-level mutation rejection.
 6. **Done:** standalone mount CLI retained for diagnostics/scripts.
 7. **Done:** shared `DokanyMountController` is used directly by both GUI and CLI; no helper-process filesystem implementation exists.
-8. **Done:** SetupAPI `GUID_DEVINTERFACE_DISK` enumeration maps actual Windows disk interfaces to physical-drive numbers through `IOCTL_STORAGE_GET_DEVICE_NUMBER` before the normal DriveForge APA probe.
-9. **Done:** fixed visible `PhysicalDrive0..31` GUI list removed; only detected PS2 APA candidates are shown with friendly name, size, APA version, and main-partition count.
-10. **Done:** automatic startup discovery plus `Rescan PS2 HDDs`; a single candidate auto-opens only when no source is already open.
-11. **Done:** controlled UAC `runas` relaunch with loop prevention, cancellation fallback to image-capable limited mode, and explicit `Restart as Administrator`.
-12. **Done / CI-built:** direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` commands.
-13. **Done:** automatic free-drive-letter selection preferring `P:` and avoiding letters below `D:`.
+8. **Done / hardware validated:** SetupAPI `GUID_DEVINTERFACE_DISK` enumeration maps actual Windows disk interfaces to physical-drive numbers through `IOCTL_STORAGE_GET_DEVICE_NUMBER` before the normal DriveForge APA probe.
+9. **Done / hardware validated:** fixed visible `PhysicalDrive0..31` GUI list removed; only detected PS2 APA candidates are shown with friendly name, size, APA version, and main-partition count.
+10. **Done / hardware validated:** automatic startup discovery plus `Rescan PS2 HDDs`; a single candidate auto-opens only when no source is already open.
+11. **Done / hardware validated:** controlled UAC `runas` relaunch with loop prevention, cancellation fallback to image-capable limited mode, and explicit `Restart as Administrator`.
+12. **Done / hardware validated:** direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` commands.
+13. **Done / hardware validated:** automatic free-drive-letter selection preferring `P:` and avoiding letters below `D:`.
 14. **Done:** portable NT `ZwCreateFile` policy regression protects the original root-open bug.
 15. **Done:** portable Darkness GUI/mount policy regression records and tests the required one-candidate auto-open and free-letter fallback/exhaustion behavior independently from SetupAPI/Dokany runtime state.
 16. **Done:** Windows CI pins/verifies/installs Dokany 2.3.1 SDK/runtime and packages GUI, inspector, mount CLI, docs, and all nine regression tests.
-17. **Done:** CLI-driven real-HDD Dokany path validates Explorer browse, known-file copy/hash, write rejection, and clean unmount.
-18. **Pending hardware gate:** validate the final integrated GUI elevation/discovery/mount workflow on the real PS2 HDD.
+17. **Done / hardware validated:** CLI-driven real-HDD Dokany path validates Explorer browse, known-file copy/hash, write rejection, and clean unmount.
+18. **Done / hardware validated:** final integrated GUI elevation/discovery/mount workflow on the real PS2 HDD.
 
 ## Windows disk discovery
 
@@ -112,7 +114,7 @@ The adapter now models the NT values explicitly and a portable regression runs u
 
 Darkness targets filesystem correctness and stable Explorer behavior. Caching, read-ahead, request coalescing, and overlapped physical I/O are intentionally 0.5 Emilia work.
 
-Final workload to preserve before merge:
+Preserved baseline workload:
 
 ```text
 cold GUI start
@@ -128,30 +130,20 @@ cold GUI start
 
 Explorer's repeated create/open/stat/enumeration pattern is the real workload Emilia should optimize. Existing backing-I/O counters plus the Chisato 215-read browse baseline provide the lower-level reference.
 
-## Hardware validation progress
+## Hardware validation conclusion
 
-Already validated on the real 149.05 GiB APA v2 HDD:
+Darkness is hardware validated on the real 149.05 GiB APA v2 HDD for both the standalone/shared Dokany path and the final integrated GUI path:
 
-- native System/Light/Dark GUI switching;
-- standalone/shared Dokany controller mounting `PhysicalDrive3` as `P:`;
-- Explorer root/volume information;
-- `Partitions\+OPL` and `Partitions\__common\OPL` enumeration;
-- Explorer copy of 20-byte `conf_hdd.cfg` with SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
-- write creation rejection;
-- clean unmount.
+- normal-user launch -> one UAC relaunch;
+- SetupAPI discovery with no fixed PhysicalDrive list;
+- sole PS2 candidate auto-open at ~149.05 GiB / APA v2 / 43 main partitions;
+- GUI read-only mount with automatic free-letter selection;
+- Explorer browse of known PFS paths;
+- bit-identical known-file copy/hash;
+- write rejection;
+- GUI clean unmount;
+- safe rescan behavior;
+- cancelled-UAC limited mode and manual elevation recovery;
+- preferred-letter fallback behavior.
 
-Final integrated-GUI gate:
-
-1. start `PS2-DriveForge.exe` as a normal user;
-2. confirm one UAC relaunch and no loop;
-3. confirm automatic SetupAPI discovery finds the PS2 HDD with no fixed PhysicalDrive list;
-4. confirm the sole candidate auto-opens with ~149.05 GiB / APA v2 / 43 main partitions;
-5. mount from the GUI and confirm automatic free-letter selection;
-6. open in Explorer and browse known PFS paths;
-7. confirm writes remain rejected;
-8. unmount from the GUI;
-9. confirm rescan does not replace an already-open source;
-10. once cancel UAC and verify image-capable limited mode plus manual elevation recovery;
-11. if practical, occupy `P:` and verify fallback to another free drive letter.
-
-Passing this list is the final blocker before PR #5 is marked ready, squash-merged to `main`, and Darkness development is closed.
+This closes 0.4 Darkness and hands a stable, measurable Explorer workload to 0.5 Emilia.
