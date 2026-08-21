@@ -52,7 +52,7 @@ This does **not** mean DriveForge has already benchmarked faster throughput than
 - run a deterministic malformed-metadata regression corpus;
 - optionally build an APA libFuzzer target under Clang.
 
-Ayanami and Bocchi were validated against a real **149.05 GiB PS2 HDD**. Bocchi successfully enumerated the real `+OPL` root (`CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`) and correctly reported the empty `CFG` directory. Chisato's new GUI/export/session/discovery path is CI-validated but still awaiting its next real-HDD validation pass. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md).
+Ayanami, Bocchi, and Chisato have now been validated against a real **149.05 GiB PS2 HDD**. Chisato's read-only discovery correctly isolated `PhysicalDrive3` as the only PS2 APA disk (APA v2, 190 headers), the GUI exposed 43 main partitions with clean diagnostics, recursive `+OPL` export succeeded, and a real regular PFS file was extracted from `__common`. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) for the exact evidence and remaining coverage gap.
 
 ## Current limitations
 
@@ -60,7 +60,7 @@ These are deliberate or known gaps, not hidden TODOs:
 
 - source HDD/image mutation is not implemented;
 - Chisato's GUI is still the first functional management shell, not the final UX;
-- recursive export has not yet been hardware-validated on a non-empty PFS tree;
+- real-HDD PFS SEGI/large-fragmented-file traversal has not yet been observed because the current test disk stores large content as HDL partitions; deterministic generated-image SEGI coverage is green;
 - Windows physical-drive reads are currently synchronous and serialized per device;
 - no inode/directory/block cache exists yet;
 - no read-ahead or overlapped I/O exists yet;
@@ -86,7 +86,7 @@ Current GUI behavior:
 - double-click a regular file to export it with a normal Windows **Save As** dialog;
 - status text identifies the current PFS path, read-only state, and cumulative backing read count/bytes.
 
-The GUI no longer constructs its own PFS stack or duplicate file-copy loop. GUI and CLI now use the same `DriveSession`/host exporter path, reducing the chance that one frontend quietly behaves differently from the other.
+The GUI no longer constructs its own PFS stack or duplicate file-copy loop. GUI and CLI now use the same `DriveSession`/host exporter path, reducing the chance that one frontend quietly behaves differently from the other. MSVC builds the Win32 UI target with an explicit UTF-8 source/exec character set so non-ASCII UI punctuation is rendered correctly.
 
 ## Windows x64 build
 
@@ -173,6 +173,8 @@ Put `--stats` before the source selector:
 
 Current output includes APA scan count, browse/export operation counts, backing `read()` calls, bytes read, average/largest backing read and failures. These numbers establish a baseline for future Emilia optimization; they are not a performance claim by themselves.
 
+The first real-HDD `+OPL` browse baseline recorded under Chisato was **215 backing reads / 206.50 KiB**, with a 983 B average, 1 KiB largest read, and zero failed reads.
+
 ## Test coverage
 
 The normal CTest suite currently contains **7 test executables** and is run under both Windows/MSVC and Clang ASan+UBSan.
@@ -218,7 +220,7 @@ Start here when changing core behavior rather than guessing from old chat/commit
 
 1. **0.1 “Ayanami”** — APA read-only core, diagnostics and initial PFS probing. **Done.**
 2. **0.2 “Bocchi”** — PFS inode/directory/file read path. **Done / hardware validated.**
-3. **0.3 “Chisato”** — native Windows GUI browser, reusable host/session layer, discovery, diagnostics and pre-hardware hardening. **In progress / awaiting hardware validation.**
+3. **0.3 “Chisato”** — native Windows GUI browser, reusable host/session layer, discovery, diagnostics and pre-hardware hardening. **Done / hardware validated.**
 4. **0.4 “Darkness”** — Dokany Explorer mount, read-only first.
 5. **0.5 “Emilia”** — cache, read-ahead and overlapped-I/O performance pass.
 6. **0.6 “Frieren”** — carefully gated PFS/APA write path with automatic metadata backup.
