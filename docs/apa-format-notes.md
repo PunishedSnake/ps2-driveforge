@@ -37,11 +37,21 @@ Checks currently include:
 - Sony MBR signature at LBA 0;
 - cycle detection;
 - `next` pointer within device bounds;
+- full main-partition extent within device bounds;
+- every recorded sub-partition extent within device bounds;
 - `header.start` matching physical header location (warning);
 - `prev` matching the previously visited header (warning);
 - `nsub` clamped to the 64-entry on-disk limit with a warning.
 
 The scan has a caller-visible maximum-header limit as a final guard against pathological metadata.
+
+### Header bounds are not extent bounds
+
+A readable APA header does not prove that the partition it describes is valid. Corrupted metadata can leave the header itself readable while setting `length` (or a sub-partition descriptor) so the described data range extends beyond the end of the device.
+
+DriveForge therefore validates both the linked-list/header location and the full `(start, length)` ranges for the main and recorded sub-partition extents using overflow-safe arithmetic. Out-of-device extents are fatal diagnostics before PFS or any other filesystem layer receives the partition.
+
+This rule is protected by `tests/corruption_tests.cpp`.
 
 ## Main and sub-partitions
 
@@ -110,4 +120,4 @@ The first physical validation disk is approximately 149.05 GiB and contains:
 - many HDL main/sub-partition layouts;
 - at least one observed HDL logical layout with a sub-partition physically far away from the main partition.
 
-That disk is useful for catching accidental assumptions that logical APA extents must be physically adjacent.
+That disk is useful for catching accidental assumptions that logical APA extents must be physically adjacent. The next Chisato hardware run will also verify that the stricter extent-bounds validation accepts this known-good real layout unchanged.
