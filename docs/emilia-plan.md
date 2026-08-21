@@ -10,6 +10,26 @@ The Windows UI modernization is a parallel frontend goal: a WinUI 3 frontend mus
 
 Emilia also establishes explicit usability/performance comparison workloads against pfsshell-oriented workflows and HDL Batch Installer's HDD Manager. The goal is not a vague claim that DriveForge is "faster": common management operations must require fewer blocking steps, fewer redundant device reads, and no per-partition helper-process startup.
 
+## Current implementation snapshot
+
+The active Emilia branch now contains:
+
+- backend service-time, small-read and max-in-flight instrumentation;
+- immutable PFS probe/node/directory/stat caches;
+- bounded 4 KiB read-window cache;
+- adaptive sequential read-ahead with useful/wasted-prefetch counters;
+- offset-based `OVERLAPPED` reads for Windows `PhysicalDriveN`;
+- offset-based image I/O (`OVERLAPPED` on Windows, `pread()` on POSIX);
+- a zero-I/O `PartitionCatalog` built entirely from an existing APA scan;
+- host-storage characteristics (`rotational` / `solid-state` / `unknown`, seek penalty, TRIM, bus type) with ATA IDENTIFY rotation-rate fallback where the stack permits it;
+- a native read-only HDLoader metadata parser using the on-disk `0xDEADFEED` header at partition `+0x101000`, with no `HDL.EXE` helper process;
+- native HDL catalog enrichment scheduled in ascending physical LBA;
+- progressive/cancellable HDL enrichment callbacks suitable for a background UI worker;
+- a frontend-neutral `ManagementModel` whose complete rows exist before optional HDL enrichment begins;
+- benchmark support for cold/warm APA/PFS work and native HDL metadata enrichment.
+
+Hardware characteristics are hints, not hard-coded tuning presets. `unknown` is a normal supported state. Queue depth/read-ahead decisions must be conservative when hints are absent or contradictory and may later use measured latency/locality as an independent signal.
+
 ## Performance workstreams
 
 1. **Instrumentation first**
@@ -48,7 +68,10 @@ Emilia also establishes explicit usability/performance comparison workloads agai
    - build the complete management list directly from the already validated APA `ScanResult`;
    - creating/filtering/sorting the list performs zero additional device I/O;
    - PFS details and HDL game metadata are optional enrichment, never prerequisites for first paint;
+   - native HDL enrichment performs one in-process metadata read per game rather than launching a helper executable;
    - enrichment runs lazily/in batches and may update visible rows asynchronously;
+   - rotational/unknown media use physical-LBA ordering as the safe baseline; concurrency is introduced only when evidence supports it;
+   - enrichment is cancellable when the source/session changes;
    - sub-partitions can be shown/hidden without rescanning the disk;
    - the eventual writable HDD Manager will use this same immutable catalog as its selection model before any mutation capability is considered.
 
@@ -60,7 +83,8 @@ Emilia also establishes explicit usability/performance comparison workloads agai
    - random mounted reads;
    - cold and warm measurements kept separate;
    - time-to-first-complete-partition-list after APA scan;
-   - time-to-optional-HDL-title-enrichment kept separate from list availability.
+   - time-to-optional-HDL-title-enrichment kept separate from list availability;
+   - `--hdl` measures native all-game title/startup enrichment without subprocess overhead.
 
 ## Competitor workflow target
 
@@ -73,10 +97,15 @@ one APA scan
   -> immutable PartitionCatalog
   -> complete management rows immediately
   -> UI first paint
-  -> optional lazy/batched enrichment
+  -> optional native lazy/batched enrichment
+       -> one small in-process metadata read per HDL main
+       -> progressive row updates
+       -> cancellable
 ```
 
 Opening a deletion/management list must never require probing every PFS filesystem, mounting partitions, or launching one helper process per HDL game. Sorting/filtering/selecting rows must remain memory-only operations.
+
+A user-reported scaling case is retained as an acceptance target, not as a DriveForge-measured competitor benchmark: a 2 TB Seagate PS2 HDD can reportedly take **more than an hour** in HDL Batch Installer's HDD Manager before the game-partition list is sufficiently initialized to delete one game and its sub-partitions, with multi-second per-game progress and worsening behavior as the disk grows. Emilia must avoid this entire cost model. The base list must be usable immediately after the single APA scan; optional titles/details must not be a prerequisite for selecting a game, showing its APA allocation, or preparing a deletion plan. Any future comparison against that figure must be measured on the same disk/host before publishing a speedup claim.
 
 pfsshell remains a compatibility/reference implementation, but DriveForge frontends must not inherit its selected-device/current-mount/current-directory shell state or require shell-command round trips for ordinary GUI navigation.
 
@@ -106,7 +135,22 @@ Largest backing read: 1.00 KiB
 Failed backing reads: 0
 ```
 
-These numbers are a reference, not a claim that different frontend workloads are directly comparable.
+First Emilia real-HDD performance observations on the 149.05 GiB validation disk:
+
+```text
+Cold APA scan:            ~1.57 s
+APA headers:              190
+Backing read calls:       190
+Observed service/read:    ~8.3 ms
+Zero-I/O catalog rows:    190
+Catalog build:            ~0.004-0.006 ms
+Cold +OPL browse + stat:  10 backing reads / 40 KiB / ~41 ms
+Warm +OPL browse + stat:  0 backing reads / ~0.001 ms
+```
+
+The storage stack reported SATA bus type but did not expose seek-penalty classification in that initial profile run. The measured latency strongly resembles a rotational workload, but Emilia deliberately records it as runtime evidence rather than silently converting latency into a permanent device identity.
+
+These numbers are references, not claims that different frontend or competitor workloads are directly comparable.
 
 ## WinUI 3 modernization
 
