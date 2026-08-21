@@ -21,6 +21,11 @@ struct StorageCharacteristics {
     bool trim_enabled{};
     bool bus_type_known{};
     std::uint32_t bus_type{};
+    // ATA IDENTIFY word 217. Value 1 means non-rotating media; 0x0401..0xFFFE
+    // represent reported RPM. It is a fallback/corroborating hint, never a
+    // correctness requirement and never assumed to exist through a bridge.
+    bool nominal_rotation_rate_known{};
+    std::uint16_t nominal_rotation_rate{};
 };
 
 [[nodiscard]] inline const char* storage_media_class_name(StorageMediaClass value) noexcept
