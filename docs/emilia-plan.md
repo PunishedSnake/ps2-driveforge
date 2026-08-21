@@ -8,6 +8,8 @@ The complete Darkness read-only workflow must remain bit-correct while measurabl
 
 The Windows UI modernization is a parallel frontend goal: a WinUI 3 frontend must reach functional parity with the existing Win32 GUI before it becomes the default. The old Win32 frontend remains a fallback during the migration.
 
+Emilia also establishes explicit usability/performance comparison workloads against pfsshell-oriented workflows and HDL Batch Installer's HDD Manager. The goal is not a vague claim that DriveForge is "faster": common management operations must require fewer blocking steps, fewer redundant device reads, and no per-partition helper-process startup.
+
 ## Performance workstreams
 
 1. **Instrumentation first**
@@ -38,17 +40,45 @@ The Windows UI modernization is a parallel frontend goal: a WinUI 3 frontend mus
 
 5. **Windows physical I/O rewrite**
    - replace shared `SetFilePointerEx` state with offset-based I/O;
-   - move to `FILE_FLAG_OVERLAPPED`/OVERLAPPED reads after baseline instrumentation is in place;
+   - use `FILE_FLAG_OVERLAPPED` and per-request offsets/events;
    - remove the global seek/read mutex where correctness no longer requires it;
    - measure queue depth 1/2/4/8 rather than assuming more concurrency is better for old HDDs/bridges.
 
-6. **Benchmark harness**
+6. **Instant partition catalog / HDD Manager model**
+   - build the complete management list directly from the already validated APA `ScanResult`;
+   - creating/filtering/sorting the list performs zero additional device I/O;
+   - PFS details and HDL game metadata are optional enrichment, never prerequisites for first paint;
+   - enrichment runs lazily/in batches and may update visible rows asynchronously;
+   - sub-partitions can be shown/hidden without rescanning the disk;
+   - the eventual writable HDD Manager will use this same immutable catalog as its selection model before any mutation capability is considered.
+
+7. **Benchmark harness**
    - preserve Darkness cold GUI/Explorer workload;
    - repeated directory/stat workload;
    - large sequential file workload;
    - many-small-files workload;
    - random mounted reads;
-   - cold and warm measurements kept separate.
+   - cold and warm measurements kept separate;
+   - time-to-first-complete-partition-list after APA scan;
+   - time-to-optional-HDL-title-enrichment kept separate from list availability.
+
+## Competitor workflow target
+
+HDL Batch Installer's current HDD Manager calls `PFSSHELL.lspart()` and then, when game titles are enabled, loops over main HDL partitions and launches a synchronous `HDL.EXE info hddN: <partition>` process for each one. That means the dialog's fully enriched initialization cost grows with the number of game partitions and blocks on repeated helper-process startup/device work.
+
+DriveForge's contract is deliberately different:
+
+```text
+one APA scan
+  -> immutable PartitionCatalog
+  -> complete management rows immediately
+  -> UI first paint
+  -> optional lazy/batched enrichment
+```
+
+Opening a deletion/management list must never require probing every PFS filesystem, mounting partitions, or launching one helper process per HDL game. Sorting/filtering/selecting rows must remain memory-only operations.
+
+pfsshell remains a compatibility/reference implementation, but DriveForge frontends must not inherit its selected-device/current-mount/current-directory shell state or require shell-command round trips for ordinary GUI navigation.
 
 ## Preserved hardware baseline
 
@@ -90,32 +120,39 @@ ps2driveforge_core
 ps2driveforge_host
       |
 shared Windows services
-(discovery/elevation/mount controller)
+(discovery/mount/catalog/performance model)
       |
-      +---- legacy Win32 frontend
+      +---- legacy Win32 frontend (temporary fallback)
       |
-      +---- WinUI 3 C++/WinRT frontend
+      +---- WinUI 3 C++/WinRT frontend (normal user)
+                    |
+                    +---- elevated read-only raw-disk broker
 ```
 
 The WinUI project is expected to be an MSBuild/C++/WinRT frontend consuming the same native libraries. Windows App SDK's C++ build tooling is still MSBuild/NuGet-oriented; do not contort the cross-platform CMake storage build around XAML generation.
 
+The current whole-GUI `runas` model is not the long-term WinUI architecture. Windows App SDK dynamic-dependency/bootstrap behavior and least-privilege goals make a small elevated raw-disk broker preferable. The WinUI shell remains non-elevated; only the broker opens `PhysicalDriveN`, still `GENERIC_READ` only, and exposes a narrowly scoped read-only IPC surface. Disk-image workflows never need elevation.
+
 Initial WinUI parity target:
 
-- startup UAC/discovery behavior;
-- detected PS2 HDD list and image opening;
+- startup disk discovery without blocking the UI thread;
+- detected PS2 HDD cards/list and image opening;
+- instant APA partition catalog;
+- lazy HDL/PFS metadata enrichment with visible progress but no modal wait;
 - APA partition navigation;
 - PFS directory/file browsing;
 - export;
 - read-only mount/open-in-Explorer/unmount;
 - System/Light/Dark behavior through native WinUI theme resources;
-- status/performance counters;
-- clear read-only state.
+- status/performance dashboard;
+- clear read-only state;
+- fast filtering/search/sort over the in-memory partition catalog.
 
 Only after parity and hardware validation should the WinUI executable replace the legacy Win32 executable in the normal package.
 
 ## Deployment direction for WinUI
 
-The preferred development path is an unpackaged WinUI 3 desktop frontend so DriveForge can retain a traditional portable/installer workflow and raw-disk elevation model. Windows App SDK runtime handling must be explicit in packaging: framework-dependent runtime installer or self-contained deployment. Do not silently assume the runtime exists.
+Prefer an unpackaged or self-contained WinUI 3 desktop frontend so DriveForge can retain a traditional portable/installer workflow. Windows App SDK runtime handling must be explicit in packaging: framework-dependent runtime installer or self-contained deployment. Do not silently assume the runtime exists, and do not rely on elevating the WinUI shell itself as the raw-disk access strategy.
 
 ## Correctness/safety gates
 
