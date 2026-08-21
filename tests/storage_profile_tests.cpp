@@ -32,6 +32,8 @@ public:
         value.trim_enabled = false;
         value.bus_type_known = true;
         value.bus_type = 7;
+        value.nominal_rotation_rate_known = true;
+        value.nominal_rotation_rate = 7200;
         return value;
     }
     bool read(std::uint64_t, std::span<std::byte> out) override
@@ -59,6 +61,8 @@ void storage_profile_roundtrip()
           "TRIM characteristic propagates through all wrappers");
     check(profile.bus_type_known && profile.bus_type == 7,
           "bus type propagates through all wrappers");
+    check(profile.nominal_rotation_rate_known && profile.nominal_rotation_rate == 7200,
+          "ATA nominal rotation rate propagates through all wrappers");
     check(std::string(ps2hdd::storage_media_class_name(ps2hdd::StorageMediaClass::unknown)) == "unknown",
           "unknown media class has stable display name");
     check(std::string(ps2hdd::storage_media_class_name(ps2hdd::StorageMediaClass::solid_state)) == "solid-state",
