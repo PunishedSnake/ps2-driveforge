@@ -48,6 +48,66 @@ bool finish_overlapped(HANDLE handle, OVERLAPPED& overlapped, BOOL started,
     return GetOverlappedResult(handle, &overlapped, &transferred, TRUE) != FALSE;
 }
 
+template <typename Descriptor>
+bool query_storage_property(HANDLE handle, STORAGE_PROPERTY_ID property_id,
+                            Descriptor& descriptor) noexcept
+{
+    ScopedEvent event;
+    if (!event.valid()) {
+        return false;
+    }
+
+    STORAGE_PROPERTY_QUERY query{};
+    query.PropertyId = property_id;
+    query.QueryType = PropertyStandardQuery;
+
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    DWORD returned = 0;
+    const BOOL started = DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY,
+                                         &query, sizeof(query),
+                                         &descriptor, sizeof(descriptor),
+                                         nullptr, &overlapped);
+    return finish_overlapped(handle, overlapped, started, returned) &&
+           returned >= sizeof(descriptor);
+}
+
+StorageCharacteristics query_characteristics(HANDLE handle) noexcept
+{
+    StorageCharacteristics result;
+
+    // Seek-penalty is the strongest Windows-provided hint for choosing between
+    // rotational and non-rotational defaults. It is still only a hint: bridges
+    // are allowed to omit or misreport it, so runtime latency remains a second
+    // independent input to Emilia's adaptive policy.
+    DEVICE_SEEK_PENALTY_DESCRIPTOR seek{};
+    if (query_storage_property(handle, StorageDeviceSeekPenaltyProperty, seek)) {
+        result.seek_penalty_known = true;
+        result.incurs_seek_penalty = seek.IncursSeekPenalty != FALSE;
+        result.media_class = result.incurs_seek_penalty
+                                 ? StorageMediaClass::rotational
+                                 : StorageMediaClass::solid_state;
+    }
+
+    // TRIM is diagnostic/corroborating information only. Some bridges do not
+    // forward it and some non-SSD media can support deallocation semantics, so
+    // it must never override an unknown/contradictory seek-penalty result.
+    DEVICE_TRIM_DESCRIPTOR trim{};
+    if (query_storage_property(handle, StorageDeviceTrimProperty, trim)) {
+        result.trim_known = true;
+        result.trim_enabled = trim.TrimEnabled != FALSE;
+    }
+
+    STORAGE_DEVICE_DESCRIPTOR device{};
+    device.Size = sizeof(device);
+    if (query_storage_property(handle, StorageDeviceProperty, device)) {
+        result.bus_type_known = true;
+        result.bus_type = static_cast<std::uint32_t>(device.BusType);
+    }
+
+    return result;
+}
+
 } // namespace
 
 PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
@@ -83,6 +143,7 @@ PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
     if (finish_overlapped(handle_, overlapped, started, returned)) {
         size_ = static_cast<std::uint64_t>(length.Length.QuadPart);
         open_error_ = ERROR_SUCCESS;
+        characteristics_ = query_characteristics(handle_);
     } else {
         open_error_ = GetLastError();
     }
