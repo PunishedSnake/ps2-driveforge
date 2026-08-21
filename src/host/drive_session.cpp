@@ -101,7 +101,8 @@ void bounded_store(Map& map, std::string key, Value value, std::size_t max_entri
 } // namespace
 
 DriveSession::DriveSession(std::unique_ptr<BlockDevice> source)
-    : source_(std::move(source)), instrumented_(*source_), read_cache_(instrumented_)
+    : source_(std::move(source)), instrumented_(*source_), read_ahead_(instrumented_),
+      read_cache_(read_ahead_)
 {
 }
 
@@ -409,6 +410,7 @@ SessionStats DriveSession::stats() const noexcept
 {
     return {
         instrumented_.stats(),
+        read_ahead_.stats(),
         read_cache_.stats(),
         {
             probe_cache_hits_.load(std::memory_order_relaxed),
@@ -437,6 +439,7 @@ SessionStats DriveSession::stats() const noexcept
 void DriveSession::reset_stats() noexcept
 {
     instrumented_.reset_stats();
+    read_ahead_.reset_stats();
     read_cache_.reset_stats();
     apa_scans_.store(0, std::memory_order_relaxed);
     browse_operations_.store(0, std::memory_order_relaxed);
@@ -462,6 +465,7 @@ void DriveSession::reset_stats() noexcept
 void DriveSession::clear_caches()
 {
     read_cache_.clear();
+    read_ahead_.clear();
     std::unique_lock lock(cache_mutex_);
     probe_cache_.clear();
     browse_cache_.clear();
