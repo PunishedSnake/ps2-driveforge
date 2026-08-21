@@ -101,7 +101,7 @@ void bounded_store(Map& map, std::string key, Value value, std::size_t max_entri
 } // namespace
 
 DriveSession::DriveSession(std::unique_ptr<BlockDevice> source)
-    : source_(std::move(source)), instrumented_(*source_)
+    : source_(std::move(source)), instrumented_(*source_), read_cache_(instrumented_)
 {
 }
 
@@ -111,7 +111,7 @@ bool DriveSession::scan()
     clear_caches();
     last_error_.clear();
     apa_scans_.fetch_add(1, std::memory_order_relaxed);
-    apa::Reader reader(instrumented_);
+    apa::Reader reader(read_cache_);
     scan_ = reader.scan();
     if (!scan_.mbr_valid) {
         last_error_ = "Source does not contain a valid PS2 APA MBR";
@@ -182,7 +182,7 @@ BrowseResult DriveSession::browse(std::string_view partition_id, std::string_vie
         return result;
     }
 
-    ApaVolume volume(instrumented_, *partition);
+    ApaVolume volume(read_cache_, *partition);
     pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
@@ -288,7 +288,7 @@ StatResult DriveSession::stat(std::string_view partition_id, std::string_view pa
         return result;
     }
 
-    ApaVolume volume(instrumented_, *partition);
+    ApaVolume volume(read_cache_, *partition);
     pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
@@ -327,7 +327,7 @@ ReadResult DriveSession::read_file(std::string_view partition_id, std::string_vi
 
     const auto normalized_path = normalize_cache_path(path);
     const auto key = make_cache_key(partition_id, normalized_path);
-    ApaVolume volume(instrumented_, *partition);
+    ApaVolume volume(read_cache_, *partition);
     pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
@@ -362,9 +362,6 @@ ReadResult DriveSession::read_file(std::string_view partition_id, std::string_vi
         return result;
     }
 
-    // Windows ReadFile requests beyond EOF are normal. Clamp the requested span
-    // here instead of weakening pfs::Reader::read(), whose strict bounds check is
-    // still useful for parser correctness and corruption detection.
     if (offset >= node->inode.size || out.empty()) {
         result.ok = true;
         return result;
@@ -399,7 +396,7 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
         return error_result;
     }
 
-    ApaVolume volume(instrumented_, *partition);
+    ApaVolume volume(read_cache_, *partition);
     pfs::Reader reader(volume, probe_for(partition_id, volume));
     if (!reader.valid()) {
         error_result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
@@ -412,6 +409,7 @@ SessionStats DriveSession::stats() const noexcept
 {
     return {
         instrumented_.stats(),
+        read_cache_.stats(),
         {
             probe_cache_hits_.load(std::memory_order_relaxed),
             probe_cache_misses_.load(std::memory_order_relaxed),
@@ -439,6 +437,7 @@ SessionStats DriveSession::stats() const noexcept
 void DriveSession::reset_stats() noexcept
 {
     instrumented_.reset_stats();
+    read_cache_.reset_stats();
     apa_scans_.store(0, std::memory_order_relaxed);
     browse_operations_.store(0, std::memory_order_relaxed);
     stat_operations_.store(0, std::memory_order_relaxed);
@@ -462,6 +461,7 @@ void DriveSession::reset_stats() noexcept
 
 void DriveSession::clear_caches()
 {
+    read_cache_.clear();
     std::unique_lock lock(cache_mutex_);
     probe_cache_.clear();
     browse_cache_.clear();
