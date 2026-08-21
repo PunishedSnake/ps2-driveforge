@@ -2,6 +2,7 @@
 
 #include "ps2hdd/physical_drive.hpp"
 
+#include <ntddscsi.h>
 #include <winioctl.h>
 
 #include <algorithm>
@@ -123,10 +124,6 @@ StorageCharacteristics query_characteristics(HANDLE handle) noexcept
 {
     StorageCharacteristics result;
 
-    // Seek-penalty is the strongest Windows-provided hint for choosing between
-    // rotational and non-rotational defaults. It is still only a hint: bridges
-    // are allowed to omit or misreport it, so runtime latency remains a second
-    // independent input to Emilia's adaptive policy.
     DEVICE_SEEK_PENALTY_DESCRIPTOR seek{};
     if (query_storage_property(handle, StorageDeviceSeekPenaltyProperty, seek)) {
         result.seek_penalty_known = true;
@@ -136,28 +133,18 @@ StorageCharacteristics query_characteristics(HANDLE handle) noexcept
                                  : StorageMediaClass::solid_state;
     }
 
-    // TRIM is diagnostic/corroborating information only. Some bridges do not
-    // forward it and some non-SSD media can support deallocation semantics, so
-    // it must never override an unknown/contradictory seek-penalty result.
     DEVICE_TRIM_DESCRIPTOR trim{};
     if (query_storage_property(handle, StorageDeviceTrimProperty, trim)) {
         result.trim_known = true;
         result.trim_enabled = trim.TrimEnabled != FALSE;
     }
 
-    // Adapter descriptors have a fixed portion containing BusType and avoid the
-    // variable vendor/product strings present in STORAGE_DEVICE_DESCRIPTOR.
     STORAGE_ADAPTER_DESCRIPTOR adapter{};
     if (query_storage_property(handle, StorageAdapterProperty, adapter)) {
         result.bus_type_known = true;
         result.bus_type = static_cast<std::uint32_t>(adapter.BusType);
     }
 
-    // Some storage stacks (including real SATA setups) do not expose the seek
-    // penalty property. ATA IDENTIFY word 217 is a safe read-only fallback and
-    // also gives us a useful corroborating RPM value when the class is already
-    // known. Bridges/controllers are free to reject pass-through; unknown remains
-    // a fully supported result in that case.
     const bool ata_like = !result.bus_type_known ||
                           result.bus_type == static_cast<std::uint32_t>(BusTypeAta) ||
                           result.bus_type == static_cast<std::uint32_t>(BusTypeSata) ||
@@ -184,9 +171,6 @@ PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
 {
     const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index_);
 
-    // Read-only is a structural invariant. Emilia only changes how reads are
-    // scheduled: the raw disk handle still requests GENERIC_READ and no source
-    // write capability is introduced.
     handle_ = CreateFileW(path.c_str(), GENERIC_READ,
                           FILE_SHARE_READ | FILE_SHARE_WRITE,
                           nullptr, OPEN_EXISTING,
