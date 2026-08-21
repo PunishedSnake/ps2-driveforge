@@ -8,6 +8,8 @@ option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ps2hdd/version.hpp.in
     ${CMAKE_CURRENT_BINARY_DIR}/generated/ps2hdd/version.hpp
@@ -91,7 +93,19 @@ if(PS2DF_BUILD_DOKANY)
     if(NOT WIN32)
         message(FATAL_ERROR "PS2DF_BUILD_DOKANY is only supported on Windows")
     endif()
-    message(STATUS "Darkness Dokany frontend requested; dependency wiring is configured in the next Darkness step")
+
+    find_package(Dokany REQUIRED)
+    add_executable(ps2-driveforge-mount src/mount/dokany_main.cpp)
+    set_target_properties(ps2-driveforge-mount PROPERTIES OUTPUT_NAME "PS2-DriveForge-Mount")
+    target_link_libraries(ps2-driveforge-mount PRIVATE ps2driveforge_host Dokany::Dokany)
+    target_compile_features(ps2-driveforge-mount PRIVATE cxx_std_20)
+    target_compile_definitions(ps2-driveforge-mount PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2-driveforge-mount PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2-driveforge-mount PRIVATE /WX)
+        endif()
+    endif()
 endif()
 
 if(PS2DF_BUILD_TESTS)
