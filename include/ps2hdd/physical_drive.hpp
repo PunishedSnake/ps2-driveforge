@@ -22,6 +22,8 @@ public:
     PhysicalDrive& operator=(const PhysicalDrive&) = delete;
 
     [[nodiscard]] bool is_open() const noexcept;
+    [[nodiscard]] DWORD open_error() const noexcept;
+    [[nodiscard]] unsigned index() const noexcept;
     [[nodiscard]] std::uint64_t size_bytes() const override;
     [[nodiscard]] std::string display_name() const override;
     bool read(std::uint64_t offset, std::span<std::byte> out) override;
@@ -29,6 +31,7 @@ public:
 private:
     unsigned index_{};
     HANDLE handle_{INVALID_HANDLE_VALUE};
+    DWORD open_error_{ERROR_SUCCESS};
     std::uint64_t size_{};
     mutable std::mutex mutex_;
 };
