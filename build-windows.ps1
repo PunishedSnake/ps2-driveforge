@@ -89,8 +89,9 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 $BinDir = Join-Path $BuildDir $Configuration
 $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
+$BenchmarkExe = Join-Path $BinDir 'ps2-driveforge-benchmark.exe'
 $GuiExe = Join-Path $BinDir 'PS2-DriveForge.exe'
-$RequiredExecutables = @($InspectorExe, $GuiExe)
+$RequiredExecutables = @($InspectorExe, $BenchmarkExe, $GuiExe)
 $MountExe = Join-Path $BinDir 'PS2-DriveForge-Mount.exe'
 if ($WithDokany) {
     $RequiredExecutables += $MountExe
@@ -102,7 +103,7 @@ foreach ($Required in $RequiredExecutables) {
     Copy-Item $Required $DistDir -Force
 }
 
-$PdbNames = @('ps2-driveforge-inspect.pdb', 'PS2-DriveForge.pdb')
+$PdbNames = @('ps2-driveforge-inspect.pdb', 'ps2-driveforge-benchmark.pdb', 'PS2-DriveForge.pdb')
 if ($WithDokany) {
     $PdbNames += 'PS2-DriveForge-Mount.pdb'
 }
@@ -123,6 +124,8 @@ if (-not $SkipTests) {
         'ps2-driveforge-corruption-tests.exe',
         'ps2-driveforge-session-tests.exe',
         'ps2-driveforge-read-cache-tests.exe',
+        'ps2-driveforge-read-ahead-tests.exe',
+        'ps2-driveforge-partition-catalog-tests.exe',
         'ps2-driveforge-dokany-open-policy-tests.exe',
         'ps2-driveforge-darkness-policy-tests.exe'
     )) {
@@ -165,6 +168,7 @@ Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -Compr
 Write-Host "`nBuild completed successfully." -ForegroundColor Green
 Write-Host "GUI:        $GuiExe"
 Write-Host "Inspector:  $InspectorExe"
+Write-Host "Benchmark:  $BenchmarkExe"
 if ($WithDokany) {
     Write-Host "Mount:      $MountExe"
 }
