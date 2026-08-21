@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.2.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.3.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Bocchi" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Chisato" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
+option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 configure_file(
@@ -43,9 +44,46 @@ if(WIN32)
     target_compile_definitions(ps2driveforge_core PUBLIC PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE=1)
 endif()
 
+add_library(ps2driveforge_host
+    src/host/pfs_export.cpp
+    src/host/drive_session.cpp
+)
+target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
+target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
+if(WIN32)
+    target_sources(ps2driveforge_host PRIVATE src/platform/windows/physical_discovery.cpp)
+endif()
+if(MSVC)
+    target_compile_options(ps2driveforge_host PRIVATE /W4 /permissive-)
+    if(PS2DF_WARNINGS_AS_ERRORS)
+        target_compile_options(ps2driveforge_host PRIVATE /WX)
+    endif()
+else()
+    target_compile_options(ps2driveforge_host PRIVATE -Wall -Wextra -Wpedantic)
+    if(PS2DF_WARNINGS_AS_ERRORS)
+        target_compile_options(ps2driveforge_host PRIVATE -Werror)
+    endif()
+endif()
+
 add_executable(ps2-driveforge-inspect src/cli/main.cpp)
-target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_core)
+target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
+
+if(WIN32)
+    add_executable(ps2-driveforge-gui WIN32 src/gui/windows_main.cpp)
+    set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
+    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_host comctl32 comdlg32 uxtheme shell32 ole32)
+    target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
+    target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        # Keep source/exec character sets explicitly UTF-8 so non-ASCII UI literals
+        # (for example em dashes in the title/status text) survive MSVC compilation.
+        target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2-driveforge-gui PRIVATE /WX)
+        endif()
+    endif()
+endif()
 
 if(PS2DF_BUILD_TESTS)
     enable_testing()
@@ -64,4 +102,35 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-pfs-segi-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-pfs-segi-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-pfs-segi-tests COMMAND ps2-driveforge-pfs-segi-tests)
+
+    add_executable(ps2-driveforge-host-tests tests/host_tests.cpp)
+    target_link_libraries(ps2-driveforge-host-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-host-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-host-tests COMMAND ps2-driveforge-host-tests)
+
+    add_executable(ps2-driveforge-e2e-image-tests tests/e2e_image_tests.cpp)
+    target_link_libraries(ps2-driveforge-e2e-image-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-e2e-image-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-e2e-image-tests COMMAND ps2-driveforge-e2e-image-tests)
+
+    add_executable(ps2-driveforge-corruption-tests tests/corruption_tests.cpp)
+    target_link_libraries(ps2-driveforge-corruption-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-corruption-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-corruption-tests COMMAND ps2-driveforge-corruption-tests)
+
+    add_executable(ps2-driveforge-session-tests tests/session_tests.cpp)
+    target_link_libraries(ps2-driveforge-session-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-session-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-session-tests COMMAND ps2-driveforge-session-tests)
+endif()
+
+if(PS2DF_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "PS2DF_BUILD_FUZZERS requires Clang/libFuzzer")
+    endif()
+    add_executable(ps2-driveforge-fuzz-apa fuzz/apa_fuzzer.cpp)
+    target_link_libraries(ps2-driveforge-fuzz-apa PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-fuzz-apa PRIVATE cxx_std_20)
+    target_compile_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()

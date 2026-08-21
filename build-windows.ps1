@@ -80,26 +80,37 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 $BinDir = Join-Path $BuildDir $Configuration
 $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
-if (-not (Test-Path $InspectorExe)) {
-    throw "Expected executable was not produced: $InspectorExe"
+$GuiExe = Join-Path $BinDir 'PS2-DriveForge.exe'
+foreach ($Required in @($InspectorExe, $GuiExe)) {
+    if (-not (Test-Path $Required)) {
+        throw "Expected executable was not produced: $Required"
+    }
 }
 
 Copy-Item $InspectorExe $DistDir -Force
+Copy-Item $GuiExe $DistDir -Force
 
-$InspectorPdb = Join-Path $BinDir 'ps2-driveforge-inspect.pdb'
-if (Test-Path $InspectorPdb) {
-    Copy-Item $InspectorPdb $DistDir -Force
+foreach ($PdbName in @('ps2-driveforge-inspect.pdb', 'PS2-DriveForge.pdb')) {
+    $Pdb = Join-Path $BinDir $PdbName
+    if (Test-Path $Pdb) {
+        Copy-Item $Pdb $DistDir -Force
+    }
 }
 
 if (-not $SkipTests) {
-    $TestsExe = Join-Path $BinDir 'ps2-driveforge-tests.exe'
-    if (Test-Path $TestsExe) {
-        Copy-Item $TestsExe $DistDir -Force
-    }
-
-    $TestsPdb = Join-Path $BinDir 'ps2-driveforge-tests.pdb'
-    if (Test-Path $TestsPdb) {
-        Copy-Item $TestsPdb $DistDir -Force
+    foreach ($TestName in @(
+        'ps2-driveforge-tests.exe',
+        'ps2-driveforge-pfs-file-tests.exe',
+        'ps2-driveforge-pfs-segi-tests.exe',
+        'ps2-driveforge-host-tests.exe',
+        'ps2-driveforge-e2e-image-tests.exe',
+        'ps2-driveforge-corruption-tests.exe',
+        'ps2-driveforge-session-tests.exe'
+    )) {
+        $TestExe = Join-Path $BinDir $TestName
+        if (Test-Path $TestExe) {
+            Copy-Item $TestExe $DistDir -Force
+        }
     }
 }
 
@@ -110,7 +121,16 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     }
 }
 
-$ZipName = "PS2-DriveForge-0.2.0-Bocchi-$Configuration-windows-x64.zip"
+$ValidationDir = Join-Path $DistDir 'docs'
+New-Item -ItemType Directory -Force -Path $ValidationDir | Out-Null
+foreach ($Doc in @('docs\testing.md', 'docs\REAL_HARDWARE_VALIDATION.md')) {
+    $Source = Join-Path $Root $Doc
+    if (Test-Path $Source) {
+        Copy-Item $Source $ValidationDir -Force
+    }
+}
+
+$ZipName = "PS2-DriveForge-0.3.0-Chisato-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
@@ -118,6 +138,7 @@ if (Test-Path $ZipPath) {
 Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -CompressionLevel Optimal
 
 Write-Host "`nBuild completed successfully." -ForegroundColor Green
-Write-Host "Executable: $InspectorExe"
+Write-Host "GUI:        $GuiExe"
+Write-Host "Inspector:  $InspectorExe"
 Write-Host "Package:    $ZipPath"
-Write-Host "`nPhysical-drive inspection remains read-only in this development version." -ForegroundColor Green
+Write-Host "`nPhysical-drive access remains read-only in this development version." -ForegroundColor Green

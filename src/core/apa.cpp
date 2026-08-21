@@ -25,7 +25,18 @@ std::uint32_t load_u32_le(const std::byte* p) noexcept
 
 bool range_fits(std::uint64_t offset, std::uint64_t size, std::uint64_t device_size) noexcept
 {
+    // Written this way rather than `offset + size <= device_size` so damaged
+    // metadata cannot wrap the addition and turn an out-of-range read into an
+    // apparently valid one.
     return offset <= device_size && size <= device_size - offset;
+}
+
+bool sector_extent_fits(std::uint32_t start, std::uint32_t length,
+                        std::uint64_t device_size) noexcept
+{
+    const std::uint64_t offset = static_cast<std::uint64_t>(start) * kSectorSize;
+    const std::uint64_t bytes = static_cast<std::uint64_t>(length) * kSectorSize;
+    return range_fits(offset, bytes, device_size);
 }
 
 } // namespace
@@ -39,6 +50,10 @@ bool ScanResult::ok() const noexcept
 
 std::uint32_t checksum(const Header& header) noexcept
 {
+    // APA follows the PS2SDK/libapa rule: view the 1024-byte header as 256
+    // little-endian u32 words and sum words 1..255. Word 0 is the stored
+    // checksum and is deliberately excluded. Loading from bytes avoids an
+    // unaligned uint32_t access through the packed on-disk structure.
     const auto bytes = std::as_bytes(std::span{&header, 1});
     std::uint32_t sum = 0;
     for (std::size_t offset = sizeof(std::uint32_t); offset < bytes.size(); offset += sizeof(std::uint32_t)) {
@@ -114,6 +129,9 @@ ScanResult Reader::scan(std::size_t max_headers)
     result.mbr_valid = true;
     result.apa_version = header.mbr.version;
 
+    // APA is a linked list of headers, not a flat table at fixed offsets. Keep
+    // both explicit visited-LBA state and a hard header limit: corrupted `next`
+    // links must never be able to make a raw-disk scan loop forever.
     std::unordered_set<std::uint32_t> visited;
     std::uint32_t current_lba = 0;
     std::uint32_t expected_prev = header.prev;
@@ -149,6 +167,14 @@ ScanResult Reader::scan(std::size_t max_headers)
             result.issues.push_back({IssueSeverity::warning, current_lba, "APA sub-partition count exceeds format limit; clamping to 64"});
         }
 
+        // Header links being in range is not enough: damaged metadata can point
+        // a partition extent beyond the end of the device while leaving the
+        // header itself readable. Reject that before any filesystem layer sees
+        // the partition as a usable address space.
+        if (!sector_extent_fits(header.start, header.length, device_.size_bytes())) {
+            result.issues.push_back({IssueSeverity::error, current_lba, "APA partition extent extends outside the device"});
+        }
+
         Partition partition;
         partition.id = partition_id(header);
         partition.start_lba = header.start;
@@ -161,9 +187,19 @@ ScanResult Reader::scan(std::size_t max_headers)
         partition.created = header.created;
         partition.total_sectors = header.length;
         partition.sub_partitions.reserve(partition.sub_count);
+
+        // Keep the actual sub extents instead of collapsing them into one size.
+        // Logical size is useful for UI, but PFS must later translate each
+        // BlockInfo.subpart through the real start LBA because physical extents
+        // are not guaranteed to be adjacent.
         for (std::uint32_t i = 0; i < partition.sub_count; ++i) {
-            partition.sub_partitions.push_back(header.subs[i]);
-            partition.total_sectors += header.subs[i].length;
+            const auto& sub = header.subs[i];
+            if (!sector_extent_fits(sub.start, sub.length, device_.size_bytes())) {
+                result.issues.push_back({IssueSeverity::error, current_lba,
+                                         "APA sub-partition extent extends outside the device"});
+            }
+            partition.sub_partitions.push_back(sub);
+            partition.total_sectors += sub.length;
         }
         result.partitions.push_back(std::move(partition));
 

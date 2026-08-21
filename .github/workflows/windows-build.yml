@@ -1,4 +1,4 @@
-name: Windows x64 — Bocchi
+name: Windows x64 — Chisato
 
 on:
   workflow_dispatch:
@@ -25,6 +25,6 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.2.0-Bocchi-windows-x64
-          path: dist/PS2-DriveForge-0.2.0-Bocchi-Release-windows-x64.zip
+          name: PS2-DriveForge-0.3.0-Chisato-windows-x64
+          path: dist/PS2-DriveForge-0.3.0-Chisato-Release-windows-x64.zip
           if-no-files-found: error
