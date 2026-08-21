@@ -95,16 +95,19 @@ public:
         tree_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASLINES |
                                     TVS_LINESATROOT | TVS_HASBUTTONS | TVS_SHOWSELALWAYS,
-                                0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kTreeId),
+                                0, 0, 0, 0, window_,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTreeId)),
                                 GetModuleHandleW(nullptr), nullptr);
         list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT |
                                     LVS_SHOWSELALWAYS | LVS_SINGLESEL,
-                                0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kListId),
+                                0, 0, 0, 0, window_,
+                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(kListId)),
                                 GetModuleHandleW(nullptr), nullptr);
         status_ = CreateWindowExW(0, STATUSCLASSNAMEW, L"No PS2 HDD opened — READ ONLY",
                                   WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
-                                  0, 0, 0, 0, window_, reinterpret_cast<HMENU>(kStatusId),
+                                  0, 0, 0, 0, window_,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusId)),
                                   GetModuleHandleW(nullptr), nullptr);
 
         ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
