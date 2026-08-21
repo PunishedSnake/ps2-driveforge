@@ -6,6 +6,7 @@
 #include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_export.hpp"
+#include "ps2hdd/read_ahead_block_device.hpp"
 #include "ps2hdd/read_cache_block_device.hpp"
 
 #include <atomic>
@@ -71,6 +72,7 @@ struct SessionCacheStats {
 
 struct SessionStats {
     BlockIoStats backing_io{};
+    ReadAheadStats read_ahead{};
     ReadCacheStats read_cache{};
     SessionCacheStats cache{};
     std::uint64_t apa_scans{};
@@ -91,9 +93,9 @@ struct SessionStats {
 // same validated APA scan.
 //
 // Emilia keeps immutable metadata results across calls because every current
-// source is read-only. A bounded 4 KiB cache sits above backing instrumentation:
-// cache hits disappear from real backing-read counters while large sequential
-// reads keep the existing direct/batched path.
+// source is read-only. The pipeline is parser -> 4 KiB metadata cache -> adaptive
+// sequential read-ahead -> backing instrumentation -> actual device. Backing
+// counters therefore continue to represent real image/HDD I/O after both caches.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -135,6 +137,7 @@ private:
 
     std::unique_ptr<BlockDevice> source_;
     InstrumentedBlockDevice instrumented_;
+    ReadAheadBlockDevice read_ahead_;
     ReadCacheBlockDevice read_cache_;
     apa::ScanResult scan_{};
     std::string last_error_;
