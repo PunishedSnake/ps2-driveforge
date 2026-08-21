@@ -5,6 +5,7 @@
 #include "ps2hdd/instrumented_block_device.hpp"
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_export.hpp"
+#include "ps2hdd/read_cache_block_device.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -69,6 +70,7 @@ struct SessionCacheStats {
 
 struct SessionStats {
     BlockIoStats backing_io{};
+    ReadCacheStats read_cache{};
     SessionCacheStats cache{};
     std::uint64_t apa_scans{};
     std::uint64_t browse_operations{};
@@ -88,9 +90,9 @@ struct SessionStats {
 // same validated APA scan.
 //
 // Emilia keeps immutable metadata results across calls because every current
-// source is read-only. Caches are bounded and guarded independently from the
-// backing device so repeated Explorer stat/enumeration traffic can be served
-// without turning DriveSession into process-global filesystem state.
+// source is read-only. A bounded 4 KiB cache sits above backing instrumentation:
+// cache hits disappear from real backing-read counters while large sequential
+// reads keep the existing direct/batched path.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -99,7 +101,7 @@ public:
     DriveSession& operator=(const DriveSession&) = delete;
 
     [[nodiscard]] bool is_open() const noexcept { return source_ != nullptr; }
-    [[nodiscard]] BlockDevice& device() noexcept { return instrumented_; }
+    [[nodiscard]] BlockDevice& device() noexcept { return read_cache_; }
     [[nodiscard]] const apa::ScanResult& scan_result() const noexcept { return scan_; }
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
@@ -128,6 +130,7 @@ private:
 
     std::unique_ptr<BlockDevice> source_;
     InstrumentedBlockDevice instrumented_;
+    ReadCacheBlockDevice read_cache_;
     apa::ScanResult scan_{};
     std::string last_error_;
 
