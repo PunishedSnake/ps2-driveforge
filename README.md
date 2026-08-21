@@ -2,12 +2,12 @@
 
 **Modern APA/PFS HDD management for PlayStation 2.**
 
-Current development train: **0.3.x — “Chisato”**  
-Current source version: **0.3.0-dev**
+Current development train: **0.4.x — “Darkness”**  
+Current source version: **0.4.0-dev**
 
-PS2 DriveForge is a Windows-first PS2 HDD management stack. It is being built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`: one read-only parser/reader stack shared by a native GUI, CLI, host export layer, and later a Dokany Explorer provider.
+PS2 DriveForge is a Windows-first PS2 HDD management stack. It is being built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`: one read-only parser/reader stack shared by a native GUI, CLI, host export layer, and a Dokany Explorer provider now under active development.
 
-> **Safety status:** source devices remain read-only. There is no public HDD write API and the Windows physical-drive backend requests `GENERIC_READ` only. Export writes only to user-selected host-side files/directories.
+> **Safety status:** source devices remain read-only. There is no public HDD write API and the Windows physical-drive backend requests `GENERIC_READ` only. Export writes only to user-selected host-side files/directories. Darkness mounts add `DOKAN_OPTION_WRITE_PROTECT` and reject mutation callbacks in addition to that structural read-only boundary.
 
 ## Why another APA/PFS tool?
 
@@ -19,7 +19,7 @@ The important differences today are:
 - a byte-addressed `BlockDevice` boundary instead of exposing iomanX semantics to frontends;
 - APA main/sub-partition translation isolated in `ApaVolume`;
 - explicit `PFS Reader + Node + offset + span` byte-range reads;
-- a reusable `DriveSession` shared by CLI and GUI for APA scan, PFS browsing, export and diagnostics;
+- a reusable `DriveSession` shared by CLI, GUI and the Darkness mount view for APA scan, PFS browsing, export and diagnostics;
 - host filename/export policy isolated above the parser;
 - structural read-only safety while the parser is still maturing.
 
@@ -46,26 +46,29 @@ This does **not** mean DriveForge has already benchmarked faster throughput than
 - detect export directory cycles and host-name collisions;
 - collect backing-I/O statistics for browse/export operations;
 - native Windows GUI with APA partition tree, PFS browser, source detection and shared `DriveSession` path;
+- persistent **System / Light / Dark** GUI theme selection, including Windows 11 dark title-bar support and High Contrast passthrough;
+- portable Darkness `ReadOnlyMountView` with case-insensitive Windows path lookup, directory listing and random-offset reads;
+- build and link `PS2-DriveForge-Mount.exe` against Dokany 2.3.1 on Windows CI;
 - build/test on Windows x64 with MSVC;
 - run Clang ASan + UBSan with warnings-as-errors in CI;
 - generate a complete APA/PFS `.img` during tests and verify recursive exports by SHA-256;
 - run a deterministic malformed-metadata regression corpus;
 - optionally build an APA libFuzzer target under Clang.
 
-Ayanami, Bocchi, and Chisato have now been validated against a real **149.05 GiB PS2 HDD**. Chisato's read-only discovery correctly isolated `PhysicalDrive3` as the only PS2 APA disk (APA v2, 190 headers), the GUI exposed 43 main partitions with clean diagnostics, recursive `+OPL` export succeeded, and a real regular PFS file was extracted from `__common`. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) for the exact evidence and remaining coverage gap.
+Ayanami, Bocchi, and Chisato have been validated against a real **149.05 GiB PS2 HDD**. Chisato's read-only discovery correctly isolated `PhysicalDrive3` as the only PS2 APA disk (APA v2, 190 headers), the GUI exposed 43 main partitions with clean diagnostics, recursive `+OPL` export succeeded, and a real regular PFS file was extracted from `__common`. Darkness Explorer mounting is the next hardware-validation step. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) for the exact evidence and remaining coverage gap.
 
 ## Current limitations
 
 These are deliberate or known gaps, not hidden TODOs:
 
 - source HDD/image mutation is not implemented;
-- Chisato's GUI is still the first functional management shell, not the final UX;
+- the GUI remains a functional management shell rather than the final UX;
+- Darkness's Dokany provider is implemented and CI-built but has not yet completed real-HDD Explorer validation;
 - real-HDD PFS SEGI/large-fragmented-file traversal has not yet been observed because the current test disk stores large content as HDL partitions; deterministic generated-image SEGI coverage is green;
 - Windows physical-drive reads are currently synchronous and serialized per device;
 - no inode/directory/block cache exists yet;
 - no read-ahead or overlapped I/O exists yet;
 - current instrumentation measures backing reads, but not yet metadata-vs-payload/cache counters;
-- Dokany Explorer mounting belongs to the next release train (`0.4 Darkness`);
 - HDL virtual ISO browsing/import/export is a later milestone;
 - project licensing remains intentionally TBD until the upstream-code/definition audit is complete.
 
@@ -79,6 +82,10 @@ Current GUI behavior:
 - `File -> Open disk image...` opens a raw PS2 HDD image;
 - `File -> Detect PS2 HDDs...` scans accessible `PhysicalDrive0..31` read-only and lists PS2 APA candidates;
 - `File -> Open physical drive -> PhysicalDriveN` opens a selected physical disk read-only;
+- `View -> Theme -> System / Light / Dark` changes the complete GUI theme and persists the choice for future launches;
+- **System** follows Windows `AppsUseLightTheme` and updates when Windows settings change;
+- High Contrast always takes precedence over a DriveForge theme override;
+- the dark palette covers the client background, TreeView, ListView/header, status bar and Windows 11 title bar; native dark-menu support is enabled on a best-effort basis with a safe system-menu fallback;
 - the left pane lists APA main partitions;
 - selecting a PFS partition opens its root directory in the right pane;
 - double-click a folder to navigate into it;
@@ -88,21 +95,29 @@ Current GUI behavior:
 
 The GUI no longer constructs its own PFS stack or duplicate file-copy loop. GUI and CLI now use the same `DriveSession`/host exporter path, reducing the chance that one frontend quietly behaves differently from the other. MSVC builds the Win32 UI target with an explicit UTF-8 source/exec character set so non-ASCII UI punctuation is rendered correctly.
 
+The Windows theme controller keeps host UI policy outside APA/PFS parsing. It uses documented DWM support for the Windows 11 non-client frame, explicit common-control colours, and dynamically resolved UxTheme helpers only as a best-effort enhancement for native menus. If those optional helpers disappear on a future Windows release, the parser and GUI remain functional rather than failing at load time.
+
 ## Windows x64 build
 
-Install Visual Studio 2022 with **Desktop development with C++**, including MSVC, Windows 10/11 SDK and CMake tools. In Developer PowerShell:
+Install Visual Studio 2022 with **Desktop development with C++**, including MSVC, Windows 10/11 SDK and CMake tools. For GUI/CLI-only development in Developer PowerShell:
 
 ```powershell
 .\build-windows.ps1 -Clean
 ```
 
-Output is placed in `dist\windows-x64` and packaged as:
+For the Darkness mount frontend, install the Dokany 2.3.1 development files/runtime and provide its SDK root:
 
-```text
-PS2-DriveForge-0.3.0-Chisato-Release-windows-x64.zip
+```powershell
+.\build-windows.ps1 -Clean -WithDokany -DokanyRoot "C:\Program Files\Dokan\DokanLibrary-2.3.1"
 ```
 
-GitHub Actions performs the same MSVC build automatically for pull requests and `main`. Development packages include the GUI, CLI, all seven regression-test executables, and the current testing/hardware-validation notes.
+Output is placed in `dist\windows-x64` and the Darkness CI package is:
+
+```text
+PS2-DriveForge-0.4.0-Darkness-Release-windows-x64.zip
+```
+
+GitHub Actions performs the MSVC build automatically for pull requests and `main`, installing the pinned Dokany 2.3.1 SDK/runtime with its release MSI and verifying the MSI SHA-256 before use. Development packages include the GUI, CLI, `PS2-DriveForge-Mount.exe`, all seven regression-test executables, and the current testing/hardware-validation notes.
 
 ## Generic CMake build
 
@@ -196,7 +211,8 @@ Coverage includes:
 - nested directories and empty directories;
 - a file crossing APA main/sub-partition extents;
 - generated SEGI-backed file export;
-- recursive host export integrity verified by SHA-256.
+- recursive host export integrity verified by SHA-256;
+- Darkness mount-view root/partition enumeration, case-insensitive lookup, random-offset reads and EOF clamping.
 
 An optional Clang/libFuzzer APA target is also available. See [`docs/testing.md`](docs/testing.md) for the exact fixture, corruption corpus, fuzz commands, statistics, and hardware-test workflow.
 
@@ -213,6 +229,7 @@ Start here when changing core behavior rather than guessing from old chat/commit
 | [`docs/performance.md`](docs/performance.md) | Current bottlenecks, implemented instrumentation and benchmark plan |
 | [`docs/testing.md`](docs/testing.md) | E2E image fixture, corruption corpus, fuzzing and hardware-test workflow |
 | [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) | What has actually worked on a physical PS2 HDD |
+| [`docs/darkness-plan.md`](docs/darkness-plan.md) | 0.4 Dokany namespace, safety invariants and mount validation plan |
 | [`docs/development-guidelines.md`](docs/development-guidelines.md) | Documentation/comment/testing definition of done |
 | [`docs/release-codenames.md`](docs/release-codenames.md) | The regrettably permanent anime release train |
 
@@ -221,7 +238,7 @@ Start here when changing core behavior rather than guessing from old chat/commit
 1. **0.1 “Ayanami”** — APA read-only core, diagnostics and initial PFS probing. **Done.**
 2. **0.2 “Bocchi”** — PFS inode/directory/file read path. **Done / hardware validated.**
 3. **0.3 “Chisato”** — native Windows GUI browser, reusable host/session layer, discovery, diagnostics and pre-hardware hardening. **Done / hardware validated.**
-4. **0.4 “Darkness”** — Dokany Explorer mount, read-only first.
+4. **0.4 “Darkness”** — Dokany Explorer mount, read-only first. **In development.**
 5. **0.5 “Emilia”** — cache, read-ahead and overlapped-I/O performance pass.
 6. **0.6 “Frieren”** — carefully gated PFS/APA write path with automatic metadata backup.
 7. **0.7 “Guts”** — HDL game view and virtual ISO import/export.
@@ -232,7 +249,7 @@ Release train names proceed alphabetically by anime character. Patch releases in
 ## Architecture
 
 ```text
- Native Win32 GUI         CLI        future Dokany
+ Native Win32 GUI         CLI        Dokany mount
         |                  |                 |
         +----------- DriveSession -----------+
                            |
@@ -253,7 +270,7 @@ Release train names proceed alphabetically by anime character. Patch releases in
              disk image      PhysicalDriveN
 ```
 
-Format code does not know about Win32 controls, Windows filenames, or Dokany. Frontends do not implement APA/PFS parsing. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not a new on-disk abstraction.
+Format code does not know about Win32 controls, Windows filenames, GUI themes or Dokany. Frontends do not implement APA/PFS parsing. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not a new on-disk abstraction.
 
 ## Format references
 
