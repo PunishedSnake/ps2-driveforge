@@ -101,7 +101,11 @@ if (-not $SkipTests) {
     foreach ($TestName in @(
         'ps2-driveforge-tests.exe',
         'ps2-driveforge-pfs-file-tests.exe',
-        'ps2-driveforge-pfs-segi-tests.exe'
+        'ps2-driveforge-pfs-segi-tests.exe',
+        'ps2-driveforge-host-tests.exe',
+        'ps2-driveforge-e2e-image-tests.exe',
+        'ps2-driveforge-corruption-tests.exe',
+        'ps2-driveforge-session-tests.exe'
     )) {
         $TestExe = Join-Path $BinDir $TestName
         if (Test-Path $TestExe) {
@@ -114,6 +118,15 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     $Source = Join-Path $Root $Doc
     if (Test-Path $Source) {
         Copy-Item $Source $DistDir -Force
+    }
+}
+
+$ValidationDir = Join-Path $DistDir 'docs'
+New-Item -ItemType Directory -Force -Path $ValidationDir | Out-Null
+foreach ($Doc in @('docs\testing.md', 'docs\REAL_HARDWARE_VALIDATION.md')) {
+    $Source = Join-Path $Root $Doc
+    if (Test-Path $Source) {
+        Copy-Item $Source $ValidationDir -Force
     }
 }
 
