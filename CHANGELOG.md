@@ -9,7 +9,7 @@
 - Added deterministic Windows-safe mount aliases while preserving original APA/PFS names internally.
 - Added mount-view regression coverage for root/partition enumeration, case-insensitive lookup, random-offset reads and EOF clamping.
 - Added `PS2-DriveForge-Mount.exe` with image and read-only `PhysicalDriveN` sources plus explicit unmount support.
-- Implemented the initial Dokany 2.3.1 callbacks for create/open, read, metadata, directory enumeration, volume/free-space queries and mount lifecycle.
+- Implemented Dokany 2.3.1 callbacks for create/open, read, metadata, directory enumeration, volume/free-space queries and mount lifecycle.
 - Added structural write protection through `DOKAN_OPTION_WRITE_PROTECT`, mutation callbacks returning write-protected status, the absence of a `BlockDevice::write()` API, and continued `GENERIC_READ` physical-drive access.
 - Pinned Windows CI to the official Dokany 2.3.1 x64 MSI, verifies its SHA-256, installs development headers/libs, builds the mount frontend and packages it with the GUI/CLI.
 - Added a CMake `FindDokany.cmake` path and opted into CMP0144 when available so explicit `DOKANY_ROOT` builds remain warning-free on modern CMake.
@@ -21,10 +21,20 @@
 - Hardware-validated dynamic System/Light/Dark switching on Windows 11.
 - The first real Dokany mount correctly created `P:` for `PhysicalDrive3`, but Explorer initially failed opening the root with `The file exists`.
 - Fixed that root-open failure by separating Dokany/NT `FILE_OPEN`/`FILE_CREATE` disposition semantics from Win32 `OPEN_EXISTING`/`CREATE_NEW`; the numeric value `1` has different meanings in those APIs.
-- Added a portable `ps2-driveforge-dokany-open-policy-tests` regression that explicitly covers existing-root `FILE_OPEN`, create collisions, missing-object opens, overwrite/create rejection, type mismatches and delete-on-close.
+- Added portable `ps2-driveforge-dokany-open-policy-tests` coverage for existing-root `FILE_OPEN`, create collisions, missing-object opens, overwrite/create rejection, type mismatches and delete-on-close.
 - Added `--debug` to `PS2-DriveForge-Mount.exe` for callback/path/disposition diagnostics during real-machine Explorer testing.
-- Expanded the normal regression matrix from seven to eight test executables; Windows/MSVC + Dokany and Linux Clang ASan/UBSan both pass 8/8 after the root-open fix.
-- Darkness still awaits the second real-HDD Explorer mount smoke test and full browse/copy/write-rejection/unmount validation.
+- Hardware-validated the corrected read-only mount on the real 149.05 GiB APA v2 HDD: `P:\`, `P:\Partitions`, `+OPL`, and `__common\OPL` browse correctly; Explorer-copied `conf_hdd.cfg` matches SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`; write creation is rejected; unmount is clean.
+- Replaced the GUI's fixed `PhysicalDrive0..31` list with SetupAPI `GUID_DEVINTERFACE_DISK` enumeration and `IOCTL_STORAGE_GET_DEVICE_NUMBER` mapping to actual raw-disk numbers.
+- Automatic discovery now probes only real Windows disk interfaces and classifies them with the normal DriveForge APA parser; the GUI presents only PS2 APA candidates with friendly name, capacity, APA version and main-partition count.
+- Added asynchronous PS2 HDD discovery at GUI startup plus `Rescan PS2 HDDs`; when exactly one PS2 APA candidate exists it is opened automatically.
+- Extended `PhysicalDrive` diagnostics with the Win32 raw-open error so access-denied and nonexistent/unavailable device cases are distinguishable without changing `GENERIC_READ` semantics.
+- Added controlled UAC `runas` relaunch for normal-user GUI startup, a `--elevated-relaunch` loop-prevention marker, cancellation fallback to limited image-capable mode, and `Restart as Administrator` in the GUI.
+- Moved Dokany callbacks and lifecycle into shared `DokanyMountController`; the GUI and standalone mount CLI now use the same filesystem-provider implementation instead of duplicating callbacks or spawning a helper process.
+- Added direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` actions.
+- Added automatic free-drive-letter selection for GUI mounts, preferring `P:` and falling back to another free letter.
+- Retained `PS2-DriveForge-Mount.exe` as a thin diagnostic/script frontend over the shared controller.
+- Expanded the normal regression matrix to eight test executables; Linux Clang ASan/UBSan and Windows/MSVC + Dokany remain the merge gates.
+- The remaining Darkness gate is a real-machine smoke test of the new integrated GUI flow: UAC relaunch -> automatic SetupAPI discovery -> automatic PS2 HDD open -> GUI mount/open/unmount.
 
 ## 0.3.0-dev "Chisato" - 2026-08-21
 
