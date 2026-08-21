@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0-dev "Darkness" - 2026-08-21
+
+- Started the read-only Dokany Explorer-mount release train above the hardware-validated Chisato stack.
+- Added thread-safe `DriveSession::stat` and random-offset `DriveSession::read_file` operations for filesystem-provider callbacks.
+- Made session operation counters atomic for concurrent Dokany workloads.
+- Added portable `ReadOnlyMountView` mapping `\\Partitions\\...` into APA/PFS without making Dokany a parser dependency.
+- Added deterministic Windows-safe mount aliases while preserving original APA/PFS names internally.
+- Added mount-view regression coverage for root/partition enumeration, case-insensitive lookup, random-offset reads and EOF clamping.
+- Added `PS2-DriveForge-Mount.exe` with image and read-only `PhysicalDriveN` sources plus explicit unmount support.
+- Implemented the initial Dokany 2.3.1 callbacks for create/open, read, metadata, directory enumeration, volume/free-space queries and mount lifecycle.
+- Added structural write protection through `DOKAN_OPTION_WRITE_PROTECT`, mutation callbacks returning write-protected status, the absence of a `BlockDevice::write()` API, and continued `GENERIC_READ` physical-drive access.
+- Pinned Windows CI to the official Dokany 2.3.1 x64 MSI, verifies its SHA-256, installs development headers/libs, builds the mount frontend and packages it with the GUI/CLI.
+- Added a CMake `FindDokany.cmake` path and opted into CMP0144 when available so explicit `DOKANY_ROOT` builds remain warning-free on modern CMake.
+- Added persistent native GUI theme selection under `View -> Theme -> System / Light / Dark`.
+- System theme follows Windows `AppsUseLightTheme`; High Contrast overrides DriveForge theme choices for accessibility.
+- Added explicit dark colours for the client area, TreeView, ListView/header and status bar, plus documented Windows 11 DWM dark-titlebar support.
+- Added best-effort dynamically resolved UxTheme dark-menu/common-control support with a safe fallback if internal exports are unavailable.
+- Removed the white class-background brush and paint the active palette in `WM_ERASEBKGND` to avoid bright flashes during dark-mode startup/resizing.
+- Windows/MSVC + Dokany and Linux Clang ASan/UBSan CI remain green after the initial Darkness mount/theme work; Darkness still awaits real-HDD Explorer validation.
+
 ## 0.3.0-dev "Chisato" - 2026-08-21
 
 - Added the first native Windows GUI (`PS2-DriveForge.exe`) using Win32/Common Controls only.
