@@ -132,7 +132,7 @@ The disk does not contain a suitable large/fragmented **PFS** file; large conten
 
 This explicit gap does not block Darkness because the missing case has end-to-end synthetic coverage.
 
-## 0.4.0-dev "Darkness" — standalone/shared Dokany path hardware validated
+## 0.4.0-dev "Darkness" — hardware validated
 
 ### Native GUI theme
 
@@ -189,33 +189,24 @@ PhysicalDrive3 / GENERIC_READ
  -> matching SHA-256
 ```
 
-## Final Darkness merge gate: integrated GUI workflow
+### Integrated GUI workflow — passed
 
-After the successful standalone/shared-controller mount, Darkness added the final Windows workflow:
+The final Windows 11 hardware pass also validated the user-facing workflow added at the end of Darkness:
 
-- SetupAPI enumeration of actual `GUID_DEVINTERFACE_DISK` devices instead of a fixed visible `PhysicalDrive0..31` list;
-- `IOCTL_STORAGE_GET_DEVICE_NUMBER` mapping to the real raw-disk number;
-- normal DriveForge read-only APA classification;
-- controlled UAC relaunch with cancellation fallback;
-- automatic startup discovery and one-candidate auto-open;
-- direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` using the same `DokanyMountController` as the CLI;
-- automatic free-drive-letter selection preferring `P:`.
+- launching `PS2-DriveForge.exe` as a normal user performs one controlled UAC relaunch without a loop;
+- SetupAPI enumerates actual `GUID_DEVINTERFACE_DISK` devices instead of exposing a fixed `PhysicalDrive0..31` list;
+- the DriveForge APA probe identifies the sole PS2 HDD candidate and the GUI opens it automatically;
+- the opened device reports the expected approximately 149.05 GiB, APA v2, and 43 main partitions;
+- GUI `Mount read-only` selects an available drive letter automatically, preferring `P:`;
+- GUI `Open mounted volume in Explorer` opens the same read-only `Partitions` namespace already validated through the standalone frontend;
+- known `+OPL` and `__common\OPL` paths remain browseable and file access remains correct;
+- create/write operations remain rejected;
+- GUI `Unmount` removes the drive cleanly;
+- rescanning does not silently replace an already-open source;
+- cancelling elevation leaves the image-capable limited mode usable and manual `Restart as Administrator` recovers raw-disk access;
+- occupied preferred-letter handling falls back to another free data-drive letter as designed.
 
-This exact integrated path is the only remaining hardware blocker before PR #5 can merge:
-
-1. launch `PS2-DriveForge.exe` as a normal user;
-2. confirm one UAC relaunch and no loop;
-3. confirm startup SetupAPI discovery finds the PS2 HDD with no old fixed list;
-4. confirm the sole candidate auto-opens with approximately 149.05 GiB / APA v2 / 43 main partitions;
-5. mount from the GUI and confirm a free drive letter is selected automatically;
-6. open the mount from the GUI and browse known PFS paths;
-7. confirm write/create/rename/delete remain rejected;
-8. unmount from the GUI and confirm clean drive-letter removal;
-9. rescan and confirm an already-open source is not silently replaced;
-10. once cancel UAC and confirm image-capable limited mode remains usable, with manual restart-as-admin recovery;
-11. if practical, occupy `P:` and verify fallback to another free letter.
-
-Passing this list closes 0.4 hardware validation.
+This closes the 0.4 hardware gate. The GUI and diagnostic mount frontend now exercise the same shared `DokanyMountController`; no helper process or second filesystem implementation is involved.
 
 ## Emilia baseline handoff
 
