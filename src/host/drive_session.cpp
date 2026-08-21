@@ -3,9 +3,37 @@
 #include "ps2hdd/apa_volume.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace ps2hdd {
+namespace {
+
+class AtomicTimer final {
+public:
+    explicit AtomicTimer(std::atomic<std::uint64_t>& destination)
+        : destination_(destination), started_(std::chrono::steady_clock::now())
+    {
+    }
+
+    ~AtomicTimer()
+    {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started_).count();
+        if (elapsed > 0) {
+            destination_.fetch_add(static_cast<std::uint64_t>(elapsed), std::memory_order_relaxed);
+        }
+    }
+
+    AtomicTimer(const AtomicTimer&) = delete;
+    AtomicTimer& operator=(const AtomicTimer&) = delete;
+
+private:
+    std::atomic<std::uint64_t>& destination_;
+    std::chrono::steady_clock::time_point started_;
+};
+
+} // namespace
 
 DriveSession::DriveSession(std::unique_ptr<BlockDevice> source)
     : source_(std::move(source)), instrumented_(*source_)
@@ -14,6 +42,7 @@ DriveSession::DriveSession(std::unique_ptr<BlockDevice> source)
 
 bool DriveSession::scan()
 {
+    AtomicTimer timer(scan_time_ns_);
     last_error_.clear();
     apa_scans_.fetch_add(1, std::memory_order_relaxed);
     apa::Reader reader(instrumented_);
@@ -40,6 +69,7 @@ const apa::Partition* DriveSession::find_partition(std::string_view id) const no
 
 BrowseResult DriveSession::browse(std::string_view partition_id, std::string_view path)
 {
+    AtomicTimer timer(browse_time_ns_);
     browse_operations_.fetch_add(1, std::memory_order_relaxed);
     BrowseResult result;
     const auto* partition = find_partition(partition_id);
@@ -94,6 +124,7 @@ BrowseResult DriveSession::browse(std::string_view partition_id, std::string_vie
 
 StatResult DriveSession::stat(std::string_view partition_id, std::string_view path)
 {
+    AtomicTimer timer(stat_time_ns_);
     stat_operations_.fetch_add(1, std::memory_order_relaxed);
     StatResult result;
     const auto* partition = find_partition(partition_id);
@@ -130,6 +161,7 @@ StatResult DriveSession::stat(std::string_view partition_id, std::string_view pa
 ReadResult DriveSession::read_file(std::string_view partition_id, std::string_view path,
                                    std::uint64_t offset, std::span<std::byte> out)
 {
+    AtomicTimer timer(read_time_ns_);
     read_operations_.fetch_add(1, std::memory_order_relaxed);
     ReadResult result;
     const auto* partition = find_partition(partition_id);
@@ -181,6 +213,7 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
                                                const std::filesystem::path& destination,
                                                pfs::ExportProgress progress)
 {
+    AtomicTimer timer(export_time_ns_);
     export_operations_.fetch_add(1, std::memory_order_relaxed);
     pfs::ExportResult error_result;
 
@@ -212,6 +245,11 @@ SessionStats DriveSession::stats() const noexcept
         stat_operations_.load(std::memory_order_relaxed),
         read_operations_.load(std::memory_order_relaxed),
         export_operations_.load(std::memory_order_relaxed),
+        scan_time_ns_.load(std::memory_order_relaxed),
+        browse_time_ns_.load(std::memory_order_relaxed),
+        stat_time_ns_.load(std::memory_order_relaxed),
+        read_time_ns_.load(std::memory_order_relaxed),
+        export_time_ns_.load(std::memory_order_relaxed),
     };
 }
 
@@ -223,6 +261,11 @@ void DriveSession::reset_stats() noexcept
     stat_operations_.store(0, std::memory_order_relaxed);
     read_operations_.store(0, std::memory_order_relaxed);
     export_operations_.store(0, std::memory_order_relaxed);
+    scan_time_ns_.store(0, std::memory_order_relaxed);
+    browse_time_ns_.store(0, std::memory_order_relaxed);
+    stat_time_ns_.store(0, std::memory_order_relaxed);
+    read_time_ns_.store(0, std::memory_order_relaxed);
+    export_time_ns_.store(0, std::memory_order_relaxed);
 }
 
 } // namespace ps2hdd
