@@ -49,7 +49,7 @@ DriveForge does **not** yet claim higher throughput than pfsshell/pfsfuse. Curre
 - deterministic corruption corpus and optional APA libFuzzer target;
 - MSVC Windows CI and Clang ASan+UBSan+`-Werror` CI.
 
-Ayanami, Bocchi, and Chisato are hardware validated. Darkness' standalone Dokany path is also hardware validated on the real test HDD: Explorer browsing, mounted file copy/hash integrity, write rejection, and clean unmount all passed. The remaining 0.4 gate is the final integrated GUI discovery/elevation/mount workflow. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md).
+Ayanami, Bocchi, and Chisato are hardware validated. Darkness' standalone/shared-controller Dokany path is also hardware validated on the real test HDD: Explorer browsing, mounted file copy/hash integrity, write rejection, and clean unmount all passed. The remaining 0.4 gate is the final integrated GUI discovery/elevation/mount workflow. See [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md).
 
 ## Current limitations
 
@@ -197,7 +197,7 @@ ps2-driveforge-dokany-open-policy-tests
 ps2-driveforge-darkness-policy-tests
 ```
 
-The Darkness policy test protects one-candidate auto-open behavior and deterministic free-drive-letter selection. See [`docs/testing.md`](docs/testing.md) for exact coverage, generated-image E2E, corruption corpus, fuzzing, and final hardware workflow.
+The Darkness policy test records the required one-candidate auto-open and deterministic free-drive-letter behavior independently from live SetupAPI/Dokany state, so CI can catch policy drift without depending on a particular runner's disks or letters. See [`docs/testing.md`](docs/testing.md) for exact coverage and the final hardware workflow.
 
 ## Developer documentation
 
