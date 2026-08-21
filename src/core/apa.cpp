@@ -31,6 +31,14 @@ bool range_fits(std::uint64_t offset, std::uint64_t size, std::uint64_t device_s
     return offset <= device_size && size <= device_size - offset;
 }
 
+bool sector_extent_fits(std::uint32_t start, std::uint32_t length,
+                        std::uint64_t device_size) noexcept
+{
+    const std::uint64_t offset = static_cast<std::uint64_t>(start) * kSectorSize;
+    const std::uint64_t bytes = static_cast<std::uint64_t>(length) * kSectorSize;
+    return range_fits(offset, bytes, device_size);
+}
+
 } // namespace
 
 bool ScanResult::ok() const noexcept
@@ -159,6 +167,14 @@ ScanResult Reader::scan(std::size_t max_headers)
             result.issues.push_back({IssueSeverity::warning, current_lba, "APA sub-partition count exceeds format limit; clamping to 64"});
         }
 
+        // Header links being in range is not enough: damaged metadata can point
+        // a partition extent beyond the end of the device while leaving the
+        // header itself readable. Reject that before any filesystem layer sees
+        // the partition as a usable address space.
+        if (!sector_extent_fits(header.start, header.length, device_.size_bytes())) {
+            result.issues.push_back({IssueSeverity::error, current_lba, "APA partition extent extends outside the device"});
+        }
+
         Partition partition;
         partition.id = partition_id(header);
         partition.start_lba = header.start;
@@ -177,8 +193,13 @@ ScanResult Reader::scan(std::size_t max_headers)
         // BlockInfo.subpart through the real start LBA because physical extents
         // are not guaranteed to be adjacent.
         for (std::uint32_t i = 0; i < partition.sub_count; ++i) {
-            partition.sub_partitions.push_back(header.subs[i]);
-            partition.total_sectors += header.subs[i].length;
+            const auto& sub = header.subs[i];
+            if (!sector_extent_fits(sub.start, sub.length, device_.size_bytes())) {
+                result.issues.push_back({IssueSeverity::error, current_lba,
+                                         "APA sub-partition extent extends outside the device"});
+            }
+            partition.sub_partitions.push_back(sub);
+            partition.total_sectors += sub.length;
         }
         result.partitions.push_back(std::move(partition));
 
