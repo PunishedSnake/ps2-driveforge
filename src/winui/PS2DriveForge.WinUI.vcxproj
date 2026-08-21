@@ -106,6 +106,39 @@
     <Manifest Include="app.manifest" />
   </ItemGroup>
 
+  <!--
+    Microsoft.WindowsAppSDK 2.3 is split across native dependency packages. The
+    WinUI package itself contributes Microsoft.UI.Xaml/Text metadata, while Window
+    inherits types from Foundation/InteractiveExperiences (DispatcherQueue,
+    Composition, AppWindow). Manual packages-folder restore does not automatically
+    place those dependency WinMDs in ReferencePath, so inject them immediately
+    before C++/WinRT resolves direct WinMD references. Keep this version-agnostic
+    within the restored 2.3 dependency set rather than hard-coding individual
+    metadata file names.
+  -->
+  <PropertyGroup>
+    <GetCppWinRTDirectWinMDReferencesDependsOn>PS2DFAddWindowsAppSDKDependencyWinMDs;$(GetCppWinRTDirectWinMDReferencesDependsOn)</GetCppWinRTDirectWinMDReferencesDependsOn>
+  </PropertyGroup>
+  <Target Name="PS2DFAddWindowsAppSDKDependencyWinMDs">
+    <ItemGroup>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.*\**\*.winmd">
+        <WinMDFile>true</WinMDFile>
+        <IsSystemReference>false</IsSystemReference>
+        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
+      </ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.*\**\*.winmd">
+        <WinMDFile>true</WinMDFile>
+        <IsSystemReference>false</IsSystemReference>
+        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
+      </ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.*\**\*.winmd">
+        <WinMDFile>true</WinMDFile>
+        <IsSystemReference>false</IsSystemReference>
+        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets')" />
