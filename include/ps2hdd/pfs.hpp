@@ -129,6 +129,11 @@ class Reader {
 public:
     explicit Reader(ApaVolume& volume);
 
+    // Read-only frontends may reuse a ProbeResult already validated against the
+    // same immutable APA volume. This avoids rereading primary/backup superblocks
+    // for every Explorer stat/read without weakening the normal probing API.
+    Reader(ApaVolume& volume, ProbeResult validated_probe);
+
     [[nodiscard]] bool valid() const noexcept { return probe_.valid; }
     [[nodiscard]] const ProbeResult& probe_result() const noexcept { return probe_; }
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
