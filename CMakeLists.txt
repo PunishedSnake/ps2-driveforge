@@ -193,7 +193,6 @@ if(PS2DF_BUILD_TESTS)
     # Keep startup auto-open and drive-letter selection deterministic and
     # testable without SetupAPI, Dokany, or a particular runner drive layout.
     add_executable(ps2-driveforge-darkness-policy-tests tests/darkness_policy_tests.cpp)
-    target_include_directories(ps2-driveforge-darkness-policy-tests PRIVATE src/host)
     target_compile_features(ps2-driveforge-darkness-policy-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-darkness-policy-tests COMMAND ps2-driveforge-darkness-policy-tests)
 endif()
