@@ -12,7 +12,7 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The current suite contains eight targets:
+The current suite contains nine targets:
 
 ```text
 ps2-driveforge-tests
@@ -23,6 +23,7 @@ ps2-driveforge-e2e-image-tests
 ps2-driveforge-corruption-tests
 ps2-driveforge-session-tests
 ps2-driveforge-dokany-open-policy-tests
+ps2-driveforge-darkness-policy-tests
 ```
 
 CI runs the same portable suite on Windows/MSVC and under Clang with AddressSanitizer + UndefinedBehaviorSanitizer + warnings-as-errors.
@@ -51,18 +52,25 @@ P:\ is not accessible.
 The file exists.
 ```
 
-The corrected policy is isolated in `src/mount/dokany_open_policy.hpp` and is deliberately dependency-free. This lets both Windows/MSVC and Linux sanitizer CI verify:
+The corrected policy is isolated in `src/mount/dokany_open_policy.hpp` and is deliberately dependency-free. This lets both Windows/MSVC and Linux sanitizer CI verify existing-object opens, create collisions, missing-object opens, overwrite/create rejection, requested write/delete-on-close access, and directory/file type mismatches.
 
-- existing root + `FILE_OPEN` succeeds;
-- existing object + read-only `FILE_OPEN_IF` succeeds;
-- `FILE_CREATE` on an existing object returns a collision;
-- missing object + `FILE_OPEN` is not found;
-- missing object + `FILE_OPEN_IF` is blocked because it would create data;
-- supersede/overwrite operations are blocked;
-- requested write/delete-on-close access is blocked;
-- directory/file type mismatches return the appropriate failure.
+## Darkness GUI/mount policy regression
 
-This test protects Dokany/NT semantics without making Dokany itself a dependency of the portable test suite.
+`tests/darkness_policy_tests.cpp` protects the small decisions around the final 0.4 GUI workflow without depending on SetupAPI, Dokany, or the runner's actual drive layout.
+
+It verifies:
+
+- zero detected PS2 HDDs never auto-open;
+- exactly one detected PS2 HDD auto-opens only when no source is already open;
+- multiple PS2 HDDs require an explicit user choice;
+- rescanning cannot silently replace an already-open image/HDD;
+- `P:` is preferred when free;
+- if `P:` is occupied the policy walks `Q:` through `Z:`;
+- after `P:`-`Z:` it falls back from `O:` toward `D:`;
+- system letters below `D:` are never selected;
+- no mount point is returned when `D:`-`Z:` are all occupied.
+
+The production Windows path obtains the occupied-letter mask from `GetLogicalDrives()`. The regression keeps the decision itself deterministic so future GUI/controller refactors do not accidentally change the policy.
 
 ## Generated-image end-to-end fixture
 
@@ -81,40 +89,17 @@ generated DriveForge-test.img
         -> SHA-256 comparison with generated source payloads
 ```
 
-The generated image currently exercises:
+The generated image currently exercises valid APA v2, a PFS main partition plus physically separate APA sub-partition, matching PFS v3 superblocks, 8 KiB zones, nested/empty directories, boundary reads, main/sub crossing, a SEGI-backed file, Windows-reserved names/collisions, and full exported-content SHA-256 verification.
 
-- valid APA v2 MBR;
-- one PFS main APA partition;
-- one physically separate APA sub-partition;
-- matching primary/backup PFS v3 superblocks;
-- 8 KiB zones;
-- empty directory preservation;
-- nested directory traversal;
-- small file reads;
-- a 1024-byte boundary case;
-- a file split across main and sub-partition extents;
-- a file that requires SEGI indirect descriptor traversal;
-- Windows reserved-name conversion (`CON` -> `_CON`);
-- case-insensitive host collision handling (`foo` / `FOO`);
-- invalid Windows host characters (`bad:name?.txt`);
-- full exported-content SHA-256 verification.
-
-This test exists specifically to catch mistakes that small in-memory `SparseDevice` fixtures cannot reveal, such as incorrect physical offsets, image-file seeking, APA extent translation, host-tree construction, and interactions between several layers.
+This remains the deterministic coverage for real PFS SEGI/main-sub cases that the current physical test HDD cannot provide.
 
 ## Corruption regression corpus
 
 `tests/corruption_tests.cpp` deliberately builds malformed metadata and verifies that normal read-only parsing rejects it rather than trying to continue silently.
 
-Current cases include:
+Current cases include APA main/sub extents outside the backing device, invalid PFS zone size, root references to missing sub-partitions, invalid inode checksum, and malformed directory-entry allocation length.
 
-- APA main extent outside the backing device;
-- APA sub-partition extent outside the backing device;
-- invalid PFS zone size;
-- PFS root referencing a missing sub-partition;
-- invalid inode checksum;
-- malformed directory-entry allocation length.
-
-When a real HDD exposes a new malformed/edge-case layout, preserve it as a minimal synthetic regression here (or in a more specific test) before fixing the parser.
+When a real HDD exposes a new malformed/edge-case layout, preserve it as a minimal synthetic regression before fixing the parser.
 
 ## DriveSession tests
 
@@ -145,117 +130,83 @@ cmake --build build/fuzz --target ps2-driveforge-fuzz-apa
 ./build/fuzz/ps2-driveforge-fuzz-apa
 ```
 
-The APA harness feeds arbitrary bytes through `apa::Reader::scan(256)`. The explicit 256-header ceiling is part of the fuzz safety contract so damaged `next` pointers cannot create an unbounded traversal.
-
 Interesting crashes or hangs must be converted into small deterministic regression tests before a fix is considered complete.
 
-## Performance instrumentation
+## Performance instrumentation and the Emilia baseline
 
-The CLI can wrap the source in the same instrumentation used by `DriveSession`:
+The CLI can expose the backing-I/O counters used by `DriveSession`:
 
 ```powershell
 ps2-driveforge-inspect.exe --stats --physical 3 --browse +OPL
 ```
 
-Current counters include:
+Current counters include APA scans, PFS browse/export operations, backing `BlockDevice::read()` calls, bytes requested, average/largest read, and failed reads.
 
-- APA scan count;
-- PFS browse operation count;
-- PFS export operation count;
-- backing `BlockDevice::read()` calls;
-- backing bytes requested;
-- average backing-read size;
-- largest backing-read size;
-- failed backing reads.
+The first real-HDD `+OPL` browse baseline recorded under Chisato was **215 backing reads / 206.50 KiB**, with a 983 B average, 1 KiB largest request, and zero failed reads.
 
-These counters measure host/backend requests after PFS batching and APA translation. They are a baseline for later Emilia cache/read-ahead/overlapped-I/O work; they are not themselves proof of speed superiority.
+Before merging Darkness and starting 0.5 Emilia, preserve one Explorer workload as the mount-side baseline:
+
+```text
+cold GUI start
+  -> automatic PS2 HDD discovery/open
+  -> Mount read-only
+  -> open mount in Explorer
+  -> P:\
+  -> P:\Partitions
+  -> P:\Partitions\+OPL
+  -> P:\Partitions\__common\OPL
+  -> read/copy conf_hdd.cfg
+  -> Unmount
+```
+
+For this final 0.4 validation it is enough to preserve the observable callback/debug log and any available backing-I/O totals. Emilia should compare the same workload before/after inode, directory, block cache, read-ahead, request coalescing, and overlapped physical I/O rather than relying on subjective Explorer responsiveness.
 
 ## Windows physical-drive discovery
 
-Before a hardware test, use:
+Darkness no longer probes an arbitrary visible `PhysicalDrive0..31` list. Windows discovery enumerates actual disk interfaces through SetupAPI, maps them to their real `PhysicalDriveN` number with `IOCTL_STORAGE_GET_DEVICE_NUMBER`, then reopens the raw device through DriveForge's `GENERIC_READ` backend and lets the APA parser classify it.
 
-```powershell
-ps2-driveforge-inspect.exe --detect-physical
-```
+Discovery is read-only classification. Device model, capacity, or Windows partition-table metadata must never become a substitute for APA validation.
 
-The discovery pass opens accessible `PhysicalDriveN` devices read-only and reports which ones contain a valid PS2 APA signature, their size, APA version, and header count.
+## Standalone Darkness mount diagnostics
 
-Discovery must remain a read-only classification step. It must never turn into an automatic write-target selector.
-
-## Darkness real-mount diagnostics
-
-While the Dokany provider is still being hardware-validated, enable callback tracing:
-
-```powershell
-.\PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug
-```
-
-To preserve the output in PowerShell:
+The standalone frontend remains available for scripts and callback diagnosis:
 
 ```powershell
 .\PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug 2>&1 |
   Tee-Object -FilePath darkness-mount.log
 ```
 
-The debug mode reports the relevant callback path and NT create disposition, plus metadata, directory enumeration, reads, and volume/free-space requests. It does not alter source access and does not enable writes.
+The CLI-driven real-HDD path has already validated root/partition browsing, copy/hash integrity, write rejection, and clean unmount. The remaining 0.4 hardware gate is the integrated GUI workflow below.
 
-For the current test disk, validate in this order:
+## Final integrated-GUI hardware gate
 
-```powershell
-dir P:\
-dir P:\Partitions
-dir P:\Partitions\+OPL
-```
+Run the current Darkness GUI as a **normal user**, not from an already elevated terminal.
 
-Expected `+OPL` children:
+1. Confirm DriveForge requests UAC and relaunches once as Administrator.
+2. Confirm startup discovery automatically finds the PS2 APA HDD through SetupAPI; the old fixed PhysicalDrive list must not appear.
+3. With exactly one PS2 HDD connected, confirm it opens automatically and reports approximately 149.05 GiB, APA v2, and 43 main partitions.
+4. Use `File -> Mount read-only...`; `P:` should be chosen when free, otherwise another unused letter.
+5. Use `File -> Open mounted volume in Explorer` and browse:
+   ```text
+   <mount>:\
+   <mount>:\Partitions
+   <mount>:\Partitions\+OPL
+   <mount>:\Partitions\__common\OPL
+   ```
+6. Optionally copy `conf_hdd.cfg` again and verify SHA-256:
+   ```text
+   E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
+   ```
+7. Confirm creating, renaming, deleting, or writing a file remains rejected.
+8. Use the **GUI** `Unmount` command and confirm the drive letter disappears cleanly.
+9. Run `Rescan PS2 HDDs` and confirm it does not silently replace an already-open source.
+10. Once, cancel the initial UAC prompt and confirm DriveForge remains usable for opening an image; `Restart as Administrator` should recover raw-disk functionality.
+11. If practical, occupy `P:` before launch and confirm the mount chooses the next free letter instead of failing.
 
-```text
-CFG
-THM
-LNG
-ART
-VMC
-CHT
-APPS
-```
+A failure in any of these points blocks merging Darkness. Cosmetic Win32 styling, HDL support, writable PFS, real-HDD SEGI availability, and Emilia performance work do not.
 
-Then copy the known real file through the mounted filesystem:
+## Real-HDD validation reports
 
-```powershell
-Copy-Item 'P:\Partitions\__common\OPL\conf_hdd.cfg' .\conf_hdd-mounted.cfg
-Get-FileHash .\conf_hdd-mounted.cfg -Algorithm SHA256
-```
+For a hardware regression report preserve the DriveForge version/commit, source device/size, exact GUI action or command, complete diagnostics, callback/stat output when relevant, expected vs actual result, and hashes for independently verifiable copied/exported files.
 
-Expected SHA-256:
-
-```text
-E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
-```
-
-Finally verify read-only behavior and unmounting:
-
-```powershell
-New-Item P:\write-test.txt -ItemType File
-.\PS2-DriveForge-Mount.exe --unmount P:
-```
-
-The create operation must fail. Ctrl+C in the mount process is also a valid clean-unmount path.
-
-If Explorer fails, preserve the earliest `--debug` lines around the failing path. Explorer performs many opens and metadata requests; the first wrong NTSTATUS is generally more useful than the final translated Explorer error.
-
-## Real-HDD validation workflow
-
-After all synthetic/CI gates are green, perform the hardware checks listed in [`REAL_HARDWARE_VALIDATION.md`](REAL_HARDWARE_VALIDATION.md).
-
-For a hardware regression report, preserve:
-
-- DriveForge version/commit;
-- physical-drive index and reported size;
-- exact command/action;
-- complete DriveForge diagnostics;
-- `--stats` or mount `--debug` output when relevant;
-- whether the operation was browse-only, mounted read, or host export;
-- expected result and actual result;
-- hashes for independently verifiable exported files where practical.
-
-Do not add write tests to the physical-HDD workflow until the project has a separate writable capability, backup/recovery design, and disposable-image destructive tests.
+Do not add source-HDD write tests until the project has a separate writable capability, metadata backup/recovery design, and disposable-image destructive tests.
