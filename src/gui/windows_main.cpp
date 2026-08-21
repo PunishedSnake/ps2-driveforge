@@ -58,6 +58,7 @@ constexpr int kListId = 1001;
 constexpr int kStatusId = 1002;
 
 HMENU g_physical_menu = nullptr;
+std::vector<unsigned> g_physical_menu_indices;
 
 std::wstring widen(std::string_view text)
 {
@@ -168,7 +169,6 @@ public:
 
         ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
                                                     LVS_EX_LABELTIP | LVS_EX_GRIDLINES);
-
         add_column(0, L"Name", 280);
         add_column(1, L"Type", 90);
         add_column(2, L"Size", 110);
@@ -202,10 +202,7 @@ public:
         FillRect(dc, &rect, background_brush_);
     }
 
-    void system_settings_changed()
-    {
-        apply_theme(false);
-    }
+    void system_settings_changed() { apply_theme(false); }
 
     void set_theme(ThemePreference preference)
     {
@@ -539,6 +536,7 @@ private:
         while (GetMenuItemCount(g_physical_menu) > 0) {
             DeleteMenu(g_physical_menu, 0, MF_BYPOSITION);
         }
+        g_physical_menu_indices.clear();
 
         if (discovery_running_) {
             AppendMenuW(g_physical_menu, MF_STRING | MF_GRAYED, 0, L"Scanning for PS2 HDDs...");
@@ -546,8 +544,10 @@ private:
             AppendMenuW(g_physical_menu, MF_STRING | MF_GRAYED, 0, L"No PS2 APA HDD detected");
         } else {
             const std::size_t count = std::min<std::size_t>(detected_drives_.size(), kMaxPhysicalMenuEntries);
+            g_physical_menu_indices.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
                 const auto& probe = detected_drives_[i];
+                g_physical_menu_indices.push_back(probe.index);
                 std::wstring label = probe.friendly_name.empty()
                     ? L"PhysicalDrive" + std::to_wstring(probe.index)
                     : widen(probe.friendly_name);
@@ -568,13 +568,11 @@ private:
         if (process_mode_changed) {
             ps2driveforge::gui::apply_process_theme(theme_preference_);
         }
-
         const auto palette = ps2driveforge::gui::palette_for(theme_preference_);
         if (background_brush_) {
             DeleteObject(background_brush_);
         }
         background_brush_ = CreateSolidBrush(palette.window_background);
-
         ps2driveforge::gui::apply_window_theme(window_, tree_, list_, status_, theme_preference_);
         update_theme_menu();
         InvalidateRect(window_, nullptr, TRUE);
@@ -634,7 +632,6 @@ private:
                 return false;
             }
         }
-
         session_ = std::move(candidate);
         active_path_.clear();
         active_partition_.reset();
@@ -651,7 +648,6 @@ private:
         if (!session_) {
             return;
         }
-
         TVINSERTSTRUCTW root_insert{};
         root_insert.hParent = TVI_ROOT;
         root_insert.hInsertAfter = TVI_LAST;
@@ -669,7 +665,6 @@ private:
             const auto index = main_partitions_.size() - 1;
             std::wstring text = widen(partition.id.empty() ? "<unnamed>" : partition.id);
             text += L"  [" + widen(ps2hdd::apa::type_name(partition.type)) + L"]";
-
             TVINSERTSTRUCTW insert{};
             insert.hParent = root;
             insert.hInsertAfter = TVI_LAST;
@@ -693,13 +688,11 @@ private:
                                          : L"No PS2 HDD opened — READ ONLY");
             return;
         }
-
         const auto& scan = session_->scan_result();
         insert_list_row(0, L"PS2 APA HDD", L"Drive", format_bytes(session_->device().size_bytes()), L"", L"");
         insert_list_row(1, L"APA version", L"Metadata", std::to_wstring(scan.apa_version), L"", L"");
         insert_list_row(2, L"Main partitions", L"Metadata", std::to_wstring(main_partitions_.size()), L"", L"");
         insert_list_row(3, L"Diagnostics", L"Metadata", scan.ok() ? L"clean" : L"errors", L"", L"");
-
         std::wostringstream status;
         status << widen(session_->device().display_name()) << L"  |  APA v" << scan.apa_version
                << L"  |  " << main_partitions_.size() << L" main partitions  |  READ ONLY"
@@ -713,7 +706,6 @@ private:
         active_path_.clear();
         visible_entries_.clear();
         ListView_DeleteAllItems(list_);
-
         if (partition.type != ps2hdd::apa::kTypePfs) {
             insert_list_row(0, widen(partition.id), widen(ps2hdd::apa::type_name(partition.type)),
                             format_bytes(partition.size_bytes()), L"", L"");
@@ -733,7 +725,6 @@ private:
             message(L"Could not enumerate PFS directory:\n" + widen(result.error), MB_ICONERROR);
             return;
         }
-
         active_path_ = std::move(path);
         visible_entries_ = result.entries;
         std::sort(visible_entries_.begin(), visible_entries_.end(), [](const auto& a, const auto& b) {
@@ -742,7 +733,6 @@ private:
             }
             return a.name < b.name;
         });
-
         ListView_DeleteAllItems(list_);
         int row = 0;
         if (!active_path_.empty()) {
@@ -755,7 +745,6 @@ private:
                             std::to_wstring(entry.inode.subpart),
                             std::to_wstring(entry.inode.number));
         }
-
         std::wstring location = widen(active_partition_->id) + L":/" + widen(active_path_);
         std::wostringstream status;
         status << location << L"  |  " << visible_entries_.size() << L" entries  |  READ ONLY"
@@ -783,7 +772,6 @@ private:
         if (!session_ || !active_partition_ || !entry.is_regular()) {
             return;
         }
-
         std::array<wchar_t, 32768> output{};
         const auto default_name = widen(entry.name);
         std::copy_n(default_name.c_str(), std::min(default_name.size(), output.size() - 1), output.data());
@@ -797,7 +785,6 @@ private:
         if (!GetSaveFileNameW(&dialog)) {
             return;
         }
-
         const auto source_path = join_pfs_path(active_path_, entry.name);
         const auto result = session_->export_to_host(active_partition_->id, source_path,
                                                      std::filesystem::path(output.data()));
@@ -805,7 +792,6 @@ private:
             message(L"Extraction failed:\n\n" + widen(result.error), MB_ICONERROR);
             return;
         }
-
         std::wostringstream text;
         text << L"Extracted " << result.stats.files << L" file, " << format_bytes(result.stats.bytes)
              << L" to:\n" << output.data() << L"\n\n"
@@ -974,15 +960,10 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         }
         if (LOWORD(wparam) >= kIdPhysicalBase &&
             LOWORD(wparam) < kIdPhysicalBase + kMaxPhysicalMenuEntries) {
-            const std::size_t index = LOWORD(wparam) - kIdPhysicalBase;
-            // The command IDs index the current candidate vector, not PhysicalDrive numbers.
-            // This keeps Windows device enumeration independent from menu implementation.
-            // A stale command cannot occur because the menu is rebuilt atomically on the UI thread.
-            //
-            // Bounds checking still matters for malformed/synthetic WM_COMMAND messages.
-            //
-            // NOLINTNEXTLINE(bugprone-branch-clone)
-            app->open_physical(index < kMaxPhysicalMenuEntries ? index : 0);
+            const std::size_t menu_index = LOWORD(wparam) - kIdPhysicalBase;
+            if (menu_index < g_physical_menu_indices.size()) {
+                app->open_physical(g_physical_menu_indices[menu_index]);
+            }
             return 0;
         }
         break;
