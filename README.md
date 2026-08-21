@@ -102,7 +102,7 @@ Output is placed in `dist\windows-x64` and packaged as:
 PS2-DriveForge-0.3.0-Chisato-Release-windows-x64.zip
 ```
 
-GitHub Actions performs the same MSVC build automatically for pull requests and `main`.
+GitHub Actions performs the same MSVC build automatically for pull requests and `main`. Development packages include the GUI, CLI, all seven regression-test executables, and the current testing/hardware-validation notes.
 
 ## Generic CMake build
 
