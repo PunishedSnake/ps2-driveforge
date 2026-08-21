@@ -14,16 +14,16 @@ PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
 {
     const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index_);
 
-    // Read-only is a structural invariant during Ayanami/Bocchi/Chisato, not a
-    // UI preference. Do not change GENERIC_READ to GENERIC_READ|GENERIC_WRITE
-    // when adding future mutation support; writable devices need a separate,
-    // explicitly gated capability with metadata backup and validation.
+    // Read-only is a structural invariant during Ayanami/Bocchi/Chisato/Darkness,
+    // not a UI preference. Future mutation support must introduce a separate,
+    // explicitly gated writable capability rather than widening this handle.
     handle_ = CreateFileW(path.c_str(), GENERIC_READ,
                           FILE_SHARE_READ | FILE_SHARE_WRITE,
                           nullptr, OPEN_EXISTING,
                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS,
                           nullptr);
     if (handle_ == INVALID_HANDLE_VALUE) {
+        open_error_ = GetLastError();
         return;
     }
 
@@ -32,6 +32,8 @@ PhysicalDrive::PhysicalDrive(unsigned index) : index_(index)
     if (DeviceIoControl(handle_, IOCTL_DISK_GET_LENGTH_INFO,
                         nullptr, 0, &length, sizeof(length), &returned, nullptr)) {
         size_ = static_cast<std::uint64_t>(length.Length.QuadPart);
+    } else {
+        open_error_ = GetLastError();
     }
 }
 
@@ -45,6 +47,16 @@ PhysicalDrive::~PhysicalDrive()
 bool PhysicalDrive::is_open() const noexcept
 {
     return handle_ != INVALID_HANDLE_VALUE && size_ != 0;
+}
+
+DWORD PhysicalDrive::open_error() const noexcept
+{
+    return open_error_;
+}
+
+unsigned PhysicalDrive::index() const noexcept
+{
+    return index_;
 }
 
 std::uint64_t PhysicalDrive::size_bytes() const
@@ -65,9 +77,7 @@ bool PhysicalDrive::read(std::uint64_t offset, std::span<std::byte> out)
 
     // SetFilePointerEx changes shared HANDLE state, therefore seek+ReadFile must
     // currently be serialized as one operation. This is correct but intentionally
-    // conservative: it is also one of the known performance bottlenecks tracked
-    // in docs/performance.md. A future offset/overlapped backend should remove
-    // this serialization without changing BlockDevice's byte-addressed contract.
+    // conservative and is a known Emilia performance target.
     std::scoped_lock lock(mutex_);
 
     LARGE_INTEGER position{};
@@ -79,7 +89,8 @@ bool PhysicalDrive::read(std::uint64_t offset, std::span<std::byte> out)
     std::size_t done = 0;
     while (done < out.size()) {
         const auto remaining = out.size() - done;
-        const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
         DWORD read_bytes = 0;
         if (!ReadFile(handle_, out.data() + done, chunk, &read_bytes, nullptr) || read_bytes == 0) {
             return false;
