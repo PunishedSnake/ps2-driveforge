@@ -60,6 +60,11 @@ struct SessionStats {
     std::uint64_t stat_operations{};
     std::uint64_t read_operations{};
     std::uint64_t export_operations{};
+    std::uint64_t scan_time_ns{};
+    std::uint64_t browse_time_ns{};
+    std::uint64_t stat_time_ns{};
+    std::uint64_t read_time_ns{};
+    std::uint64_t export_time_ns{};
 };
 
 // One opened source plus the reusable operations frontends need. DriveSession
@@ -106,6 +111,11 @@ private:
     std::atomic<std::uint64_t> stat_operations_{};
     std::atomic<std::uint64_t> read_operations_{};
     std::atomic<std::uint64_t> export_operations_{};
+    std::atomic<std::uint64_t> scan_time_ns_{};
+    std::atomic<std::uint64_t> browse_time_ns_{};
+    std::atomic<std::uint64_t> stat_time_ns_{};
+    std::atomic<std::uint64_t> read_time_ns_{};
+    std::atomic<std::uint64_t> export_time_ns_{};
 };
 
 } // namespace ps2hdd
