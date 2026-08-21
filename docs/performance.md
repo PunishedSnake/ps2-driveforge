@@ -80,32 +80,33 @@ Largest backing read:  1.00 KiB
 Failed backing reads:  0
 ```
 
-This already demonstrates a metadata-heavy pattern dominated by roughly 1 KiB backing requests.
+This demonstrates a metadata-heavy pattern dominated by roughly 1 KiB backing requests.
 
 ## Darkness Explorer baseline
 
-Explorer is now hardware-validated through the Darkness Dokany path and is noticeably more metadata-hungry than the DriveForge GUI/CLI. Before merging 0.4 and changing cache/I/O behavior in 0.5, preserve this final real-machine workload:
+Explorer is already hardware-validated through the Darkness standalone/shared-controller Dokany path and is substantially more metadata-hungry than the DriveForge browser/CLI. Before merging 0.4 and changing cache/I/O behavior in 0.5, preserve the final **integrated GUI** real-machine workload:
 
 ```text
-cold GUI start
+cold normal-user GUI start
  -> UAC / SetupAPI discovery / auto-open
- -> Mount read-only
+ -> GUI Mount read-only
+ -> GUI Open mounted volume
  -> Explorer root
  -> Partitions
  -> +OPL
  -> __common\OPL
  -> read/copy conf_hdd.cfg
- -> Unmount
+ -> GUI Unmount
 ```
 
-For the final Darkness validation preserve, where practical:
+For that final Darkness validation preserve, where practical:
 
-- the callback/debug trace for the workload;
-- backing-I/O totals visible from the session/tooling;
-- the copied file hash;
-- whether the run started cold or followed previous browsing.
+- the observable callback/debug pattern or notes from the equivalent known paths;
+- backing-I/O totals visible from existing session tooling;
+- the copied-file hash if repeated;
+- whether the run was cold or followed previous browsing.
 
-Emilia should repeat the same navigation/copy sequence before and after optimization classes. Subjective Explorer responsiveness is useful context, but not the benchmark by itself.
+Emilia should repeat the same navigation/copy sequence before and after each optimization class. Subjective Explorer responsiveness is useful context, but not the benchmark by itself.
 
 ## Current strengths
 
@@ -161,23 +162,7 @@ A custom kernel filesystem/storage driver is **not** the performance plan. Dokan
 
 ## Benchmark workloads
 
-At minimum keep distinct workloads for:
-
-### A. Large sequential file
-
-Measures sequential throughput, request size/coalescing, and bridge/device behavior.
-
-### B. Many small files
-
-Measures metadata and host-file-creation overhead.
-
-### C. Directory browsing
-
-Repeated enumeration/stat of the same directory measures inode/directory cache value.
-
-### D. Mounted Explorer reads
-
-The preserved Darkness navigation/copy workload measures real Dokany metadata churn, random reads, and mount overhead.
+Keep distinct workloads for large sequential files, many small files, repeated directory browsing, and the preserved mounted Explorer navigation/copy workload.
 
 ## Comparison rules for pfsshell/pfsfuse
 
