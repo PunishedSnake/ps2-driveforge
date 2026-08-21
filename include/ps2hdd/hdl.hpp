@@ -7,8 +7,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -67,9 +69,14 @@ struct GameResult {
 
 struct CatalogResult {
     std::vector<GameResult> entries;
+    std::size_t total_candidates{};
     std::size_t readable{};
     std::size_t unreadable{};
+    bool cancelled{};
 };
+
+using ProgressCallback =
+    std::function<void(std::size_t completed, std::size_t total, const GameResult& game)>;
 
 [[nodiscard]] inline const char* media_type_name(MediaType media) noexcept
 {
@@ -227,10 +234,13 @@ namespace detail {
 
 // Build game metadata from the existing APA scan. Main HDL partitions are read
 // in ascending physical LBA so a rotational disk does not bounce the heads in
-// arbitrary UI/list order. SSDs are not harmed by this ordering, and future
-// adaptive concurrency can be layered on top without changing the parser.
+// arbitrary UI/list order. SSDs are not harmed by this ordering. The progress
+// callback is invoked after each completed game and makes first-paint UI updates
+// possible without introducing GUI/thread lifetime policy into the storage core.
 [[nodiscard]] inline CatalogResult read_catalog(BlockDevice& device,
-                                                const apa::ScanResult& scan)
+                                                const apa::ScanResult& scan,
+                                                ProgressCallback progress = {},
+                                                std::stop_token stop = {})
 {
     std::vector<const apa::Partition*> partitions;
     for (const auto& partition : scan.partitions) {
@@ -243,8 +253,14 @@ namespace detail {
     });
 
     CatalogResult catalog;
+    catalog.total_candidates = partitions.size();
     catalog.entries.reserve(partitions.size());
     for (const auto* partition : partitions) {
+        if (stop.stop_requested()) {
+            catalog.cancelled = true;
+            break;
+        }
+
         auto game = read_game_info(device, *partition);
         if (game.ok) {
             ++catalog.readable;
@@ -252,6 +268,9 @@ namespace detail {
             ++catalog.unreadable;
         }
         catalog.entries.emplace_back(std::move(game));
+        if (progress) {
+            progress(catalog.entries.size(), catalog.total_candidates, catalog.entries.back());
+        }
     }
     return catalog;
 }
