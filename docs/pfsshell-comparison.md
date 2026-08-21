@@ -40,10 +40,12 @@ References:
 
 ## DriveForge model
 
-DriveForge deliberately moves the host abstraction boundary lower:
+DriveForge deliberately moves the host abstraction boundary lower and now shares frontend orchestration explicitly:
 
 ```text
 GUI / CLI / future Dokany provider
+              |
+         DriveSession
               |
        host operations
               |
@@ -53,21 +55,24 @@ GUI / CLI / future Dokany provider
               |
           APA parser
               |
+   InstrumentedBlockDevice
+              |
          BlockDevice
        /             \
  disk image      PhysicalDriveN
 ```
 
-There is no global "currently mounted PFS" concept in the core and no core current-directory state. A `pfs::Reader` belongs to one `ApaVolume`, and paths/nodes are passed explicitly.
+There is no global "currently mounted PFS" concept in the core and no core current-directory state. A `pfs::Reader` belongs to one `ApaVolume`; `DriveSession` accepts explicit partition/path arguments; GUI navigation state remains a frontend concern.
 
-This gives frontends a model that is much closer to native desktop software:
+This gives frontends a model closer to native desktop/filesystem-provider software:
 
 - multiple volumes can eventually exist at the same time;
 - directory navigation is frontend state, not filesystem-global state;
 - a file read is `Reader + Node + offset + span`, not an iomanX file descriptor hidden behind a process-wide mount;
-- APA main/sub-partition translation lives in `ApaVolume`, so PFS callers do not need to know physical extent placement;
+- APA main/sub-partition translation lives in `ApaVolume`, so PFS callers do not know physical extent placement;
+- GUI and CLI use the same `DriveSession` browse/export path;
 - host export is a separate layer above the parser rather than part of filesystem parsing;
-- a future Dokany provider can call immutable/read-oriented primitives directly instead of emulating an interactive shell session.
+- a future Dokany provider can call explicit read-oriented primitives directly instead of emulating an interactive shell session.
 
 ## What is already better for our target use case
 
@@ -79,13 +84,13 @@ Current DriveForge physical disks are opened with `GENERIC_READ`. The public `Bl
 
 Before write support is introduced, it will be a new, explicit capability with separate validation and backup requirements rather than a flag on the existing reader.
 
-### 2. APA extents are normalized once
+### 2. APA extents are normalized and validated once
 
 PFS uses `(subpart, block/sector)` addressing while APA can place the main partition and its sub-partitions anywhere on disk.
 
-`ApaVolume` converts that logical PFS address space into physical LBAs. The PFS implementation, GUI, exporter, and future filesystem provider therefore share one translation implementation.
+`ApaVolume` converts that logical PFS address space into physical LBAs. APA parsing also rejects main/sub extents that extend outside the backing device before a filesystem layer receives them.
 
-This was hardware-validated on an HDD containing non-contiguous HDL layouts and normal PFS partitions.
+This layout model was hardware-validated on an HDD containing non-contiguous HDL layouts and normal PFS partitions; the stricter extent-bounds check is awaiting the next Chisato hardware pass.
 
 ### 3. Byte-range reads are first-class
 
@@ -101,7 +106,19 @@ A caller does not need to understand the PFS SEGD/SEGI descriptor scheme. The re
 
 Filename conversion, Windows reserved-name handling, case-insensitive collisions, recursive directory export, cycle detection, and host write errors belong to `ps2driveforge_host`, not `ps2driveforge_core`.
 
-That separation matters because Dokany, GUI export, CLI extraction, and future drag-and-drop can share host policy without contaminating on-disk format code.
+GUI and CLI use the same exporter through `DriveSession`; later drag-and-drop/Dokany work can reuse the same policy.
+
+### 6. Cross-layer behavior has a generated-image regression
+
+DriveForge generates a real APA/PFS `.img` during tests, reopens it through production `FileBlockDevice`, traverses APA/PFS including a sub-partition and SEGI-backed file, recursively exports it, and verifies output by SHA-256.
+
+That does not prove compatibility with every real HDD, but it makes multi-layer regressions reproducible without requiring hardware for every commit.
+
+### 7. The performance discussion now has counters
+
+`InstrumentedBlockDevice` records backing read calls/bytes/largest read/failures after PFS batching and APA translation. `--stats` exposes those counters for CLI operations.
+
+This is instrumentation, not a benchmark result.
 
 ## Where DriveForge is *not* faster yet
 
@@ -112,10 +129,11 @@ Current Windows raw-device I/O is deliberately conservative:
 ```text
 PFS Reader
   -> ApaVolume
-    -> PhysicalDrive
-      -> mutex
-      -> SetFilePointerEx
-      -> synchronous ReadFile
+    -> InstrumentedBlockDevice
+      -> PhysicalDrive
+        -> mutex
+        -> SetFilePointerEx
+        -> synchronous ReadFile
 ```
 
 The image backend similarly serializes access around one `std::ifstream`.
@@ -132,7 +150,7 @@ There is currently:
 - no queueing of independent reads;
 - no benchmark proving a throughput advantage over pfsshell/pfsfuse.
 
-This is intentional. Correctness and hardware validation come before optimization.
+This is intentional. Correctness, reproducible tests and hardware validation come before optimization.
 
 ## Planned performance path
 
@@ -140,15 +158,16 @@ Performance work should improve the data path instead of replacing Dokany or wri
 
 Planned steps:
 
-1. add instrumentation counters before changing behavior;
-2. cache validated PFS metadata and directory results;
-3. add a block/window cache below PFS;
-4. coalesce adjacent reads across one APA extent;
-5. increase sequential read windows based on measured device behavior;
-6. add Windows overlapped reads where the backing device benefits;
-7. remove unnecessary serialization from immutable/read-only paths;
-8. benchmark physical IDE/SATA adapters, USB bridges, and image files separately;
-9. compare CLI extraction and mounted-filesystem workloads against current pfsshell/pfsfuse builds.
+1. backing-I/O counters — **implemented**;
+2. add logical/metadata/payload/timing counters;
+3. cache validated PFS metadata and directory results;
+4. add a block/window cache below PFS;
+5. coalesce adjacent reads across one APA extent;
+6. increase sequential read windows based on measured device behavior;
+7. add Windows overlapped reads where the backing device benefits;
+8. remove unnecessary serialization from immutable/read-only paths;
+9. benchmark physical IDE/SATA adapters, USB bridges, and image files separately;
+10. compare CLI extraction and mounted-filesystem workloads against current pfsshell/pfsfuse builds.
 
 ## Planned Explorer model
 
@@ -175,7 +194,7 @@ Whenever a change is described as making DriveForge "faster" or "better than pfs
 1. identify the specific old bottleneck or UX constraint;
 2. point to the DriveForge layer that removes or isolates it;
 3. add a test for correctness;
-4. add a benchmark if the claim is about speed;
+4. use `--stats` and add a timed benchmark if the claim is about speed;
 5. update this document with measured results rather than assumptions.
 
 That rule is meant to keep the project understandable years after the original implementation decisions are forgotten.
