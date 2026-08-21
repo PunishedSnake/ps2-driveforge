@@ -6,9 +6,12 @@
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_export.hpp"
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,17 +41,35 @@ struct BrowseResult {
     std::vector<SessionEntry> entries;
 };
 
+struct StatResult {
+    bool ok{};
+    std::string error;
+    SessionEntry entry;
+};
+
+struct ReadResult {
+    bool ok{};
+    std::string error;
+    std::size_t bytes_read{};
+};
+
 struct SessionStats {
     BlockIoStats backing_io{};
     std::uint64_t apa_scans{};
     std::uint64_t browse_operations{};
+    std::uint64_t stat_operations{};
+    std::uint64_t read_operations{};
     std::uint64_t export_operations{};
 };
 
 // One opened source plus the reusable operations frontends need. DriveSession
 // deliberately keeps navigation path state out of the filesystem core: a GUI,
-// CLI command, and future Dokany callback can resolve independent paths against
-// the same validated APA scan.
+// CLI command, and Dokany callbacks can resolve independent paths against the
+// same validated APA scan.
+//
+// Darkness calls stat/read/browse concurrently from Dokany worker threads. The
+// format readers remain per-call objects while the shared backing device handles
+// serialization where required; operation counters therefore use atomics.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -64,6 +85,9 @@ public:
     bool scan();
     [[nodiscard]] const apa::Partition* find_partition(std::string_view id) const noexcept;
     [[nodiscard]] BrowseResult browse(std::string_view partition, std::string_view path);
+    [[nodiscard]] StatResult stat(std::string_view partition, std::string_view path);
+    [[nodiscard]] ReadResult read_file(std::string_view partition, std::string_view path,
+                                       std::uint64_t offset, std::span<std::byte> out);
     [[nodiscard]] pfs::ExportResult export_to_host(std::string_view partition,
                                                    std::string_view path,
                                                    const std::filesystem::path& destination,
@@ -77,9 +101,11 @@ private:
     InstrumentedBlockDevice instrumented_;
     apa::ScanResult scan_{};
     std::string last_error_;
-    std::uint64_t apa_scans_{};
-    std::uint64_t browse_operations_{};
-    std::uint64_t export_operations_{};
+    std::atomic<std::uint64_t> apa_scans_{};
+    std::atomic<std::uint64_t> browse_operations_{};
+    std::atomic<std::uint64_t> stat_operations_{};
+    std::atomic<std::uint64_t> read_operations_{};
+    std::atomic<std::uint64_t> export_operations_{};
 };
 
 } // namespace ps2hdd
