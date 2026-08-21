@@ -187,6 +187,11 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-read-cache-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-read-cache-tests COMMAND ps2-driveforge-read-cache-tests)
 
+    add_executable(ps2-driveforge-read-ahead-tests tests/read_ahead_tests.cpp)
+    target_link_libraries(ps2-driveforge-read-ahead-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-read-ahead-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-read-ahead-tests COMMAND ps2-driveforge-read-ahead-tests)
+
     add_executable(ps2-driveforge-partition-catalog-tests tests/partition_catalog_tests.cpp)
     target_link_libraries(ps2-driveforge-partition-catalog-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-partition-catalog-tests PRIVATE cxx_std_20)
