@@ -1,6 +1,6 @@
 # Testing PS2 DriveForge
 
-DriveForge tests are split by what they actually prove. Synthetic format tests, generated-image end-to-end tests, fuzzing, CI, and real-HDD validation are complementary; none of them should be presented as a substitute for the others.
+DriveForge tests are split by what they actually prove. Synthetic format tests, generated-image end-to-end tests, fuzzing, CI, frontend-policy regressions, and real-HDD validation are complementary; none of them should be presented as a substitute for the others.
 
 ## Normal regression suite
 
@@ -12,7 +12,7 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-The current suite contains seven targets:
+The current suite contains eight targets:
 
 ```text
 ps2-driveforge-tests
@@ -22,9 +22,47 @@ ps2-driveforge-host-tests
 ps2-driveforge-e2e-image-tests
 ps2-driveforge-corruption-tests
 ps2-driveforge-session-tests
+ps2-driveforge-dokany-open-policy-tests
 ```
 
-CI runs the same suite on Windows/MSVC and under Clang with AddressSanitizer + UndefinedBehaviorSanitizer + warnings-as-errors.
+CI runs the same portable suite on Windows/MSVC and under Clang with AddressSanitizer + UndefinedBehaviorSanitizer + warnings-as-errors.
+
+## Dokany open-policy regression
+
+`tests/dokany_open_policy_tests.cpp` protects a filesystem-provider contract that is easy to get subtly wrong.
+
+Dokany's `ZwCreateFile` callback receives NT kernel create-disposition values:
+
+```text
+0 FILE_SUPERSEDE
+1 FILE_OPEN
+2 FILE_CREATE
+3 FILE_OPEN_IF
+4 FILE_OVERWRITE
+5 FILE_OVERWRITE_IF
+```
+
+These are not the Win32 `CreateFileW` values `CREATE_NEW`, `OPEN_EXISTING`, `OPEN_ALWAYS`, and so on. Several numeric values overlap while having different meanings.
+
+The first real Darkness mount exposed exactly this mistake: Explorer opened the existing root using `FILE_OPEN == 1`, while the original adapter interpreted raw value `1` as Win32 `CREATE_NEW == 1`. DriveForge consequently returned `STATUS_OBJECT_NAME_COLLISION`, which Explorer surfaced as:
+
+```text
+P:\ is not accessible.
+The file exists.
+```
+
+The corrected policy is isolated in `src/mount/dokany_open_policy.hpp` and is deliberately dependency-free. This lets both Windows/MSVC and Linux sanitizer CI verify:
+
+- existing root + `FILE_OPEN` succeeds;
+- existing object + read-only `FILE_OPEN_IF` succeeds;
+- `FILE_CREATE` on an existing object returns a collision;
+- missing object + `FILE_OPEN` is not found;
+- missing object + `FILE_OPEN_IF` is blocked because it would create data;
+- supersede/overwrite operations are blocked;
+- requested write/delete-on-close access is blocked;
+- directory/file type mismatches return the appropriate failure.
+
+This test protects Dokany/NT semantics without making Dokany itself a dependency of the portable test suite.
 
 ## Generated-image end-to-end fixture
 
@@ -92,7 +130,7 @@ BlockDevice
        -> session/backing-I/O statistics
 ```
 
-This keeps GUI and CLI behavior testable without requiring Win32 controls or a physical disk.
+This keeps GUI, CLI, and the portable part of the mount path testable without requiring Win32 controls or a physical disk.
 
 ## Optional libFuzzer target
 
@@ -144,6 +182,67 @@ The discovery pass opens accessible `PhysicalDriveN` devices read-only and repor
 
 Discovery must remain a read-only classification step. It must never turn into an automatic write-target selector.
 
+## Darkness real-mount diagnostics
+
+While the Dokany provider is still being hardware-validated, enable callback tracing:
+
+```powershell
+.\PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug
+```
+
+To preserve the output in PowerShell:
+
+```powershell
+.\PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug 2>&1 |
+  Tee-Object -FilePath darkness-mount.log
+```
+
+The debug mode reports the relevant callback path and NT create disposition, plus metadata, directory enumeration, reads, and volume/free-space requests. It does not alter source access and does not enable writes.
+
+For the current test disk, validate in this order:
+
+```powershell
+dir P:\
+dir P:\Partitions
+dir P:\Partitions\+OPL
+```
+
+Expected `+OPL` children:
+
+```text
+CFG
+THM
+LNG
+ART
+VMC
+CHT
+APPS
+```
+
+Then copy the known real file through the mounted filesystem:
+
+```powershell
+Copy-Item 'P:\Partitions\__common\OPL\conf_hdd.cfg' .\conf_hdd-mounted.cfg
+Get-FileHash .\conf_hdd-mounted.cfg -Algorithm SHA256
+```
+
+Expected SHA-256:
+
+```text
+E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
+```
+
+Finally verify read-only behavior and unmounting:
+
+```powershell
+New-Item P:\write-test.txt -ItemType File
+.\PS2-DriveForge-Mount.exe --unmount P:
+```
+
+The create operation must fail. Ctrl+C in the mount process is also a valid clean-unmount path.
+
+If Explorer fails, preserve the earliest `--debug` lines around the failing path. Explorer performs many opens and metadata requests; the first wrong NTSTATUS is generally more useful than the final translated Explorer error.
+
 ## Real-HDD validation workflow
 
 After all synthetic/CI gates are green, perform the hardware checks listed in [`REAL_HARDWARE_VALIDATION.md`](REAL_HARDWARE_VALIDATION.md).
@@ -154,8 +253,8 @@ For a hardware regression report, preserve:
 - physical-drive index and reported size;
 - exact command/action;
 - complete DriveForge diagnostics;
-- `--stats` output when relevant;
-- whether the operation was browse-only or host export;
+- `--stats` or mount `--debug` output when relevant;
+- whether the operation was browse-only, mounted read, or host export;
 - expected result and actual result;
 - hashes for independently verifiable exported files where practical.
 
