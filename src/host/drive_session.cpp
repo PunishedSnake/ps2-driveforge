@@ -98,19 +98,23 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
                                                pfs::ExportProgress progress)
 {
     ++export_operations_;
+    pfs::ExportResult error_result;
+
     const auto* partition = find_partition(partition_id);
     if (!partition) {
-        return {.ok = false, .error = "Partition not found: " + std::string(partition_id)};
+        error_result.error = "Partition not found: " + std::string(partition_id);
+        return error_result;
     }
     if (partition->type != apa::kTypePfs) {
-        return {.ok = false, .error = "Partition is not PFS: " + std::string(partition_id)};
+        error_result.error = "Partition is not PFS: " + std::string(partition_id);
+        return error_result;
     }
 
     ApaVolume volume(instrumented_, *partition);
     pfs::Reader reader(volume);
     if (!reader.valid()) {
-        return {.ok = false,
-                .error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error()};
+        error_result.error = reader.last_error().empty() ? "PFS probe failed" : reader.last_error();
+        return error_result;
     }
     return pfs::export_to_host(reader, path, destination, std::move(progress));
 }
