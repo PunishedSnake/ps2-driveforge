@@ -10,10 +10,10 @@
 #include <dokan.h>
 #endif
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -82,15 +82,22 @@ std::wstring utf8_to_wide(std::string_view value)
     }
 
     // PFS stores byte strings and legacy software may contain names that are not
-    // valid UTF-8. Keep the mount alive by exposing those bytes losslessly in the
-    // low Unicode range. A later naming pass can add explicit Shift-JIS decoding
-    // without changing the on-disk parser.
+    // valid UTF-8. Keep the mount operational by exposing those bytes in the low
+    // Unicode range. Darkness keeps this fallback explicit; a later naming pass
+    // can add a documented legacy encoding policy without changing PFS parsing.
     std::wstring fallback;
     fallback.reserve(value.size());
     for (const unsigned char byte : value) {
         fallback.push_back(static_cast<wchar_t>(byte));
     }
     return fallback;
+}
+
+DWORD file_attributes(bool directory)
+{
+    // FILE_ATTRIBUTE_NORMAL must be used alone. The mount is read-only, so files
+    // carry READONLY and directories carry READONLY|DIRECTORY instead.
+    return FILE_ATTRIBUTE_READONLY | (directory ? FILE_ATTRIBUTE_DIRECTORY : 0U);
 }
 
 bool has_write_access(ACCESS_MASK access)
@@ -150,7 +157,7 @@ NTSTATUS DOKAN_CALLBACK read_file(LPCWSTR file_name,
                                   LONGLONG offset,
                                   PDOKAN_FILE_INFO info)
 {
-    if (!read_length || offset < 0) {
+    if (!read_length || offset < 0 || (buffer_length != 0 && !buffer)) {
         return STATUS_INVALID_PARAMETER;
     }
     *read_length = 0;
@@ -205,8 +212,7 @@ NTSTATUS DOKAN_CALLBACK get_file_information(LPCWSTR file_name,
     }
 
     std::memset(buffer, 0, sizeof(*buffer));
-    buffer->dwFileAttributes = FILE_ATTRIBUTE_READONLY |
-        (node.is_directory() ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL);
+    buffer->dwFileAttributes = file_attributes(node.is_directory());
     buffer->nNumberOfLinks = 1;
     buffer->nFileSizeHigh = static_cast<DWORD>(node.size >> 32U);
     buffer->nFileSizeLow = static_cast<DWORD>(node.size & 0xFFFFFFFFULL);
@@ -216,12 +222,11 @@ NTSTATUS DOKAN_CALLBACK get_file_information(LPCWSTR file_name,
 void fill_find_data(const ps2hdd::MountEntry& entry, WIN32_FIND_DATAW& data)
 {
     std::memset(&data, 0, sizeof(data));
-    data.dwFileAttributes = FILE_ATTRIBUTE_READONLY |
-        (entry.is_directory() ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL);
+    data.dwFileAttributes = file_attributes(entry.is_directory());
     data.nFileSizeHigh = static_cast<DWORD>(entry.size >> 32U);
     data.nFileSizeLow = static_cast<DWORD>(entry.size & 0xFFFFFFFFULL);
     const auto wide_name = utf8_to_wide(entry.name);
-    wcsncpy_s(data.cFileName, wide_name.c_str(), _TRUNCATE);
+    wcsncpy_s(data.cFileName, _countof(data.cFileName), wide_name.c_str(), _TRUNCATE);
 }
 
 NTSTATUS DOKAN_CALLBACK find_files(LPCWSTR file_name,
@@ -330,8 +335,8 @@ NTSTATUS DOKAN_CALLBACK get_volume_information(LPWSTR volume_name,
 
 NTSTATUS DOKAN_CALLBACK mounted(LPCWSTR mount_point, PDOKAN_FILE_INFO)
 {
-    std::wcout << L"Mounted PS2 DriveForge read-only at " << (mount_point ? mount_point : L"<unknown>")
-               << L"\n";
+    std::wcout << L"Mounted PS2 DriveForge read-only at "
+               << (mount_point ? mount_point : L"<unknown>") << L"\n";
     return STATUS_SUCCESS;
 }
 
@@ -369,7 +374,9 @@ std::wstring normalize_mount_point(std::wstring value)
 
 void usage()
 {
-    std::wcout << L"PS2 DriveForge 0.4.0-dev \"Darkness\" - read-only Dokany mount\n\n"
+    std::wcout << L"PS2 DriveForge " << utf8_to_wide(ps2hdd::version::string)
+               << L"-dev \"" << utf8_to_wide(ps2hdd::version::codename)
+               << L"\" - read-only Dokany mount\n\n"
                   L"Usage:\n"
                   L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:>\n"
                   L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:>\n"
@@ -492,7 +499,8 @@ int wmain(int argc, wchar_t** argv)
     std::wcout << L"Mounting " << utf8_to_wide(ctx.session.device().display_name())
                << L" at " << *mount_point << L" (READ ONLY)...\n"
                << L"Namespace root: " << *mount_point << L"Partitions\\\n"
-               << L"Press Ctrl+C or run --unmount " << *mount_point << L" from another terminal.\n";
+               << L"Press Ctrl+C or run --unmount " << *mount_point
+               << L" from another terminal.\n";
 
     const int status = DokanMain(&options, &operations);
     SetConsoleCtrlHandler(console_handler, FALSE);
