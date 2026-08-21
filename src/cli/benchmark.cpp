@@ -54,6 +54,27 @@ std::uint64_t elapsed_ns(Clock::time_point started)
     return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
 }
 
+const char* yes_no_unknown(bool known, bool value) noexcept
+{
+    return known ? (value ? "yes" : "no") : "unknown";
+}
+
+void print_storage_profile(const ps2hdd::StorageCharacteristics& storage)
+{
+    std::cout << "[storage profile]\n"
+              << "  media class:            " << ps2hdd::storage_media_class_name(storage.media_class) << '\n'
+              << "  seek penalty:           "
+              << yes_no_unknown(storage.seek_penalty_known, storage.incurs_seek_penalty) << '\n'
+              << "  TRIM enabled:           "
+              << yes_no_unknown(storage.trim_known, storage.trim_enabled) << '\n'
+              << "  bus type:               ";
+    if (storage.bus_type_known) {
+        std::cout << storage.bus_type << '\n';
+    } else {
+        std::cout << "unknown\n";
+    }
+}
+
 void print_io(std::string_view label, const ps2hdd::SessionStats& stats, std::uint64_t wall_ns)
 {
     const auto& io = stats.backing_io;
@@ -62,12 +83,16 @@ void print_io(std::string_view label, const ps2hdd::SessionStats& stats, std::ui
     const auto& cache = stats.cache;
     const double wall_ms = static_cast<double>(wall_ns) / 1'000'000.0;
     const double io_ms = static_cast<double>(io.read_time_ns) / 1'000'000.0;
+    const double average_ms = io.read_calls == 0
+                                  ? 0.0
+                                  : io_ms / static_cast<double>(io.read_calls);
 
     std::cout << "\n[" << label << "]\n"
               << "  wall time:              " << std::fixed << std::setprecision(3) << wall_ms << " ms\n"
               << "  backing read calls:     " << io.read_calls << '\n'
               << "  backing bytes:          " << format_bytes(io.bytes_requested) << '\n'
               << "  backing service time:   " << std::fixed << std::setprecision(3) << io_ms << " ms\n"
+              << "  average read service:   " << std::fixed << std::setprecision(3) << average_ms << " ms\n"
               << "  small backing reads:    " << io.small_read_calls << '\n'
               << "  largest backing read:   " << format_bytes(io.largest_read) << '\n'
               << "  max reads in flight:    " << io.max_in_flight << '\n'
@@ -171,6 +196,8 @@ int main(int argc, char** argv)
         }
         target = std::move(request);
     }
+
+    print_storage_profile(source->storage_characteristics());
 
     ps2hdd::DriveSession session(std::move(source));
     session.reset_stats();
