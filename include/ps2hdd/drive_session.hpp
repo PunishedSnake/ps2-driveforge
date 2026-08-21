@@ -56,6 +56,8 @@ struct ReadResult {
 };
 
 struct SessionCacheStats {
+    std::uint64_t probe_hits{};
+    std::uint64_t probe_misses{};
     std::uint64_t browse_hits{};
     std::uint64_t browse_misses{};
     std::uint64_t stat_hits{};
@@ -117,9 +119,12 @@ public:
     void clear_caches();
 
 private:
+    static constexpr std::size_t kMaxProbeCacheEntries = 256;
     static constexpr std::size_t kMaxBrowseCacheEntries = 1024;
     static constexpr std::size_t kMaxStatCacheEntries = 8192;
     static constexpr std::size_t kMaxNodeCacheEntries = 8192;
+
+    [[nodiscard]] pfs::ProbeResult probe_for(std::string_view partition, ApaVolume& volume);
 
     std::unique_ptr<BlockDevice> source_;
     InstrumentedBlockDevice instrumented_;
@@ -127,6 +132,7 @@ private:
     std::string last_error_;
 
     mutable std::shared_mutex cache_mutex_;
+    std::unordered_map<std::string, pfs::ProbeResult> probe_cache_;
     std::unordered_map<std::string, BrowseResult> browse_cache_;
     std::unordered_map<std::string, StatResult> stat_cache_;
     std::unordered_map<std::string, pfs::Node> node_cache_;
@@ -141,6 +147,8 @@ private:
     std::atomic<std::uint64_t> stat_time_ns_{};
     std::atomic<std::uint64_t> read_time_ns_{};
     std::atomic<std::uint64_t> export_time_ns_{};
+    std::atomic<std::uint64_t> probe_cache_hits_{};
+    std::atomic<std::uint64_t> probe_cache_misses_{};
     std::atomic<std::uint64_t> browse_cache_hits_{};
     std::atomic<std::uint64_t> browse_cache_misses_{};
     std::atomic<std::uint64_t> stat_cache_hits_{};
