@@ -4,7 +4,9 @@ param(
     [string]$Configuration = 'Release',
 
     [switch]$Clean,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$WithDokany,
+    [string]$DokanyRoot = ''
 )
 
 Set-StrictMode -Version Latest
@@ -39,6 +41,7 @@ including MSVC, a Windows 10/11 SDK, and CMake tools for Windows.
 
 Write-Host 'PS2 DriveForge - Windows x64 build' -ForegroundColor Cyan
 Write-Host "Configuration: $Configuration"
+Write-Host "Dokany mount:  $WithDokany"
 Write-Host "Build dir:     $BuildDir"
 Write-Host "Output dir:    $DistDir"
 
@@ -55,15 +58,21 @@ if ($Clean) {
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
 $BuildTests = if ($SkipTests) { 'OFF' } else { 'ON' }
-
-Write-Host "`n[1/4] Configuring with Visual Studio 2022..." -ForegroundColor Yellow
-Invoke-Native -FilePath cmake -Arguments @(
+$BuildDokany = if ($WithDokany) { 'ON' } else { 'OFF' }
+$ConfigureArgs = @(
     '-S', $Root,
     '-B', $BuildDir,
     '-G', 'Visual Studio 17 2022',
     '-A', 'x64',
-    "-DPS2DF_BUILD_TESTS=$BuildTests"
+    "-DPS2DF_BUILD_TESTS=$BuildTests",
+    "-DPS2DF_BUILD_DOKANY=$BuildDokany"
 )
+if ($DokanyRoot) {
+    $ConfigureArgs += "-DDOKANY_ROOT=$DokanyRoot"
+}
+
+Write-Host "`n[1/4] Configuring with Visual Studio 2022..." -ForegroundColor Yellow
+Invoke-Native -FilePath cmake -Arguments $ConfigureArgs
 
 Write-Host "`n[2/4] Building..." -ForegroundColor Yellow
 Invoke-Native -FilePath cmake -Arguments @('--build', $BuildDir, '--config', $Configuration, '--parallel')
@@ -81,16 +90,23 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 $BinDir = Join-Path $BuildDir $Configuration
 $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
 $GuiExe = Join-Path $BinDir 'PS2-DriveForge.exe'
-foreach ($Required in @($InspectorExe, $GuiExe)) {
+$RequiredExecutables = @($InspectorExe, $GuiExe)
+$MountExe = Join-Path $BinDir 'PS2-DriveForge-Mount.exe'
+if ($WithDokany) {
+    $RequiredExecutables += $MountExe
+}
+foreach ($Required in $RequiredExecutables) {
     if (-not (Test-Path $Required)) {
         throw "Expected executable was not produced: $Required"
     }
+    Copy-Item $Required $DistDir -Force
 }
 
-Copy-Item $InspectorExe $DistDir -Force
-Copy-Item $GuiExe $DistDir -Force
-
-foreach ($PdbName in @('ps2-driveforge-inspect.pdb', 'PS2-DriveForge.pdb')) {
+$PdbNames = @('ps2-driveforge-inspect.pdb', 'PS2-DriveForge.pdb')
+if ($WithDokany) {
+    $PdbNames += 'PS2-DriveForge-Mount.pdb'
+}
+foreach ($PdbName in $PdbNames) {
     $Pdb = Join-Path $BinDir $PdbName
     if (Test-Path $Pdb) {
         Copy-Item $Pdb $DistDir -Force
@@ -123,14 +139,14 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
 
 $ValidationDir = Join-Path $DistDir 'docs'
 New-Item -ItemType Directory -Force -Path $ValidationDir | Out-Null
-foreach ($Doc in @('docs\testing.md', 'docs\REAL_HARDWARE_VALIDATION.md')) {
+foreach ($Doc in @('docs\testing.md', 'docs\REAL_HARDWARE_VALIDATION.md', 'docs\darkness-plan.md')) {
     $Source = Join-Path $Root $Doc
     if (Test-Path $Source) {
         Copy-Item $Source $ValidationDir -Force
     }
 }
 
-$ZipName = "PS2-DriveForge-0.3.0-Chisato-$Configuration-windows-x64.zip"
+$ZipName = "PS2-DriveForge-0.4.0-Darkness-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
@@ -140,5 +156,11 @@ Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -Compr
 Write-Host "`nBuild completed successfully." -ForegroundColor Green
 Write-Host "GUI:        $GuiExe"
 Write-Host "Inspector:  $InspectorExe"
+if ($WithDokany) {
+    Write-Host "Mount:      $MountExe"
+}
 Write-Host "Package:    $ZipPath"
 Write-Host "`nPhysical-drive access remains read-only in this development version." -ForegroundColor Green
+if ($WithDokany) {
+    Write-Host "Dokany 2.x runtime/driver must be installed on systems using the mount frontend." -ForegroundColor Green
+}
