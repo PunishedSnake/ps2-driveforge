@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(ps2_driveforge VERSION 0.3.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.4.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Chisato" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Darkness" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
+option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 configure_file(
@@ -47,6 +48,7 @@ endif()
 add_library(ps2driveforge_host
     src/host/pfs_export.cpp
     src/host/drive_session.cpp
+    src/host/mount_view.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -83,6 +85,13 @@ if(WIN32)
             target_compile_options(ps2-driveforge-gui PRIVATE /WX)
         endif()
     endif()
+endif()
+
+if(PS2DF_BUILD_DOKANY)
+    if(NOT WIN32)
+        message(FATAL_ERROR "PS2DF_BUILD_DOKANY is only supported on Windows")
+    endif()
+    message(STATUS "Darkness Dokany frontend requested; dependency wiring is configured in the next Darkness step")
 endif()
 
 if(PS2DF_BUILD_TESTS)
