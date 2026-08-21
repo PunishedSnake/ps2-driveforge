@@ -1,82 +1,80 @@
 # Darkness 0.4 development plan
 
-Darkness adds a read-only Windows filesystem provider on top of the hardware-validated Chisato stack. It also tightens the Windows host experience around that provider; host-UI behavior remains isolated from APA/PFS format code.
+Darkness adds a read-only Windows filesystem provider on top of the hardware-validated Chisato stack and finishes the Windows host workflow needed before the 0.5 performance pass.
 
 ## Definition of done
 
-A supported PS2 HDD image or physical Windows disk can be discovered, opened and mounted read-only through the native DriveForge GUI, then browsed in Windows Explorer. PFS files copied through Explorer must be byte-identical to DriveForge's direct reader/export path. Every source-device operation remains read-only.
+A supported PS2 HDD image or physical Windows disk can be discovered, opened, mounted read-only from the native GUI, browsed in Windows Explorer, and unmounted cleanly. Files copied through Explorer must be byte-identical to DriveForge's direct reader/export path. Every source-device operation remains read-only.
 
-The native management GUI should also be comfortable for long Windows 11 sessions: System/Light/Dark modes are supported and High Contrast is never overridden.
+The native Windows GUI also supports persistent System/Light/Dark themes with High Contrast passthrough.
 
 ## Namespace
 
-Initial 0.4 namespace:
-
 ```text
-<mount>\
+<mount>:\
   Partitions\
     <PFS partition>\
       <PFS tree>
 ```
 
-`Games` and synthetic HDL ISO views remain 0.7 Guts work. MBR/recovery synthetic files remain later work.
+`Games`/HDL and synthetic MBR/recovery views remain later milestones.
 
 ## Implementation status
 
-1. **Done:** portable `ReadOnlyMountView` for lookup/list/read path mapping;
-2. **Done:** thread-safe `DriveSession::stat` and `DriveSession::read_file` operations;
-3. **Done:** deterministic Windows-safe aliases for PFS/APA path components;
-4. **Done / hardware validated:** Dokany 2.3.1 read-only adapter (`ZwCreateFile`, `ReadFile`, metadata, directory and volume callbacks);
-5. **Done / hardware validated:** layered mutation rejection with `DOKAN_OPTION_WRITE_PROTECT`, callback-level rejection, no `BlockDevice::write()`, and `GENERIC_READ` physical-drive handles;
-6. **Done:** standalone mount CLI retained as a diagnostic/script frontend;
-7. **Done:** shared `DokanyMountController` owns the callback implementation and is used directly by both GUI and CLI; the GUI does not launch a helper process;
-8. **Done:** Windows disk discovery now enumerates actual `GUID_DEVINTERFACE_DISK` devices through SetupAPI and maps them to `PhysicalDriveN` using `IOCTL_STORAGE_GET_DEVICE_NUMBER` before running the DriveForge APA probe;
-9. **Done:** the fixed visible `PhysicalDrive0..31` menu has been removed; the GUI presents only detected PS2 APA candidates, including friendly device name, size, APA version and main-partition count;
-10. **Done:** discovery starts automatically with the GUI and can be repeated with `Rescan PS2 HDDs`; a single PS2 APA candidate is opened automatically;
-11. **Done:** normal-user GUI startup uses a controlled UAC `runas` relaunch with an internal loop-prevention marker; cancelling UAC leaves a limited image-capable process instead of terminating the application;
-12. **Done / CI-built:** GUI commands for `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount`, with automatic selection of a free drive letter (preferring `P:`);
-13. **Done:** Windows CI installs the pinned Dokany 2.3.1 development SDK/runtime, verifies the MSI SHA-256, compiles and packages the GUI/CLI/controller stack;
-14. **Pending hardware smoke test:** validate the new integrated GUI discovery/elevation/mount workflow on the real PS2 HDD before merging Darkness.
+1. **Done:** portable `ReadOnlyMountView` for lookup/list/read mapping.
+2. **Done:** thread-safe `DriveSession::stat` and random-offset `read_file` operations.
+3. **Done:** deterministic Windows-safe aliases without changing original APA/PFS names internally.
+4. **Done / hardware validated:** Dokany 2.3.1 read-only callbacks and Explorer volume behavior.
+5. **Done / hardware validated:** layered write protection: no `BlockDevice::write()`, `GENERIC_READ` raw handles, `DOKAN_OPTION_WRITE_PROTECT`, and callback-level mutation rejection.
+6. **Done:** standalone mount CLI retained for diagnostics/scripts.
+7. **Done:** shared `DokanyMountController` is used directly by both GUI and CLI; no helper-process filesystem implementation exists.
+8. **Done:** SetupAPI `GUID_DEVINTERFACE_DISK` enumeration maps actual Windows disk interfaces to physical-drive numbers through `IOCTL_STORAGE_GET_DEVICE_NUMBER` before the normal DriveForge APA probe.
+9. **Done:** fixed visible `PhysicalDrive0..31` GUI list removed; only detected PS2 APA candidates are shown with friendly name, size, APA version, and main-partition count.
+10. **Done:** automatic startup discovery plus `Rescan PS2 HDDs`; a single candidate auto-opens only when no source is already open.
+11. **Done:** controlled UAC `runas` relaunch with loop prevention, cancellation fallback to image-capable limited mode, and explicit `Restart as Administrator`.
+12. **Done / CI-built:** direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` commands.
+13. **Done:** automatic free-drive-letter selection preferring `P:` and avoiding letters below `D:`.
+14. **Done:** portable NT `ZwCreateFile` policy regression protects the original root-open bug.
+15. **Done:** portable Darkness GUI/mount policy regression protects one-candidate auto-open and deterministic free-letter fallback/exhaustion behavior.
+16. **Done:** Windows CI pins/verifies/installs Dokany 2.3.1 SDK/runtime and packages GUI, inspector, mount CLI, docs, and all nine regression tests.
+17. **Done:** CLI-driven real-HDD Dokany path validates Explorer browse, known-file copy/hash, write rejection, and clean unmount.
+18. **Pending hardware gate:** validate the final integrated GUI elevation/discovery/mount workflow on the real PS2 HDD.
 
 ## Windows disk discovery
 
-DriveForge no longer guesses which `PhysicalDriveN` paths might exist. Discovery follows Windows' device model:
+DriveForge does not infer a fixed range of `PhysicalDriveN` paths. Discovery follows the Windows storage device model:
 
 ```text
 SetupDiGetClassDevs(GUID_DEVINTERFACE_DISK)
-        -> SetupDiEnumDeviceInterfaces
-        -> disk device-interface path
-        -> IOCTL_STORAGE_GET_DEVICE_NUMBER
-        -> actual PhysicalDriveN
-        -> GENERIC_READ PhysicalDrive
-        -> DriveForge APA probe
+  -> SetupDiEnumDeviceInterfaces
+  -> disk interface
+  -> IOCTL_STORAGE_GET_DEVICE_NUMBER
+  -> actual PhysicalDriveN
+  -> GENERIC_READ DriveForge backend
+  -> APA parser
 ```
 
-The interface handle used to obtain `STORAGE_DEVICE_NUMBER` requests no data access. The resulting raw disk is then reopened through the normal DriveForge `PhysicalDrive` backend, which remains `GENERIC_READ` only. APA identity is decided by the parser, not by model name, capacity or Windows partition-table heuristics.
-
-This removes the old arbitrary 0..31 scan limit from the GUI and avoids presenting nonexistent/non-PS2 disks as user choices.
+The device-interface handle used to obtain `STORAGE_DEVICE_NUMBER` requests no data access. The raw disk is reopened through the normal DriveForge read-only backend. PS2 identity comes from APA validation, not model name, capacity, or Windows partition-table heuristics.
 
 ## Elevation policy
 
-Raw-disk access commonly requires an elevated token on Windows. DriveForge does not use a `requireAdministrator` manifest because disk-image browsing does not intrinsically require elevation.
+DriveForge deliberately does not use a global `requireAdministrator` manifest because image browsing does not need elevation.
 
-At normal GUI startup:
+Normal startup:
 
 ```text
 normal user
-   -> ShellExecuteExW("runas", --elevated-relaunch)
-      -> elevated DriveForge
-      -> automatic disk-interface discovery
+  -> ShellExecuteExW("runas", --elevated-relaunch)
+  -> elevated DriveForge
+  -> SetupAPI discovery
 ```
 
-The `--elevated-relaunch` marker prevents an accidental UAC relaunch loop. If the user cancels elevation, DriveForge continues in a limited mode so disk images remain usable; `Restart as Administrator` is available in the File menu.
+The marker prevents relaunch loops. If UAC is cancelled, the original GUI remains running in limited mode so image files still work. `Restart as Administrator` can recover raw-disk access later.
 
 ## Shared mount controller
 
-`PS2-DriveForge-Mount.exe` remains useful for scripts, diagnostics and callback logging, but it no longer owns a separate filesystem implementation.
-
 ```text
-Native GUI                mount CLI
+Native GUI                 mount CLI
     |                         |
     +--- DokanyMountController+
                  |
@@ -85,28 +83,23 @@ Native GUI                mount CLI
             DriveSession
 ```
 
-`DokanyMountController` owns source lifetime, `DokanMain`, callbacks, mount/unmount state and a worker thread. The GUI can therefore mount/unmount directly without spawning a console helper while the CLI remains a thin frontend over the same implementation.
-
-The GUI suggests `P:` when free, otherwise another unused drive letter. Opening a mounted volume uses the normal Windows shell/Explorer path.
+The controller owns source lifetime, `DokanMain`, callbacks, mount/unmount state, and its worker thread. The standalone console program is a thin developer frontend over the same implementation used by the GUI.
 
 ## Safety invariants
 
-- no `BlockDevice::write()` is introduced;
-- `PhysicalDrive` continues to request `GENERIC_READ` only;
-- SetupAPI enumeration does not make Windows device identity a filesystem-format decision;
-- Dokany is an adapter above `ReadOnlyMountView`/`DriveSession`, never a parser layer;
-- create/write/delete/rename/truncate/attribute mutation operations return write-protected/access-denied status;
-- the mount requests `DOKAN_OPTION_WRITE_PROTECT` in addition to callback-level rejection;
-- source-device handles never become writable as a side effect of discovery or mounting;
-- GUI and CLI share one callback/controller implementation.
+- no source `write()` capability exists;
+- raw PS2 HDD access remains `GENERIC_READ`;
+- SetupAPI discovery is classification, never target selection for mutation;
+- Dokany does not parse APA/PFS;
+- create/write/delete/rename/truncate/attribute mutation stays rejected;
+- `DOKAN_OPTION_WRITE_PROTECT` provides an additional runtime barrier;
+- GUI and CLI share one provider/controller implementation.
 
-## ZwCreateFile disposition contract
+## Dokany create-disposition contract
 
-Dokany's `ZwCreateFile` callback receives the NT kernel `FILE_*` create-disposition values, not the Win32 `CreateFileW` constants.
+`ZwCreateFile` receives NT kernel `FILE_*` dispositions, not Win32 `CreateFileW` constants. The first physical mount exposed this because `FILE_OPEN == 1` was interpreted as Win32 `CREATE_NEW == 1`, returning a root collision and Explorer's **"The file exists."** message.
 
-This distinction is deliberately covered by a portable regression test because several numeric values overlap while having different meanings. The first real Darkness mount exposed exactly this trap: `FILE_OPEN == 1` was accidentally interpreted as Win32 `CREATE_NEW == 1`, so opening the existing mount root returned `STATUS_OBJECT_NAME_COLLISION` and Explorer displayed **"The file exists."**
-
-The adapter models the NT values explicitly:
+The adapter now models:
 
 ```text
 0 FILE_SUPERSEDE
@@ -117,55 +110,61 @@ The adapter models the NT values explicitly:
 5 FILE_OVERWRITE_IF
 ```
 
-Existing objects opened with `FILE_OPEN`/`FILE_OPEN_IF` succeed when no write access is requested. Create/overwrite/supersede operations remain blocked by the read-only policy. `ps2-driveforge-dokany-open-policy-tests` runs under both MSVC and Linux sanitizer CI.
+and a portable regression runs under both MSVC and Linux sanitizer CI.
 
-The standalone diagnostic frontend supports:
+## Windows theme policy
 
-```powershell
-PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug
+- `View -> Theme -> System / Light / Dark` persists per user.
+- System follows Windows' application theme preference.
+- High Contrast overrides DriveForge theme choices.
+- Client area, TreeView, ListView/header, status area, and Windows 11 titlebar receive dark-mode handling.
+- optional UxTheme helpers are best-effort only; failure falls back instead of blocking startup.
+- theme code remains entirely above storage/session/parser layers.
+
+## Performance boundary and Emilia handoff
+
+Darkness targets filesystem correctness and stable Explorer behavior. Caching, read-ahead, request coalescing, and overlapped physical I/O are intentionally 0.5 Emilia work.
+
+The final Darkness workload to preserve before merge is:
+
+```text
+cold GUI start
+ -> UAC/discovery/auto-open
+ -> mount
+ -> root
+ -> Partitions
+ -> +OPL
+ -> __common\OPL
+ -> read/copy conf_hdd.cfg
+ -> unmount
 ```
 
-which logs create/open, directory, metadata, read and volume/free-space callbacks without changing source-device access.
-
-## Windows GUI theme policy
-
-Darkness adds persistent `View -> Theme -> System / Light / Dark` selection to the native Win32 GUI.
-
-- **System** follows the Windows application colour preference (`AppsUseLightTheme`).
-- **Light** and **Dark** persist under the current user's DriveForge registry settings.
-- Windows High Contrast always takes precedence over a DriveForge Light/Dark override.
-- The client background, TreeView, ListView/header and status bar receive explicit palette colours.
-- The Windows 11 non-client frame uses the documented DWM `DWMWA_USE_IMMERSIVE_DARK_MODE` path.
-- Native dark menu/common-control behavior is enabled through dynamically resolved UxTheme helpers as a best-effort enhancement only.
-- The window class does not own a fixed white background brush; `WM_ERASEBKGND` uses the active palette to avoid bright flashes during startup/resizing on HDR/OLED displays.
-
-Theme policy remains a host-UI concern; shared APA/PFS/session/mount code does not depend on it.
-
-## Performance boundary
-
-Darkness targets filesystem correctness and stable Explorer behavior. Major caching, read-ahead, request coalescing and overlapped physical I/O remain 0.5 Emilia. Explorer's real callback workload has already shown repeated metadata requests, giving Emilia a concrete optimization target.
+Explorer's repeated create/open/stat/enumeration pattern is the real workload Emilia should optimize. Existing CLI instrumentation plus the Chisato 215-read browse baseline provide the lower-level reference.
 
 ## Hardware validation progress
 
-The original CLI-driven Darkness mount has been validated on the real 149.05 GiB APA v2 HDD:
+Already validated on the real 149.05 GiB APA v2 HDD:
 
-- `PhysicalDrive3` mounted read-only as `P:`;
-- Explorer opened `P:\` and reported the PS2PFS volume;
-- `P:\Partitions\+OPL` and `P:\Partitions\__common\OPL` enumerated correctly;
-- `conf_hdd.cfg` copied through Explorer was 20 bytes and matched SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
-- creation of a write-test file was rejected;
-- unmount completed cleanly;
-- System/Dark/Light GUI switching was visually validated on Windows 11.
+- native System/Light/Dark GUI switching;
+- standalone/shared Dokany controller mounting `PhysicalDrive3` as `P:`;
+- Explorer root/volume information;
+- `Partitions\+OPL` and `Partitions\__common\OPL` enumeration;
+- Explorer copy of 20-byte `conf_hdd.cfg` with SHA-256 `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
+- write creation rejection;
+- clean unmount.
 
-The remaining Darkness hardware gate is specifically the **new integrated GUI workflow**:
+Final integrated-GUI gate:
 
-1. launch the GUI as a normal user and confirm automatic UAC relaunch;
-2. confirm startup SetupAPI discovery identifies the PS2 HDD without a fixed PhysicalDrive list;
-3. confirm a single PS2 candidate opens automatically and displays the expected 149.05 GiB / APA v2 / 43-main-partition state;
-4. use `File -> Mount read-only` and confirm a free drive letter is selected automatically;
-5. use `Open mounted volume in Explorer`, browse `Partitions\+OPL` and `Partitions\__common\OPL`;
-6. optionally copy/hash `conf_hdd.cfg` again as a regression;
-7. use the GUI `Unmount` command and confirm the drive letter disappears cleanly;
-8. rescan and source switching must not expose a writable raw-disk path.
+1. start `PS2-DriveForge.exe` as a normal user;
+2. confirm one UAC relaunch and no loop;
+3. confirm automatic SetupAPI discovery finds the PS2 HDD with no fixed PhysicalDrive list;
+4. confirm the sole candidate auto-opens with ~149.05 GiB / APA v2 / 43 main partitions;
+5. mount from the GUI and confirm automatic free-letter selection;
+6. open in Explorer and browse known PFS paths;
+7. confirm writes remain rejected;
+8. unmount from the GUI;
+9. confirm rescan does not replace an already-open source;
+10. once cancel UAC and verify image-capable limited mode plus manual elevation recovery;
+11. if practical, occupy `P:` and verify fallback to another free drive letter.
 
-Generated-image tests continue to cover SEGI and APA main/sub-partition crossings that are not available as real PFS content on the current HDD.
+Passing this list is the final blocker before PR #5 is marked ready, squash-merged to `main`, and Darkness development is closed.
