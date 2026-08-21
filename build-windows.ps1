@@ -122,7 +122,8 @@ if (-not $SkipTests) {
         'ps2-driveforge-e2e-image-tests.exe',
         'ps2-driveforge-corruption-tests.exe',
         'ps2-driveforge-session-tests.exe',
-        'ps2-driveforge-dokany-open-policy-tests.exe'
+        'ps2-driveforge-dokany-open-policy-tests.exe',
+        'ps2-driveforge-darkness-policy-tests.exe'
     )) {
         $TestExe = Join-Path $BinDir $TestName
         if (Test-Path $TestExe) {
