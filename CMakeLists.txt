@@ -81,6 +81,10 @@ add_executable(ps2-driveforge-inspect src/cli/main.cpp)
 target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
+add_executable(ps2-driveforge-benchmark src/cli/benchmark.cpp)
+target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
+target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
+
 if(WIN32)
     add_executable(ps2-driveforge-gui WIN32
         src/gui/windows_main.cpp
