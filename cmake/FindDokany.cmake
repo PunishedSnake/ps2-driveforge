@@ -6,9 +6,9 @@
 #   Dokany_LIBRARY
 #   Dokany::Dokany
 #
-# The official installer currently places development files under a versioned
-# Program Files/Dokan/Dokan Library-* directory. DOKANY_ROOT can override that
-# location for CI or custom installations.
+# Dokany installations in the wild currently use both a spaced directory name
+# (`Dokan Library-*`, official installer layout) and `DokanLibrary-*` (Chocolatey
+# package layout). DOKANY_ROOT can override either location for CI/custom SDKs.
 
 set(DOKANY_ROOT "" CACHE PATH "Root of an installed Dokany 2.x SDK")
 
@@ -20,6 +20,7 @@ endif()
 if(WIN32)
     file(GLOB _dokany_program_files_roots LIST_DIRECTORIES true
         "$ENV{ProgramFiles}/Dokan/Dokan Library-*"
+        "$ENV{ProgramFiles}/Dokan/DokanLibrary-*"
     )
     if(_dokany_program_files_roots)
         list(SORT _dokany_program_files_roots COMPARE NATURAL ORDER DESCENDING)
