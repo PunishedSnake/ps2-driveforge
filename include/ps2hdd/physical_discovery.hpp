@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 
+#include "ps2hdd/block_device.hpp"
+
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -20,6 +22,7 @@ struct PhysicalDriveProbe {
     std::uint32_t apa_version{};
     std::size_t partition_count{};      // all APA headers, including SUB entries
     std::size_t main_partition_count{};
+    StorageCharacteristics storage{};
     std::string note;
 };
 
