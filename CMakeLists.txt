@@ -85,6 +85,7 @@ if(WIN32)
     add_executable(ps2-driveforge-gui WIN32
         src/gui/windows_main.cpp
         src/gui/windows_theme.cpp
+        src/gui/windows_elevation.cpp
     )
     set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
     target_link_libraries(ps2-driveforge-gui PRIVATE
@@ -99,8 +100,6 @@ if(WIN32)
     target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
     if(MSVC)
-        # Keep source/exec character sets explicitly UTF-8 so non-ASCII UI literals
-        # (for example em dashes in the title/status text) survive MSVC compilation.
         target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive- /utf-8)
         if(PS2DF_WARNINGS_AS_ERRORS)
             target_compile_options(ps2-driveforge-gui PRIVATE /WX)
@@ -114,10 +113,27 @@ if(PS2DF_BUILD_DOKANY)
     endif()
 
     find_package(Dokany REQUIRED)
+
+    add_library(ps2driveforge_dokany
+        src/mount/dokany_controller.cpp
+    )
+    target_include_directories(ps2driveforge_dokany PRIVATE src/mount)
+    target_link_libraries(ps2driveforge_dokany PUBLIC ps2driveforge_host Dokany::Dokany)
+    target_compile_features(ps2driveforge_dokany PUBLIC cxx_std_20)
+    target_compile_definitions(ps2driveforge_dokany PUBLIC PS2DF_HAS_DOKANY=1 UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2driveforge_dokany PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2driveforge_dokany PRIVATE /WX)
+        endif()
+    endif()
+
+    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_dokany)
+    target_compile_definitions(ps2-driveforge-gui PRIVATE PS2DF_HAS_DOKANY=1)
+
     add_executable(ps2-driveforge-mount src/mount/dokany_main.cpp)
     set_target_properties(ps2-driveforge-mount PROPERTIES OUTPUT_NAME "PS2-DriveForge-Mount")
-    target_include_directories(ps2-driveforge-mount PRIVATE src/mount)
-    target_link_libraries(ps2-driveforge-mount PRIVATE ps2driveforge_host Dokany::Dokany)
+    target_link_libraries(ps2-driveforge-mount PRIVATE ps2driveforge_dokany)
     target_compile_features(ps2-driveforge-mount PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-mount PRIVATE UNICODE _UNICODE)
     if(MSVC)
