@@ -1,22 +1,35 @@
 # Changelog
 
-## 0.3.0-dev "Chisato" - 2026-08-20
+## 0.3.0-dev "Chisato" - 2026-08-21
 
 - Added the first native Windows GUI (`PS2-DriveForge.exe`) using Win32/Common Controls only.
 - Added Explorer-style APA partition tree and PFS details browser.
-- Added image opening and read-only `PhysicalDrive0..15` opening from the GUI.
+- Added image opening and read-only physical-drive opening from the GUI.
+- Added read-only PS2 HDD discovery across `PhysicalDrive0..31` from both CLI and GUI.
 - Added PFS folder navigation, folders-first sorting, `..` navigation, inode/size display and status-path reporting.
 - Added GUI file extraction through the Windows Save As dialog.
 - Added a reusable host export layer shared independently from the APA/PFS parser.
 - Added recursive PFS directory export with 1 MiB streaming file reads.
 - Added Windows-safe filename conversion, DOS device-name protection, case-insensitive collision handling, directory-depth limits and cycle detection.
 - Extended CLI `--extract` so it can export either one file or an entire PFS directory tree.
-- Added host filename conversion tests.
-- Windows artifacts now package both the GUI and CLI inspector.
-- Expanded README into the project entry point with current limitations and developer-documentation index.
+- Added `DriveSession` as the shared frontend orchestration layer for APA scan, PFS browse, export and diagnostics.
+- Refactored the Win32 GUI to use the same `DriveSession` and host exporter as the CLI instead of maintaining a duplicate PFS/copy path.
+- Removed the forced image-open dialog on GUI startup; Chisato now starts with an explicit empty/read-only state.
+- Added `InstrumentedBlockDevice` and CLI `--stats` backing-I/O diagnostics (read calls, bytes, average/largest read, failures, and session operation counts).
+- Added a generated sparse APA/PFS disk-image end-to-end test that reopens the image through production `FileBlockDevice`.
+- The generated image exercises nested/empty directories, Windows host-name collisions, an APA main/sub-partition data split, and a real SEGI-backed file.
+- Added SHA-256 verification of every generated-image exported file and a known SHA-256 test vector.
+- Added a deterministic malformed-metadata corpus covering out-of-device APA main/sub extents, invalid PFS zone sizes, missing root subpartitions, bad inode checksums and malformed dentries.
+- Hardened the APA reader so main and recorded sub-partition extents extending beyond the backing device are fatal diagnostics.
+- Added `DriveSession` regression tests for scan/browse/export and backing-I/O counter reset/collection.
+- Added an optional Clang/libFuzzer APA parser target (`PS2DF_BUILD_FUZZERS=ON`).
+- Expanded the normal CI suite to seven test executables; Windows/MSVC and Clang ASan+UBSan+`-Werror` both pass the complete suite.
+- Windows artifacts package both the GUI and CLI inspector.
+- Expanded README into the project entry point with current limitations, source detection, statistics and developer-documentation index.
 - Added APA and PFS implementation notes documenting address units, checksums, extent translation, SEGD/SEGI behavior and directory-entry traps.
 - Added an architecture comparison with pfsshell that separates observed differences from unbenchmarked performance targets.
-- Added a performance/benchmark plan that records the current synchronous I/O bottlenecks before optimization begins.
+- Added a performance/benchmark plan and implemented its first backing-I/O instrumentation layer.
+- Added `docs/testing.md` for generated-image E2E, corruption corpus, fuzzing, statistics and real-HDD workflow.
 - Added development/documentation rules so format decisions, hardware findings and non-obvious invariants are recorded alongside code changes.
 - Expanded real-hardware validation notes into reusable regression cases and explicit coverage gaps.
 - Added code comments around APA traversal/checksums, PFS zone/metadata arithmetic, SEGI traversal, dentry boundaries, host filename policy and Windows raw-disk serialization.
