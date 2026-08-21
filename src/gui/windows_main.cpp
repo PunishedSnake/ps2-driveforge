@@ -7,6 +7,7 @@
 #include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/version.hpp"
+#include "windows_theme.hpp"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -27,11 +28,16 @@
 
 namespace {
 
+using ps2driveforge::gui::ThemePreference;
+
 constexpr wchar_t kWindowClass[] = L"PS2DriveForgeMainWindow";
 constexpr UINT kIdOpenImage = 100;
 constexpr UINT kIdExit = 101;
 constexpr UINT kIdAbout = 102;
 constexpr UINT kIdDetectPhysical = 103;
+constexpr UINT kIdThemeSystem = 104;
+constexpr UINT kIdThemeLight = 105;
+constexpr UINT kIdThemeDark = 106;
 constexpr UINT kIdPhysicalBase = 200;
 constexpr UINT kPhysicalCount = 32;
 constexpr int kTreeId = 1000;
@@ -86,9 +92,32 @@ std::string parent_pfs_path(std::string_view path)
     return pos == std::string_view::npos ? std::string{} : std::string(path.substr(0, pos));
 }
 
+UINT theme_command(ThemePreference preference)
+{
+    switch (preference) {
+    case ThemePreference::Light:
+        return kIdThemeLight;
+    case ThemePreference::Dark:
+        return kIdThemeDark;
+    case ThemePreference::System:
+    default:
+        return kIdThemeSystem;
+    }
+}
+
 class App {
 public:
-    explicit App(HWND window) : window_(window) {}
+    explicit App(HWND window)
+        : window_(window), theme_preference_(ps2driveforge::gui::load_theme_preference())
+    {
+    }
+
+    ~App()
+    {
+        if (background_brush_) {
+            DeleteObject(background_brush_);
+        }
+    }
 
     void create_controls()
     {
@@ -112,14 +141,14 @@ public:
 
         ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
                                                     LVS_EX_LABELTIP | LVS_EX_GRIDLINES);
-        SetWindowTheme(tree_, L"Explorer", nullptr);
-        SetWindowTheme(list_, L"Explorer", nullptr);
 
         add_column(0, L"Name", 280);
         add_column(1, L"Type", 90);
         add_column(2, L"Size", 110);
         add_column(3, L"Sub", 70);
         add_column(4, L"Inode", 100);
+
+        apply_theme(false);
     }
 
     void resize(int width, int height)
@@ -132,6 +161,33 @@ public:
         const int tree_width = std::clamp(width / 3, 230, 420);
         MoveWindow(tree_, 0, 0, tree_width, content_height, TRUE);
         MoveWindow(list_, tree_width, 0, std::max(0, width - tree_width), content_height, TRUE);
+    }
+
+    void erase_background(HDC dc) const
+    {
+        if (!dc || !background_brush_) {
+            return;
+        }
+        RECT rect{};
+        GetClientRect(window_, &rect);
+        FillRect(dc, &rect, background_brush_);
+    }
+
+    void system_settings_changed()
+    {
+        // WM_SETTINGCHANGE covers Windows app-theme and High Contrast changes.
+        // Re-resolve even for forced Light/Dark so accessibility always wins.
+        apply_theme(false);
+    }
+
+    void set_theme(ThemePreference preference)
+    {
+        if (theme_preference_ == preference) {
+            return;
+        }
+        theme_preference_ = preference;
+        ps2driveforge::gui::save_theme_preference(preference);
+        apply_theme(true);
     }
 
     bool open_image_dialog()
@@ -247,11 +303,44 @@ public:
              << widen(ps2hdd::version::codename) << L")\n\n"
              << L"Native read-only APA/PFS browser for PlayStation 2 HDDs.\n\n"
              << L"The GUI and CLI share the same DriveSession/PFS reader/export path.\n"
-             << L"Physical drives are opened with GENERIC_READ only.";
+             << L"Physical drives are opened with GENERIC_READ only.\n"
+             << L"Theme: System / Light / Dark with High Contrast passthrough.";
         message(text.str(), MB_ICONINFORMATION);
     }
 
 private:
+    void update_theme_menu() const
+    {
+        HMENU menu = GetMenu(window_);
+        if (!menu) {
+            return;
+        }
+        HMENU view = GetSubMenu(menu, 1);
+        HMENU theme = view ? GetSubMenu(view, 0) : nullptr;
+        if (!theme) {
+            return;
+        }
+        CheckMenuRadioItem(theme, kIdThemeSystem, kIdThemeDark,
+                           theme_command(theme_preference_), MF_BYCOMMAND);
+    }
+
+    void apply_theme(bool process_mode_changed)
+    {
+        if (process_mode_changed) {
+            ps2driveforge::gui::apply_process_theme(theme_preference_);
+        }
+
+        const auto palette = ps2driveforge::gui::palette_for(theme_preference_);
+        if (background_brush_) {
+            DeleteObject(background_brush_);
+        }
+        background_brush_ = CreateSolidBrush(palette.window_background);
+
+        ps2driveforge::gui::apply_window_theme(window_, tree_, list_, status_, theme_preference_);
+        update_theme_menu();
+        InvalidateRect(window_, nullptr, TRUE);
+    }
+
     void add_column(int index, const wchar_t* title, int width)
     {
         LVCOLUMNW column{};
@@ -484,6 +573,8 @@ private:
     HWND tree_{};
     HWND list_{};
     HWND status_{};
+    HBRUSH background_brush_{};
+    ThemePreference theme_preference_{ThemePreference::System};
     std::unique_ptr<ps2hdd::DriveSession> session_;
     std::vector<ps2hdd::apa::Partition> main_partitions_;
     std::optional<ps2hdd::apa::Partition> active_partition_;
@@ -507,6 +598,15 @@ HMENU create_menu()
     AppendMenuW(file, MF_STRING, kIdExit, L"E&xit");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
 
+    HMENU view = CreatePopupMenu();
+    HMENU theme = CreatePopupMenu();
+    AppendMenuW(theme, MF_STRING, kIdThemeSystem, L"&System");
+    AppendMenuW(theme, MF_STRING, kIdThemeLight, L"&Light");
+    AppendMenuW(theme, MF_STRING, kIdThemeDark, L"&Dark");
+    CheckMenuRadioItem(theme, kIdThemeSystem, kIdThemeDark, kIdThemeSystem, MF_BYCOMMAND);
+    AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(theme), L"&Theme");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
+
     HMENU help = CreatePopupMenu();
     AppendMenuW(help, MF_STRING, kIdAbout, L"&About PS2 DriveForge");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"&Help");
@@ -523,30 +623,50 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owned.release()));
         return 0;
     }
+    case WM_ERASEBKGND:
+        if (app) {
+            app->erase_background(reinterpret_cast<HDC>(wparam));
+            return 1;
+        }
+        break;
     case WM_SIZE:
         if (app) {
             app->resize(LOWORD(lparam), HIWORD(lparam));
+        }
+        return 0;
+    case WM_SETTINGCHANGE:
+        if (app) {
+            app->system_settings_changed();
         }
         return 0;
     case WM_COMMAND:
         if (!app) {
             break;
         }
-        if (LOWORD(wparam) == kIdOpenImage) {
+        switch (LOWORD(wparam)) {
+        case kIdOpenImage:
             app->open_image_dialog();
             return 0;
-        }
-        if (LOWORD(wparam) == kIdDetectPhysical) {
+        case kIdDetectPhysical:
             app->detect_physical();
             return 0;
-        }
-        if (LOWORD(wparam) == kIdExit) {
+        case kIdThemeSystem:
+            app->set_theme(ThemePreference::System);
+            return 0;
+        case kIdThemeLight:
+            app->set_theme(ThemePreference::Light);
+            return 0;
+        case kIdThemeDark:
+            app->set_theme(ThemePreference::Dark);
+            return 0;
+        case kIdExit:
             DestroyWindow(window);
             return 0;
-        }
-        if (LOWORD(wparam) == kIdAbout) {
+        case kIdAbout:
             app->about();
             return 0;
+        default:
+            break;
         }
         if (LOWORD(wparam) >= kIdPhysicalBase && LOWORD(wparam) < kIdPhysicalBase + kPhysicalCount) {
             app->open_physical(LOWORD(wparam) - kIdPhysicalBase);
@@ -587,6 +707,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     InitCommonControlsEx(&common);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+    const auto initial_theme = ps2driveforge::gui::load_theme_preference();
+    ps2driveforge::gui::apply_process_theme(initial_theme);
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = window_proc;
@@ -594,7 +717,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wc.hIconSm = wc.hIcon;
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    // The client background is painted in WM_ERASEBKGND from the active palette;
+    // leaving the class brush null prevents a white flash before a dark resize.
+    wc.hbrBackground = nullptr;
     wc.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&wc)) {
         return 1;
