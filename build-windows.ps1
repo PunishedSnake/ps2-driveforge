@@ -141,14 +141,20 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
 
 $ValidationDir = Join-Path $DistDir 'docs'
 New-Item -ItemType Directory -Force -Path $ValidationDir | Out-Null
-foreach ($Doc in @('docs\testing.md', 'docs\REAL_HARDWARE_VALIDATION.md', 'docs\darkness-plan.md')) {
+foreach ($Doc in @(
+    'docs\testing.md',
+    'docs\REAL_HARDWARE_VALIDATION.md',
+    'docs\darkness-plan.md',
+    'docs\emilia-plan.md',
+    'docs\performance.md'
+)) {
     $Source = Join-Path $Root $Doc
     if (Test-Path $Source) {
         Copy-Item $Source $ValidationDir -Force
     }
 }
 
-$ZipName = "PS2-DriveForge-0.4.0-Darkness-$Configuration-windows-x64.zip"
+$ZipName = "PS2-DriveForge-0.5.0-Emilia-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
