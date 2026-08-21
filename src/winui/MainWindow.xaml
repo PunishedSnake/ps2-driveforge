@@ -153,7 +153,7 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="FilterBox" PlaceholderText="Filter by title, startup ID or partition…" QueryIcon="Find"/>
+                        <TextBox x:Name="FilterBox" PlaceholderText="Filter by title, startup ID or partition…"/>
                         <ComboBox Grid.Column="1" SelectedIndex="0" MinWidth="140">
                             <ComboBoxItem Content="All partitions"/>
                             <ComboBoxItem Content="HDL games"/>
@@ -186,16 +186,16 @@
                                 <TextBlock Grid.Column="4" Text="LBA" FontWeight="SemiBold" VerticalAlignment="Center"/>
                                 <TextBlock Grid.Column="5" Text="State" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             </Grid>
-                            <ListView x:Name="PartitionList" Grid.Row="1" SelectionMode="Extended" MinHeight="320">
-                                <ListView.EmptyContent>
-                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" Margin="20,60">
-                                        <FontIcon Glyph="&#xE7F8;" FontSize="30" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                                        <TextBlock Text="Open a PS2 HDD or image" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center"/>
-                                        <TextBlock Text="The APA catalog appears first; optional HDL/PFS metadata is filled in afterward."
-                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextAlignment="Center"/>
-                                    </StackPanel>
-                                </ListView.EmptyContent>
-                            </ListView>
+                            <Grid Grid.Row="1">
+                                <ListView x:Name="PartitionList" SelectionMode="Extended" MinHeight="320"/>
+                                <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                            Spacing="8" Margin="20,60" IsHitTestVisible="False">
+                                    <FontIcon Glyph="&#xE7F8;" FontSize="30" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    <TextBlock Text="Open a PS2 HDD or image" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+                                    <TextBlock Text="The APA catalog appears first; optional HDL/PFS metadata is filled in afterward."
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
                         </Grid>
                     </Border>
                 </Grid>
