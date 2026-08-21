@@ -5,6 +5,8 @@
 #include <winioctl.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <limits>
 
 namespace ps2hdd {
@@ -72,6 +74,51 @@ bool query_storage_property(HANDLE handle, STORAGE_PROPERTY_ID property_id,
            returned >= sizeof(descriptor);
 }
 
+struct AtaIdentifyPacket {
+    ATA_PASS_THROUGH_EX pass{};
+    std::array<std::byte, 512> identify{};
+};
+
+bool query_ata_rotation_rate(HANDLE handle, std::uint16_t& rate) noexcept
+{
+    AtaIdentifyPacket packet{};
+    packet.pass.Length = sizeof(ATA_PASS_THROUGH_EX);
+    packet.pass.AtaFlags = ATA_FLAGS_DATA_IN | ATA_FLAGS_DRDY_REQUIRED;
+    packet.pass.DataTransferLength = static_cast<ULONG>(packet.identify.size());
+    packet.pass.TimeOutValue = 2;
+    packet.pass.DataBufferOffset = offsetof(AtaIdentifyPacket, identify);
+    packet.pass.CurrentTaskFile[5] = 0xA0; // master/device register, ignored by most modern stacks
+    packet.pass.CurrentTaskFile[6] = 0xEC; // ATA IDENTIFY DEVICE (read-only)
+
+    ScopedEvent event;
+    if (!event.valid()) {
+        return false;
+    }
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    DWORD returned = 0;
+    const BOOL started = DeviceIoControl(handle, IOCTL_ATA_PASS_THROUGH,
+                                         &packet, sizeof(packet),
+                                         &packet, sizeof(packet),
+                                         nullptr, &overlapped);
+    if (!finish_overlapped(handle, overlapped, started, returned)) {
+        return false;
+    }
+
+    constexpr std::size_t word = 217;
+    constexpr std::size_t byte_offset = word * sizeof(std::uint16_t);
+    const auto low = std::to_integer<std::uint16_t>(packet.identify[byte_offset]);
+    const auto high = std::to_integer<std::uint16_t>(packet.identify[byte_offset + 1]);
+    const auto value = static_cast<std::uint16_t>(low | static_cast<std::uint16_t>(high << 8U));
+
+    // ACS: 0 = not reported, 1 = non-rotating, 0x0401..0xFFFE = nominal RPM.
+    if (value == 1 || (value >= 0x0401U && value <= 0xFFFEU)) {
+        rate = value;
+        return true;
+    }
+    return false;
+}
+
 StorageCharacteristics query_characteristics(HANDLE handle) noexcept
 {
     StorageCharacteristics result;
@@ -104,6 +151,28 @@ StorageCharacteristics query_characteristics(HANDLE handle) noexcept
     if (query_storage_property(handle, StorageAdapterProperty, adapter)) {
         result.bus_type_known = true;
         result.bus_type = static_cast<std::uint32_t>(adapter.BusType);
+    }
+
+    // Some storage stacks (including real SATA setups) do not expose the seek
+    // penalty property. ATA IDENTIFY word 217 is a safe read-only fallback and
+    // also gives us a useful corroborating RPM value when the class is already
+    // known. Bridges/controllers are free to reject pass-through; unknown remains
+    // a fully supported result in that case.
+    const bool ata_like = !result.bus_type_known ||
+                          result.bus_type == static_cast<std::uint32_t>(BusTypeAta) ||
+                          result.bus_type == static_cast<std::uint32_t>(BusTypeSata) ||
+                          result.bus_type == static_cast<std::uint32_t>(BusTypeUsb);
+    if (ata_like) {
+        std::uint16_t rotation_rate = 0;
+        if (query_ata_rotation_rate(handle, rotation_rate)) {
+            result.nominal_rotation_rate_known = true;
+            result.nominal_rotation_rate = rotation_rate;
+            if (result.media_class == StorageMediaClass::unknown) {
+                result.media_class = rotation_rate == 1
+                                         ? StorageMediaClass::solid_state
+                                         : StorageMediaClass::rotational;
+            }
+        }
     }
 
     return result;
