@@ -7,7 +7,6 @@
 
 #include <windows.h>
 #include <setupapi.h>
-#include <initguid.h>
 #include <ntddstor.h>
 #include <winioctl.h>
 
@@ -89,7 +88,13 @@ std::vector<PhysicalDriveProbe> discover_physical_drives(unsigned max_index)
             continue;
         }
 
-        std::vector<std::byte> storage(required);
+        // SetupDiGetDeviceInterfaceDetailW wants a variable-size structure whose
+        // first member still has normal pointer alignment. A byte vector is not
+        // guaranteed to provide that alignment, so reserve in max_align_t units.
+        const std::size_t units =
+            (static_cast<std::size_t>(required) + sizeof(std::max_align_t) - 1U) /
+            sizeof(std::max_align_t);
+        std::vector<std::max_align_t> storage(units);
         auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(storage.data());
         detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
         SP_DEVINFO_DATA device_info{};
