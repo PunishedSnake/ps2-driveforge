@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(POLICY CMP0144)
+    # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
+    # Darkness passes DOKANY_ROOT explicitly in CI, so opt into the policy
+    # instead of emitting a developer warning on newer CMake releases.
+    cmake_policy(SET CMP0144 NEW)
+endif()
+
 project(ps2_driveforge VERSION 0.4.0 LANGUAGES CXX)
 
 set(PS2DF_CODENAME "Darkness" CACHE STRING "Release codename")
@@ -74,9 +81,20 @@ target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 
 if(WIN32)
-    add_executable(ps2-driveforge-gui WIN32 src/gui/windows_main.cpp)
+    add_executable(ps2-driveforge-gui WIN32
+        src/gui/windows_main.cpp
+        src/gui/windows_theme.cpp
+    )
     set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
-    target_link_libraries(ps2-driveforge-gui PRIVATE ps2driveforge_host comctl32 comdlg32 uxtheme shell32 ole32)
+    target_link_libraries(ps2-driveforge-gui PRIVATE
+        ps2driveforge_host
+        comctl32
+        comdlg32
+        dwmapi
+        uxtheme
+        shell32
+        ole32
+    )
     target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
     if(MSVC)
