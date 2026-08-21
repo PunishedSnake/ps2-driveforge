@@ -9,26 +9,28 @@ The architecture is intentionally different from wrapping pfsshell's interactive
 ## Current layers
 
 ```text
- Native Win32 GUI          CLI          Dokany provider
-        |                   |                   |
-        +------------- DriveSession -----------+
-                            |
-                   ps2driveforge_host
-                            |
-                   ps2driveforge_core
-                            |
-                +-----------+-----------+
-                |           |           |
-               APA         PFS       HDL/MBR
-                |           |           |
-                +-----------+-----------+
-                            |
-                InstrumentedBlockDevice
-                            |
-                       BlockDevice
-                     /             \
-               disk image      PhysicalDriveN
+ Native Win32 GUI          inspector CLI          mount CLI
+        |                       |                     |
+        |                       |            DokanyMountController
+        |                       |                     |
+        +--------------- DriveSession / host --------+
+                                |
+                       ps2driveforge_core
+                                |
+                    +-----------+-----------+
+                    |           |           |
+                   APA         PFS       HDL/MBR
+                    |           |           |
+                    +-----------+-----------+
+                                |
+                    InstrumentedBlockDevice
+                                |
+                           BlockDevice
+                         /             \
+                   disk image      PhysicalDriveN
 ```
+
+Windows disk-interface discovery and UAC are frontend/platform concerns. They select or permit access to a `BlockDevice`; they never alter APA/PFS format semantics.
 
 `DriveSession` is frontend orchestration, not filesystem state. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not another on-disk abstraction.
 
@@ -42,6 +44,50 @@ Current source backends are read-only:
 - `PhysicalDrive` for `\\.\PhysicalDriveN` on Windows.
 
 The absence of `write()` is a safety boundary. Future mutation should introduce an explicit writable capability rather than quietly widening this interface.
+
+`PhysicalDrive` records the Win32 error from a failed raw open so the Windows frontend can distinguish access denial from other failures. This diagnostic addition does not change the handle flags: raw disks continue to use `GENERIC_READ` only.
+
+### Windows physical-device discovery
+
+Darkness removes the old development-only `PhysicalDrive0..31` guess loop from the GUI.
+
+The platform discovery path is:
+
+```text
+SetupDiGetClassDevs(GUID_DEVINTERFACE_DISK)
+  -> SetupDiEnumDeviceInterfaces
+  -> disk interface path
+  -> IOCTL_STORAGE_GET_DEVICE_NUMBER
+  -> actual PhysicalDriveN
+  -> PhysicalDrive(GENERIC_READ)
+  -> APA Reader
+```
+
+The temporary device-interface handle requests no disk-data access; it exists only to ask Windows which storage-device number backs that concrete interface. The resulting raw disk is reopened through the normal DriveForge backend and classified by the APA parser.
+
+Consequences:
+
+- no arbitrary maximum disk number in the GUI discovery path;
+- no attempts to open nonexistent guessed numbers;
+- Windows model/friendly name can be shown without using it as format evidence;
+- only parser-confirmed PS2 APA candidates are presented as PS2 HDD choices.
+
+### GUI elevation boundary
+
+Raw physical-disk access may require Administrator rights. DriveForge deliberately avoids a global `requireAdministrator` manifest because disk-image workflows do not inherently require elevation.
+
+The native GUI uses a controlled relaunch:
+
+```text
+normal process
+  -> ShellExecuteExW("runas", --elevated-relaunch)
+  -> elevated GUI
+  -> SetupAPI discovery
+```
+
+The internal relaunch marker prevents an elevation loop. If UAC is cancelled, the unelevated process continues in a limited image-capable mode and exposes a manual `Restart as Administrator` command.
+
+Elevation belongs to the Windows frontend. Core/parser/session code does not inspect process tokens.
 
 ### `InstrumentedBlockDevice`
 
@@ -132,9 +178,32 @@ The session does **not** maintain a filesystem-global current directory. Paths r
 
 Darkness keeps Dokany above `ReadOnlyMountView`/`DriveSession`. The adapter translates Windows filesystem callbacks into portable lookup/list/read operations and maps their result back to NTSTATUS.
 
+The callback implementation and mount lifecycle now live in a shared `DokanyMountController`:
+
+```text
+PS2-DriveForge.exe          PS2-DriveForge-Mount.exe
+         |                            |
+         +---- DokanyMountController -+
+                         |
+                  ReadOnlyMountView
+                         |
+                    DriveSession
+```
+
+This is deliberate. The GUI does **not** spawn the mount executable and the CLI no longer owns a second callback implementation. The standalone executable remains useful for headless scripting and `--debug` traces, while both frontends exercise identical filesystem-provider code.
+
+The controller owns:
+
+- the second read-only source handle used by the mounted filesystem;
+- `DriveSession` / `ReadOnlyMountView` lifetime;
+- the `DokanMain` worker thread;
+- mounted/running/error state;
+- mountpoint normalization and automatic free-drive-letter selection;
+- clean unmount requests.
+
 One important boundary is `ZwCreateFile`: Dokany passes NT kernel `FILE_*` create-disposition values, **not** Win32 `CreateFileW` constants. These two APIs have overlapping numeric values with different meanings (`FILE_OPEN == 1`, while Win32 `CREATE_NEW == 1`). The first real Darkness mount exposed that trap when the root open was returned as `STATUS_OBJECT_NAME_COLLISION` and Explorer reported "The file exists."
 
-The NT create-disposition contract is now represented explicitly in `src/mount/dokany_open_policy.hpp` and regression-tested on both Windows and Linux. This policy module decides only whether a read-only open is semantically permitted; it does not parse PFS or touch storage.
+The NT create-disposition contract is represented explicitly in `src/mount/dokany_open_policy.hpp` and regression-tested on both Windows and Linux. This policy module decides only whether a read-only open is semantically permitted; it does not parse PFS or touch storage.
 
 The mount maintains four independent read-only barriers:
 
@@ -166,24 +235,30 @@ Implemented and hardware validated, with real-hardware SEGI remaining a separate
 
 Implemented and hardware validated on the real 149.05 GiB test HDD, including discovery, GUI browse, recursive `+OPL` export, a regular PFS file export and backing-I/O baseline.
 
-### 0.4 Darkness: Explorer mount
+### 0.4 Darkness: Explorer mount and Windows device workflow
 
-In development:
+Implemented/validated so far:
 
 - portable `ReadOnlyMountView`;
 - random-offset/thread-safe session operations for filesystem callbacks;
-- Dokany 2.3.1 provider and `PS2-DriveForge-Mount.exe`;
+- Dokany 2.3.1 provider;
+- shared `DokanyMountController` used by GUI and mount CLI;
 - structural read-only mount barriers;
 - Windows-safe visible aliases;
 - native System/Light/Dark GUI theme;
+- SetupAPI disk-interface enumeration and APA candidate filtering;
+- controlled GUI elevation/relaunch;
+- direct GUI mount/open-in-Explorer/unmount actions;
 - portable regression coverage for NT `ZwCreateFile` open disposition semantics;
-- real Explorer browse/copy/write-rejection validation pending.
+- real CLI-driven Explorer browse/copy/write-rejection/clean-unmount validation.
+
+The remaining 0.4 validation is the integrated GUI path on the real machine.
 
 ## Dependency rules
 
 These are architecture invariants, not suggestions:
 
-1. `ps2driveforge_core` must not include Win32 GUI/Dokany/host-path policy.
+1. `ps2driveforge_core` must not include Win32 GUI/Dokany/SetupAPI/UAC/host-path policy.
 2. PFS must access physical data through `ApaVolume`, never by adding APA LBAs itself.
 3. Frontends must not reimplement APA/PFS parsing.
 4. Windows filename conversion must not alter PFS-visible names.
@@ -191,7 +266,9 @@ These are architecture invariants, not suggestions:
 6. `DriveSession` may orchestrate parser/host operations but must not become a shell-global mount/current-directory model.
 7. Instrumentation/caches must remain transparent to parser correctness and safety checks.
 8. Dokany callback policy may translate NT semantics but must not become another filesystem parser.
-9. Future write support must be a separate capability with backup/recovery semantics.
+9. GUI and mount CLI must share the same Dokany callback/controller implementation.
+10. Windows device discovery may select a physical backend but must not infer PS2 format identity without the APA parser.
+11. Future write support must be a separate capability with backup/recovery semantics.
 
 If a feature appears to require violating one of these, update the architecture deliberately rather than creating an accidental dependency.
 
@@ -234,7 +311,7 @@ DriveSession
 
 The image backend similarly serializes one `ifstream` seek/read state.
 
-This is correct for Darkness and is a known performance limit. The counters make the lower-level request pattern visible. See [`performance.md`](performance.md) before changing batching, caching or Windows I/O primitives.
+This is correct for Darkness and is a known performance limit. Explorer hardware validation has already shown a metadata-heavy callback pattern, making caching/coalescing an evidence-based Emilia target. See [`performance.md`](performance.md) before changing batching, caching or Windows I/O primitives.
 
 ## Explorer namespace
 
@@ -271,6 +348,8 @@ The current source-device path remains read-only end to end.
 
 | Symptom | First layer to inspect |
 | --- | --- |
+| PS2 disk missing from GUI | SetupAPI discovery / raw-open error / elevation |
+| wrong disk shown as PS2 | APA detection, never device friendly-name policy |
 | APA not detected / chain stops | `apa.cpp` + `apa-format-notes.md` |
 | valid header but impossible extent | APA extent-bounds diagnostics |
 | PFS superblock invalid | `pfs::probe()` |
@@ -281,8 +360,9 @@ The current source-device path remains read-only end to end.
 | export path/name failure | `ps2driveforge_host`, not PFS core |
 | CLI/GUI disagreement | `DriveSession` call inputs/results first |
 | mount point exists but Explorer says "The file exists" | Dokany `ZwCreateFile` NT disposition mapping |
-| mounted path fails but direct browse/export works | `ReadOnlyMountView` / Dokany adapter |
+| mounted path fails but direct browse/export works | `ReadOnlyMountView` / `DokanyMountController` |
+| GUI mount and CLI mount disagree | shared controller inputs/lifetime; callbacks should be identical |
 | slow sequential reads | instrumentation + `performance.md` |
-| GUI-only issue | Win32 presentation; reproduce via `DriveSession`/CLI first |
+| GUI-only issue | Win32 presentation/elevation/discovery; reproduce storage operation below GUI first |
 
 The goal is to identify which abstraction is wrong before adding compatibility hacks to the layer above it.
