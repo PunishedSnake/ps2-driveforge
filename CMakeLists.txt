@@ -76,7 +76,9 @@ if(WIN32)
     target_compile_features(ps2-driveforge-gui PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-gui PRIVATE UNICODE _UNICODE)
     if(MSVC)
-        target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive-)
+        # Keep source/exec character sets explicitly UTF-8 so non-ASCII UI literals
+        # (for example em dashes in the title/status text) survive MSVC compilation.
+        target_compile_options(ps2-driveforge-gui PRIVATE /W4 /permissive- /utf-8)
         if(PS2DF_WARNINGS_AS_ERRORS)
             target_compile_options(ps2-driveforge-gui PRIVATE /WX)
         endif()
