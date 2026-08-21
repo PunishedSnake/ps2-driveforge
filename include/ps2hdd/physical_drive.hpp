@@ -8,7 +8,6 @@
 #endif
 #include <windows.h>
 
-#include <mutex>
 #include <string>
 
 namespace ps2hdd {
@@ -33,7 +32,6 @@ private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
     DWORD open_error_{ERROR_SUCCESS};
     std::uint64_t size_{};
-    mutable std::mutex mutex_;
 };
 
 } // namespace ps2hdd
