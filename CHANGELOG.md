@@ -15,7 +15,7 @@
 - Added a CMake `FindDokany.cmake` path and opted into CMP0144 when available so explicit `DOKANY_ROOT` builds remain warning-free on modern CMake.
 - Added persistent native GUI theme selection under `View -> Theme -> System / Light / Dark`.
 - System theme follows Windows `AppsUseLightTheme`; High Contrast overrides DriveForge theme choices for accessibility.
-- Added explicit dark colours for the client area, TreeView, ListView/header and status bar, plus documented Windows 11 DWM dark-titlebar support.
+- Added explicit dark colours for the client area, TreeView, ListView/header and status bar, plus Windows 11 DWM dark-titlebar support.
 - Added best-effort dynamically resolved UxTheme dark-menu/common-control support with a safe fallback if internal exports are unavailable.
 - Removed the white class-background brush and paint the active palette in `WM_ERASEBKGND` to avoid bright flashes during dark-mode startup/resizing.
 - Hardware-validated dynamic System/Light/Dark switching on Windows 11.
@@ -31,10 +31,13 @@
 - Added controlled UAC `runas` relaunch for normal-user GUI startup, a `--elevated-relaunch` loop-prevention marker, cancellation fallback to limited image-capable mode, and `Restart as Administrator` in the GUI.
 - Moved Dokany callbacks and lifecycle into shared `DokanyMountController`; the GUI and standalone mount CLI now use the same filesystem-provider implementation instead of duplicating callbacks or spawning a helper process.
 - Added direct GUI `Mount read-only`, `Open mounted volume in Explorer`, and `Unmount` actions.
-- Added automatic free-drive-letter selection for GUI mounts, preferring `P:` and falling back to another free letter.
+- Added automatic free-drive-letter selection for GUI mounts, preferring `P:` and falling back to another free data-drive letter.
 - Retained `PS2-DriveForge-Mount.exe` as a thin diagnostic/script frontend over the shared controller.
-- Expanded the normal regression matrix to eight test executables; Linux Clang ASan/UBSan and Windows/MSVC + Dokany remain the merge gates.
-- The remaining Darkness gate is a real-machine smoke test of the new integrated GUI flow: UAC relaunch -> automatic SetupAPI discovery -> automatic PS2 HDD open -> GUI mount/open/unmount.
+- Added portable Darkness GUI/mount policy regression coverage for one-candidate auto-open behavior, source-preserving rescan behavior, `P:` preference, occupied-letter fallback, and exhaustion of `D:`-`Z:`.
+- Expanded the normal regression matrix to **nine** test executables; Linux Clang ASan/UBSan and Windows/MSVC + Dokany remain the merge gates.
+- Recorded the corrected real-HDD Dokany mount, mounted copy/hash integrity, write rejection and clean unmount in `REAL_HARDWARE_VALIDATION.md`.
+- Defined the final Darkness-to-Emilia Explorer workload so metadata/open/enumeration behavior can be compared before and after 0.5 caching/read-ahead/overlapped-I/O work.
+- The remaining Darkness gate is a real-machine smoke test of the new integrated GUI flow: normal-user launch -> UAC relaunch -> automatic SetupAPI discovery -> automatic PS2 HDD open -> GUI mount/open/unmount, plus cancellation/rescan/free-letter fallback checks.
 
 ## 0.3.0-dev "Chisato" - 2026-08-21
 
