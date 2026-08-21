@@ -3,6 +3,7 @@
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/block_device.hpp"
 #include "ps2hdd/instrumented_block_device.hpp"
+#include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_export.hpp"
 #include "ps2hdd/read_cache_block_device.hpp"
@@ -103,6 +104,10 @@ public:
     [[nodiscard]] bool is_open() const noexcept { return source_ != nullptr; }
     [[nodiscard]] BlockDevice& device() noexcept { return read_cache_; }
     [[nodiscard]] const apa::ScanResult& scan_result() const noexcept { return scan_; }
+    [[nodiscard]] PartitionCatalog partition_catalog(bool include_sub_partitions = true) const
+    {
+        return build_partition_catalog(scan_, include_sub_partitions);
+    }
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
     bool scan();
