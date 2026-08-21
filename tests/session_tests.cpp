@@ -234,17 +234,36 @@ void cache_roundtrip()
     check(warm.cache.stat_hits == 1 && warm.cache.stat_misses == 0,
           "warm stat is served from stat cache");
 
+    // With probe + node caches warm, a small random file read should issue only
+    // the actual payload-sector read. Before Emilia this also reread both PFS
+    // superblocks and walked metadata again for every Dokany ReadFile callback.
+    session.reset_stats();
+    std::array<std::byte, 5> payload{};
+    const auto warm_read = session.read_file("+TEST", kFileName, 5, payload);
+    check(warm_read.ok && warm_read.bytes_read == payload.size(), "warm cached read succeeds");
+    check(std::string(reinterpret_cast<const char*>(payload.data()), payload.size()) ==
+              kFileData.substr(5, payload.size()),
+          "warm cached read returns correct payload");
+    const auto read_stats = session.stats();
+    check(read_stats.backing_io.read_calls == 1,
+          "warm small read performs only one payload backing read");
+    check(read_stats.cache.probe_hits == 1 && read_stats.cache.probe_misses == 0,
+          "warm read reuses validated PFS probe");
+    check(read_stats.cache.node_hits == 1 && read_stats.cache.node_misses == 0,
+          "warm read reuses cached file inode");
+
     // clear_caches is the explicit cold-cache benchmark boundary. After it, the
-    // same operation must perform real reads again rather than accidentally
-    // retaining hidden process-global metadata state.
+    // same operation must perform real metadata reads again rather than retaining
+    // hidden process-global state.
     session.clear_caches();
     session.reset_stats();
     const auto recold = session.stat("+TEST", kFileName);
     check(recold.ok, "stat succeeds after cache clear");
     const auto cold_again = session.stats();
-    check(cold_again.backing_io.read_calls > 0, "cache clear restores backing I/O");
-    check(cold_again.cache.stat_misses == 1 && cold_again.cache.node_misses == 1,
-          "cache clear restores metadata misses");
+    check(cold_again.backing_io.read_calls > 1, "cache clear restores metadata/probe I/O");
+    check(cold_again.cache.probe_misses == 1 && cold_again.cache.stat_misses == 1 &&
+              cold_again.cache.node_misses == 1,
+          "cache clear restores probe and metadata misses");
 }
 
 void mount_view_roundtrip()
