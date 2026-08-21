@@ -227,6 +227,65 @@ Windows physical discovery
 
 No source write path was enabled or used.
 
+## 0.4.0-dev "Darkness" — validation in progress
+
+The same physical disk is being used to validate the Dokany Explorer provider and Windows 11 host UI.
+
+### Native GUI theme
+
+Observed on Windows 11:
+
+- System/Light/Dark switching works dynamically while DriveForge is running;
+- the dark title bar, TreeView, ListView/header and status area render in dark mode;
+- the GUI remains usable with the physical disk open;
+- this validates presentation only and does not change storage semantics.
+
+### First Dokany mount attempt
+
+Command:
+
+```powershell
+.\PS2-DriveForge-Mount.exe --physical 3 --mount P:
+```
+
+Observed:
+
+- Dokany successfully created the `P:` mount point;
+- the mount process remained active and reported namespace root `P:\Partitions\`;
+- Explorer could see the drive letter;
+- entering `P:\` failed with `P:\ is not accessible. The file exists.`;
+- Explorer did not display capacity because root opening failed before normal volume browsing.
+
+The failure was traced to the Dokany adapter rather than APA/PFS or `PhysicalDrive`.
+
+Dokany `ZwCreateFile` receives NT kernel create-disposition values (`FILE_OPEN`, `FILE_CREATE`, `FILE_OPEN_IF`, ...), but the first implementation compared those raw values to Win32 `CreateFileW` constants (`OPEN_EXISTING`, `CREATE_NEW`, ...). `FILE_OPEN == 1` was therefore interpreted as `CREATE_NEW == 1`, causing a normal existing-root open to return `STATUS_OBJECT_NAME_COLLISION` — exactly the Win32-facing `The file exists` error seen in Explorer.
+
+The fix:
+
+- models NT create dispositions explicitly;
+- keeps existing-object `FILE_OPEN` and read-only `FILE_OPEN_IF` successful;
+- keeps create/supersede/overwrite/delete-on-close/write-access requests blocked;
+- adds `--debug` callback logging to the mount frontend;
+- adds a portable `ps2-driveforge-dokany-open-policy-tests` regression.
+
+The corrected code passes **8/8** tests under Windows/MSVC and Linux Clang ASan/UBSan. A second real Explorer smoke test is required before Darkness mount browsing is considered hardware-validated.
+
+Recommended next command:
+
+```powershell
+.\PS2-DriveForge-Mount.exe --physical 3 --mount P: --debug
+```
+
+Expected next checks:
+
+1. `P:\` opens and displays volume information/capacity;
+2. `P:\Partitions` enumerates PFS partitions;
+3. `P:\Partitions\+OPL` displays `CFG`, `THM`, `LNG`, `ART`, `VMC`, `CHT`, `APPS`;
+4. `P:\Partitions\__common\OPL\conf_hdd.cfg` copies through Explorer;
+5. copied SHA-256 equals `E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C`;
+6. file creation, rename, deletion and writes are rejected;
+7. unmount completes cleanly.
+
 ## When to update this document
 
 Update this file whenever a real disk validates or disproves an assumption about:
