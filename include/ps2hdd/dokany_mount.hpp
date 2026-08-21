@@ -22,7 +22,12 @@ public:
     [[nodiscard]] bool start(std::unique_ptr<BlockDevice> source,
                              std::wstring mount_point,
                              bool debug = false);
-    [[nodiscard]] bool request_unmount();
+
+    // Teardown may intentionally issue a best-effort unmount and then join the
+    // worker regardless of the immediate Dokany acknowledgement, so callers that
+    // care about the acknowledgement can inspect the bool while destructors may
+    // safely ignore it.
+    bool request_unmount();
     void wait();
 
     [[nodiscard]] bool is_running() const noexcept;
