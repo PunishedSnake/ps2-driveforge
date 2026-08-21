@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 if(POLICY CMP0144)
     # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
-    # Darkness passes DOKANY_ROOT explicitly in CI, so opt into the policy
+    # Emilia passes DOKANY_ROOT explicitly in CI, so opt into the policy
     # instead of emitting a developer warning on newer CMake releases.
     cmake_policy(SET CMP0144 NEW)
 endif()
 
-project(ps2_driveforge VERSION 0.4.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.5.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Darkness" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Emilia" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
