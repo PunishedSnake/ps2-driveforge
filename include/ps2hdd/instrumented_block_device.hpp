@@ -30,6 +30,10 @@ public:
 
     [[nodiscard]] std::uint64_t size_bytes() const override { return inner_.size_bytes(); }
     [[nodiscard]] std::string display_name() const override { return inner_.display_name(); }
+    [[nodiscard]] StorageCharacteristics storage_characteristics() const noexcept override
+    {
+        return inner_.storage_characteristics();
+    }
 
     bool read(std::uint64_t offset, std::span<std::byte> out) override
     {
