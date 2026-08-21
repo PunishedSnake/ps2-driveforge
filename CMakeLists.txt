@@ -115,6 +115,7 @@ if(PS2DF_BUILD_DOKANY)
     find_package(Dokany REQUIRED)
     add_executable(ps2-driveforge-mount src/mount/dokany_main.cpp)
     set_target_properties(ps2-driveforge-mount PROPERTIES OUTPUT_NAME "PS2-DriveForge-Mount")
+    target_include_directories(ps2-driveforge-mount PRIVATE src/mount)
     target_link_libraries(ps2-driveforge-mount PRIVATE ps2driveforge_host Dokany::Dokany)
     target_compile_features(ps2-driveforge-mount PRIVATE cxx_std_20)
     target_compile_definitions(ps2-driveforge-mount PRIVATE UNICODE _UNICODE)
@@ -163,6 +164,14 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-session-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-session-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-session-tests COMMAND ps2-driveforge-session-tests)
+
+    # This test is deliberately portable even though the policy belongs to the
+    # Dokany frontend. It protects the NT FILE_OPEN/FILE_CREATE numeric contract
+    # under Linux sanitizers as well as MSVC, without requiring Dokany itself.
+    add_executable(ps2-driveforge-dokany-open-policy-tests tests/dokany_open_policy_tests.cpp)
+    target_include_directories(ps2-driveforge-dokany-open-policy-tests PRIVATE src/mount)
+    target_compile_features(ps2-driveforge-dokany-open-policy-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-dokany-open-policy-tests COMMAND ps2-driveforge-dokany-open-policy-tests)
 endif()
 
 if(PS2DF_BUILD_FUZZERS)
