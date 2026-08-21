@@ -1,6 +1,6 @@
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
-#include "ps2hdd/hdl.hpp"
+#include "ps2hdd/hdl_enrichment.hpp"
 #include "ps2hdd/version.hpp"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
 #include "ps2hdd/physical_drive.hpp"
@@ -74,6 +74,16 @@ void print_storage_profile(const ps2hdd::StorageCharacteristics& storage)
     } else {
         std::cout << "unknown\n";
     }
+    std::cout << "  nominal rotation rate:  ";
+    if (storage.rotation_rate_known) {
+        if (storage.nominal_rotation_rate == 1) {
+            std::cout << "non-rotating\n";
+        } else {
+            std::cout << storage.nominal_rotation_rate << " RPM\n";
+        }
+    } else {
+        std::cout << "unknown\n";
+    }
 }
 
 void print_io(std::string_view label, const ps2hdd::SessionStats& stats, std::uint64_t wall_ns)
@@ -112,11 +122,12 @@ void usage()
     std::cout << "PS2 DriveForge " << ps2hdd::version::string << "-dev ("
               << ps2hdd::version::codename << ") performance harness\n\n"
               << "Usage:\n"
-              << "  ps2-driveforge-benchmark <disk-image> [--hdl] [--browse <partition> [path]]\n"
+              << "  ps2-driveforge-benchmark <disk-image> [--hdl] [--hdl-qd N] [--browse <partition> [path]]\n"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
-              << "  ps2-driveforge-benchmark --physical <index> [--hdl] [--browse <partition> [path]]\n"
+              << "  ps2-driveforge-benchmark --physical <index> [--hdl] [--hdl-qd N] [--browse <partition> [path]]\n"
 #endif
-              << "\nThe harness is read-only. Cold and warm metadata workloads are reported separately.\n";
+              << "\nThe harness is read-only. --hdl uses the same scheduler intended for the HDD Manager.\n"
+              << "--hdl-qd is a benchmark/developer override; normal frontends use automatic policy.\n";
 }
 
 struct BrowseTarget {
@@ -141,9 +152,12 @@ bool metadata_workload(ps2hdd::DriveSession& session, const BrowseTarget& target
     return true;
 }
 
-void print_hdl_summary(const ps2hdd::hdl::CatalogResult& catalog)
+void print_hdl_summary(const ps2hdd::hdl::CatalogResult& catalog,
+                       const ps2hdd::HdlEnrichmentPolicy& policy)
 {
-    std::cout << "  games discovered:       " << catalog.entries.size() << '\n'
+    std::cout << "  scheduler max in-flight:" << ' ' << policy.max_in_flight << '\n'
+              << "  physical LBA order:     " << (policy.physical_lba_order ? "yes" : "no") << '\n'
+              << "  games discovered:       " << catalog.entries.size() << '\n'
               << "  readable/unreadable:    " << catalog.readable << '/' << catalog.unreadable << '\n';
     for (const auto& entry : catalog.entries) {
         if (!entry.ok) {
@@ -197,12 +211,32 @@ int main(int argc, char** argv)
     }
 
     bool run_hdl = false;
+    std::size_t hdl_qd_override = 0;
     std::optional<BrowseTarget> target;
     while (arg < argc) {
         const std::string_view option(argv[arg]);
         if (option == "--hdl") {
             run_hdl = true;
             ++arg;
+            continue;
+        }
+        if (option == "--hdl-qd") {
+            if (arg + 1 >= argc) {
+                usage();
+                return 2;
+            }
+            try {
+                hdl_qd_override = static_cast<std::size_t>(std::stoul(argv[arg + 1]));
+            } catch (...) {
+                std::cerr << "Invalid --hdl-qd value.\n";
+                return 2;
+            }
+            if (hdl_qd_override == 0) {
+                std::cerr << "--hdl-qd must be at least 1.\n";
+                return 2;
+            }
+            run_hdl = true;
+            arg += 2;
             continue;
         }
         if (option == "--browse") {
@@ -253,18 +287,16 @@ int main(int argc, char** argv)
     if (run_hdl) {
         session.clear_caches();
         session.reset_stats();
-        const auto hdl_cold_started = Clock::now();
-        const auto hdl_cold = ps2hdd::hdl::read_catalog(session.device(), session.scan_result());
-        const auto hdl_cold_wall = elapsed_ns(hdl_cold_started);
-        print_io("cold native HDL metadata enrichment", session.stats(), hdl_cold_wall);
-        print_hdl_summary(hdl_cold);
-
-        session.reset_stats();
-        const auto hdl_warm_started = Clock::now();
-        const auto hdl_warm = ps2hdd::hdl::read_catalog(session.device(), session.scan_result());
-        const auto hdl_warm_wall = elapsed_ns(hdl_warm_started);
-        print_io("warm native HDL metadata enrichment", session.stats(), hdl_warm_wall);
-        print_hdl_summary(hdl_warm);
+        ps2hdd::HdlEnrichmentOptions options;
+        options.max_in_flight_override = hdl_qd_override;
+        const auto policy = ps2hdd::choose_hdl_enrichment_policy(
+            session.device().storage_characteristics(), catalog.hdl_partitions, options);
+        const auto hdl_started = Clock::now();
+        const auto hdl_catalog = ps2hdd::enrich_hdl_catalog(
+            session.device(), session.scan_result(), {}, {}, options);
+        const auto hdl_wall = elapsed_ns(hdl_started);
+        print_io("native scheduled HDL metadata enrichment", session.stats(), hdl_wall);
+        print_hdl_summary(hdl_catalog, policy);
     }
 
     if (!target) {
