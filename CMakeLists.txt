@@ -4,6 +4,7 @@ project(ps2_driveforge VERSION 0.3.0 LANGUAGES CXX)
 
 set(PS2DF_CODENAME "Chisato" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
+option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
 configure_file(
@@ -114,4 +115,20 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-corruption-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-corruption-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-corruption-tests COMMAND ps2-driveforge-corruption-tests)
+
+    add_executable(ps2-driveforge-session-tests tests/session_tests.cpp)
+    target_link_libraries(ps2-driveforge-session-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-session-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-session-tests COMMAND ps2-driveforge-session-tests)
+endif()
+
+if(PS2DF_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "PS2DF_BUILD_FUZZERS requires Clang/libFuzzer")
+    endif()
+    add_executable(ps2-driveforge-fuzz-apa fuzz/apa_fuzzer.cpp)
+    target_link_libraries(ps2-driveforge-fuzz-apa PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-fuzz-apa PRIVATE cxx_std_20)
+    target_compile_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+    target_link_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
