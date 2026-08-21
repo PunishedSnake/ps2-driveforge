@@ -18,7 +18,13 @@
 - Added explicit dark colours for the client area, TreeView, ListView/header and status bar, plus documented Windows 11 DWM dark-titlebar support.
 - Added best-effort dynamically resolved UxTheme dark-menu/common-control support with a safe fallback if internal exports are unavailable.
 - Removed the white class-background brush and paint the active palette in `WM_ERASEBKGND` to avoid bright flashes during dark-mode startup/resizing.
-- Windows/MSVC + Dokany and Linux Clang ASan/UBSan CI remain green after the initial Darkness mount/theme work; Darkness still awaits real-HDD Explorer validation.
+- Hardware-validated dynamic System/Light/Dark switching on Windows 11.
+- The first real Dokany mount correctly created `P:` for `PhysicalDrive3`, but Explorer initially failed opening the root with `The file exists`.
+- Fixed that root-open failure by separating Dokany/NT `FILE_OPEN`/`FILE_CREATE` disposition semantics from Win32 `OPEN_EXISTING`/`CREATE_NEW`; the numeric value `1` has different meanings in those APIs.
+- Added a portable `ps2-driveforge-dokany-open-policy-tests` regression that explicitly covers existing-root `FILE_OPEN`, create collisions, missing-object opens, overwrite/create rejection, type mismatches and delete-on-close.
+- Added `--debug` to `PS2-DriveForge-Mount.exe` for callback/path/disposition diagnostics during real-machine Explorer testing.
+- Expanded the normal regression matrix from seven to eight test executables; Windows/MSVC + Dokany and Linux Clang ASan/UBSan both pass 8/8 after the root-open fix.
+- Darkness still awaits the second real-HDD Explorer mount smoke test and full browse/copy/write-rejection/unmount validation.
 
 ## 0.3.0-dev "Chisato" - 2026-08-21
 
