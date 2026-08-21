@@ -58,6 +58,7 @@ add_library(ps2driveforge_host
     src/host/pfs_export.cpp
     src/host/drive_session.cpp
     src/host/mount_view.cpp
+    src/host/hdl_enrichment.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -200,6 +201,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-partition-catalog-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-partition-catalog-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-partition-catalog-tests COMMAND ps2-driveforge-partition-catalog-tests)
+
+    add_executable(ps2-driveforge-hdl-enrichment-tests tests/hdl_enrichment_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-enrichment-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-hdl-enrichment-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-enrichment-tests COMMAND ps2-driveforge-hdl-enrichment-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
