@@ -89,7 +89,11 @@
                     </InfoBar.ActionButton>
                 </InfoBar>
 
-                <ScrollViewer x:Name="HddPage" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer x:Name="HddPage" Grid.Row="1"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              HorizontalScrollMode="Disabled"
+                              HorizontalContentAlignment="Stretch">
                     <Grid x:Name="HddContent" Padding="24,20,24,28" MaxWidth="1560" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
