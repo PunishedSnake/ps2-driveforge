@@ -88,7 +88,7 @@ private:
     void on_open_legacy(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_telemetry_tick(IInspectable const&, IInspectable const&);
     void on_mount_tick(IInspectable const&, IInspectable const&);
-    void on_closed(Microsoft::UI::Xaml::Window const&, Microsoft::UI::Xaml::WindowEventArgs const&);
+    void on_closed(IInspectable const&, Microsoft::UI::Xaml::WindowEventArgs const&);
 
     ps2df::winui::NativeSessionController controller_;
     ps2df::winui::SessionSnapshot snapshot_;
