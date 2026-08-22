@@ -76,7 +76,9 @@ app\winui\
 
 instead of placing hundreds of Windows App SDK files next to the root launcher. This is an implementation directory; normal users should not need to open it.
 
-The final public deployment model may move from the current self-contained RC payload to an official Windows App Runtime prerequisite/framework-dependent deployment after the Windows App SDK 2.3.x package-license review. See [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+The **private RC5** payload is built with Windows App SDK 2.3.1 and resolves WinUI 2.3.0. Microsoft has identified that WinUI package as affected by an incorrect Engineering Preview license and instructs affected publishers to update to Windows App SDK **2.4.0**, which resolves WinUI 2.3.6, before publishing. The next public candidate must therefore bump the dependency and repeat WinUI/package/real-machine startup validation. See [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
+
+Whether the final public build remains self-contained or moves to the official Windows App Runtime prerequisite model is a deployment/UX decision made after that dependency bump; either way the runtime details remain below the user-facing launcher rather than cluttering the root directory.
 
 ## Startup log
 
