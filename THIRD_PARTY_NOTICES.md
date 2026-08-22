@@ -29,31 +29,37 @@ Upstream license files:
 - https://github.com/dokan-dev/dokany/blob/v2.3.1.1000/license.lgpl.txt
 - https://github.com/dokan-dev/dokany/blob/v2.3.1.1000/license.mit.txt
 
-A public DriveForge release must preserve the applicable Dokany notices/license material in the distributed package.
+The exact upstream MIT notice is also preserved at `third_party/licenses/dokany/license.mit.txt`. DriveForge deliberately does not hand-transcribe/reformat Dokany's LGPL text; public packaging must preserve the applicable upstream license material from the official dependency package/source.
 
 ## Microsoft Windows App SDK / WinUI / C++/WinRT
 
-The Emilia WinUI frontend is built with Microsoft Windows App SDK, WinUI 3 and C++/WinRT packages. The source repositories include MIT-licensed components, while binary/NuGet redistribution is governed by the license terms shipped with the relevant Microsoft packages.
+The Emilia WinUI frontend is built with Microsoft Windows App SDK, WinUI 3 and C++/WinRT packages. The Windows App SDK source repository is MIT-licensed, while redistributed binary/NuGet payloads remain subject to the terms shipped with the relevant Microsoft packages.
 
 Main upstream project:
 
 https://github.com/microsoft/WindowsAppSDK
 
-The current development configuration resolves Windows App SDK **2.3.1** and WinUI package **2.3.0** plus their component dependencies.
+### RC5 dependency state
 
-### 2.3.x redistribution review
+The private RC5 test build resolves:
 
-As of August 2026, Microsoft has an open Windows App SDK issue reporting that the stable WinUI 2.3.x NuGet package contains an "Engineering Preview" `license.txt` whose wording conflicts with normal redistribution of the self-contained payload:
+- `Microsoft.WindowsAppSDK` **2.3.1**;
+- transitive `Microsoft.WindowsAppSDK.WinUI` **2.3.0**;
+- the matching component dependencies used by the native self-contained build.
 
-https://github.com/microsoft/WindowsAppSDK/issues/6654
+Microsoft confirmed in issue #6654 that WinUI package versions **2.3.0** and **2.3.2** (among several others) were affected by the incorrect Engineering Preview license. The maintainer explicitly states that the problem is fixed in **Windows App SDK 2.4.0**, which resolves `Microsoft.WindowsAppSDK.WinUI` **2.3.6**, and tells affected applications to update to Windows App SDK 2.4.0 before publishing.
 
-Because DriveForge currently builds a self-contained WinUI test payload, **public 0.5 release sign-off must not assume that this mismatch is harmless**. Before publishing the self-contained runtime, the project must do one of the following:
+Upstream resolution:
 
-1. use Microsoft package/runtime terms that clearly permit the files being redistributed;
-2. switch the public build to the official Windows App Runtime prerequisite/framework-dependent deployment model; or
-3. use a Windows App SDK version whose package terms unambiguously cover the chosen deployment.
+https://github.com/microsoft/WindowsAppSDK/issues/6654#issuecomment-5287791268
 
-Internal/private RC hardware testing can continue while this is resolved, but the license review is a release gate.
+Therefore:
+
+- RC5 remains suitable as a **private hardware/UI validation candidate**;
+- DriveForge **must not publish the RC5 2.3.1/WinUI 2.3.0 self-contained payload as the final public 0.5 build**;
+- the public release candidate/final build must move to Windows App SDK **2.4.0 or later with an unaffected resolved WinUI package**, then repeat WinUI, package and real-machine startup validation.
+
+This is no longer an ambiguous legal-review item; upstream supplied a concrete upgrade path.
 
 ## Microsoft WebView2 / Windows SDK build components
 
