@@ -72,21 +72,21 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Freeze RC1 archive name
+      - name: Freeze RC2 archive name
         shell: pwsh
         run: |
           $source = '.\dist\PS2-DriveForge-0.5.0-Emilia-Release-windows-x64.zip'
-          $target = '.\dist\PS2-DriveForge-0.5.0-rc1-Emilia-windows-x64.zip'
+          $target = '.\dist\PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64.zip'
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "Canonical Emilia ZIP was not produced: $source"
           }
           Copy-Item -LiteralPath $source -Destination $target -Force
-          Write-Host "RC1 package: $target"
+          Write-Host "RC2 package: $target"
           Write-Host "SHA-256: $((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc1-Emilia-windows-x64
-          path: dist/PS2-DriveForge-0.5.0-rc1-Emilia-windows-x64.zip
+          name: PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64
+          path: dist/PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64.zip
           if-no-files-found: error
