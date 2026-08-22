@@ -1,0 +1,90 @@
+name: Windows x64 — Emilia WinUI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/winui/**'
+      - 'src/core/**'
+      - 'src/host/**'
+      - 'src/platform/windows/**'
+      - 'include/ps2hdd/**'
+      - 'CMakeLists.txt'
+      - 'build-windows.ps1'
+      - '.github/workflows/winui-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-winui:
+    name: WinUI 3 + native backend / x64 Release
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build native DriveForge libraries
+        shell: pwsh
+        run: |
+          cmake -S . -B .\build\windows-x64 -G 'Visual Studio 17 2022' -A x64 `
+            -DPS2DF_BUILD_TESTS=OFF `
+            -DPS2DF_BUILD_DOKANY=OFF
+          if ($LASTEXITCODE -ne 0) { throw "Native CMake configure failed with exit code $LASTEXITCODE" }
+          cmake --build .\build\windows-x64 --config Release --target ps2driveforge_host --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Native backend build failed with exit code $LASTEXITCODE" }
+
+      - name: Restore native WinUI packages
+        shell: pwsh
+        run: |
+          $packages = Join-Path $PWD 'src\winui\packages'
+          New-Item -ItemType Directory -Force -Path $packages | Out-Null
+          nuget install Microsoft.WindowsAppSDK -Version 2.3.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw "Windows App SDK restore failed with exit code $LASTEXITCODE" }
+          nuget install Microsoft.Windows.CppWinRT -Version 3.0.260715.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw "C++/WinRT restore failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path (Join-Path $packages 'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654'))) {
+            throw 'Expected Microsoft.Windows.SDK.BuildTools 10.0.26100.4654 dependency was not restored.'
+          }
+
+      - name: Build WinUI frontend
+        shell: pwsh
+        run: |
+          msbuild .\src\winui\PS2DriveForge.WinUI.vcxproj `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { throw "WinUI MSBuild failed with exit code $LASTEXITCODE" }
+
+      - name: Verify self-contained frontend output
+        shell: pwsh
+        run: |
+          $outputRoot = Join-Path $PWD 'src\winui\x64\Release'
+          $candidates = @(
+            Get-ChildItem $outputRoot -Recurse -File -Filter 'PS2-DriveForge-WinUI.exe' |
+              Sort-Object FullName
+          )
+          if ($candidates.Count -ne 1) {
+            Get-ChildItem .\src\winui -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw "Expected exactly one PS2-DriveForge-WinUI.exe below $outputRoot, found $($candidates.Count)."
+          }
+          $exe = $candidates[0]
+          $payload = Split-Path -Parent $exe.FullName
+          $files = @(Get-ChildItem $payload -Recurse -File)
+          if ($files.Count -lt 2) {
+            throw 'Self-contained WinUI output did not contain runtime payload files.'
+          }
+          Write-Host "WinUI frontend: $($exe.FullName)"
+          Write-Host "WinUI payload: $payload"
+          Write-Host "Runtime payload files: $($files.Count)"
+
+      - name: Upload WinUI development artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PS2-DriveForge-0.5.0-Emilia-WinUI-x64
+          path: src/winui/x64/Release/**
+          if-no-files-found: error

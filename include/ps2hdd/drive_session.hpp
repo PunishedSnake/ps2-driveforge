@@ -3,17 +3,22 @@
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/block_device.hpp"
 #include "ps2hdd/instrumented_block_device.hpp"
+#include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_export.hpp"
+#include "ps2hdd/read_ahead_block_device.hpp"
+#include "ps2hdd/read_cache_block_device.hpp"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace ps2hdd {
@@ -53,13 +58,33 @@ struct ReadResult {
     std::size_t bytes_read{};
 };
 
+struct SessionCacheStats {
+    std::uint64_t probe_hits{};
+    std::uint64_t probe_misses{};
+    std::uint64_t browse_hits{};
+    std::uint64_t browse_misses{};
+    std::uint64_t stat_hits{};
+    std::uint64_t stat_misses{};
+    std::uint64_t node_hits{};
+    std::uint64_t node_misses{};
+    std::uint64_t evictions{};
+};
+
 struct SessionStats {
     BlockIoStats backing_io{};
+    ReadAheadStats read_ahead{};
+    ReadCacheStats read_cache{};
+    SessionCacheStats cache{};
     std::uint64_t apa_scans{};
     std::uint64_t browse_operations{};
     std::uint64_t stat_operations{};
     std::uint64_t read_operations{};
     std::uint64_t export_operations{};
+    std::uint64_t scan_time_ns{};
+    std::uint64_t browse_time_ns{};
+    std::uint64_t stat_time_ns{};
+    std::uint64_t read_time_ns{};
+    std::uint64_t export_time_ns{};
 };
 
 // One opened source plus the reusable operations frontends need. DriveSession
@@ -67,9 +92,10 @@ struct SessionStats {
 // CLI command, and Dokany callbacks can resolve independent paths against the
 // same validated APA scan.
 //
-// Darkness calls stat/read/browse concurrently from Dokany worker threads. The
-// format readers remain per-call objects while the shared backing device handles
-// serialization where required; operation counters therefore use atomics.
+// Emilia keeps immutable metadata results across calls because every current
+// source is read-only. The pipeline is parser -> 4 KiB metadata cache -> adaptive
+// sequential read-ahead -> backing instrumentation -> actual device. Backing
+// counters therefore continue to represent real image/HDD I/O after both caches.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -78,8 +104,12 @@ public:
     DriveSession& operator=(const DriveSession&) = delete;
 
     [[nodiscard]] bool is_open() const noexcept { return source_ != nullptr; }
-    [[nodiscard]] BlockDevice& device() noexcept { return instrumented_; }
+    [[nodiscard]] BlockDevice& device() noexcept { return read_cache_; }
     [[nodiscard]] const apa::ScanResult& scan_result() const noexcept { return scan_; }
+    [[nodiscard]] PartitionCatalog partition_catalog(bool include_sub_partitions = true) const
+    {
+        return build_partition_catalog(scan_, include_sub_partitions);
+    }
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
     bool scan();
@@ -95,17 +125,48 @@ public:
 
     [[nodiscard]] SessionStats stats() const noexcept;
     void reset_stats() noexcept;
+    void clear_caches();
 
 private:
+    static constexpr std::size_t kMaxProbeCacheEntries = 256;
+    static constexpr std::size_t kMaxBrowseCacheEntries = 1024;
+    static constexpr std::size_t kMaxStatCacheEntries = 8192;
+    static constexpr std::size_t kMaxNodeCacheEntries = 8192;
+
+    [[nodiscard]] pfs::ProbeResult probe_for(std::string_view partition, ApaVolume& volume);
+
     std::unique_ptr<BlockDevice> source_;
     InstrumentedBlockDevice instrumented_;
+    ReadAheadBlockDevice read_ahead_;
+    ReadCacheBlockDevice read_cache_;
     apa::ScanResult scan_{};
     std::string last_error_;
+
+    mutable std::shared_mutex cache_mutex_;
+    std::unordered_map<std::string, pfs::ProbeResult> probe_cache_;
+    std::unordered_map<std::string, BrowseResult> browse_cache_;
+    std::unordered_map<std::string, StatResult> stat_cache_;
+    std::unordered_map<std::string, pfs::Node> node_cache_;
+
     std::atomic<std::uint64_t> apa_scans_{};
     std::atomic<std::uint64_t> browse_operations_{};
     std::atomic<std::uint64_t> stat_operations_{};
     std::atomic<std::uint64_t> read_operations_{};
     std::atomic<std::uint64_t> export_operations_{};
+    std::atomic<std::uint64_t> scan_time_ns_{};
+    std::atomic<std::uint64_t> browse_time_ns_{};
+    std::atomic<std::uint64_t> stat_time_ns_{};
+    std::atomic<std::uint64_t> read_time_ns_{};
+    std::atomic<std::uint64_t> export_time_ns_{};
+    std::atomic<std::uint64_t> probe_cache_hits_{};
+    std::atomic<std::uint64_t> probe_cache_misses_{};
+    std::atomic<std::uint64_t> browse_cache_hits_{};
+    std::atomic<std::uint64_t> browse_cache_misses_{};
+    std::atomic<std::uint64_t> stat_cache_hits_{};
+    std::atomic<std::uint64_t> stat_cache_misses_{};
+    std::atomic<std::uint64_t> node_cache_hits_{};
+    std::atomic<std::uint64_t> node_cache_misses_{};
+    std::atomic<std::uint64_t> cache_evictions_{};
 };
 
 } // namespace ps2hdd

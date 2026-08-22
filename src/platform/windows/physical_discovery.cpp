@@ -142,6 +142,7 @@ std::vector<PhysicalDriveProbe> discover_physical_drives(unsigned max_index)
 
         probe.opened = true;
         probe.size_bytes = drive.size_bytes();
+        probe.storage = drive.storage_characteristics();
 
         apa::Reader reader(drive);
         const auto scan = reader.scan();

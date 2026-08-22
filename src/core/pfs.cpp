@@ -282,7 +282,7 @@ std::optional<SegmentDescriptor> Reader::read_segment_descriptor(BlockInfo locat
         return std::nullopt;
     }
     if (segment_checksum(descriptor) != descriptor.checksum) {
-        fail("PFS SEGI checksum mismatch");
+        fail("PFS indirect descriptor checksum mismatch");
         return std::nullopt;
     }
     return descriptor;
@@ -374,19 +374,26 @@ bool Reader::read(const Node& node, std::uint64_t offset, std::span<std::byte> o
         return true;
     }
 
+    struct DataRun {
+        BlockInfo block{};
+        std::uint64_t logical_start{};
+        std::uint64_t logical_bytes{};
+    };
+
+    const std::uint64_t request_end = offset + out.size();
+    std::vector<DataRun> runs;
     std::uint64_t logical = 0;
-    std::uint64_t request_position = offset;
-    std::size_t written = 0;
     std::optional<SegmentDescriptor> indirect;
     BlockInfo next_segment = node.inode.next_segment;
     std::size_t segi_loaded = 0;
 
-    // number_data is a global descriptor count. Index 0 is the primary SEGD
-    // descriptor itself. At global index 114 (then every 123 entries) PFS stores
-    // an indirect SEGI descriptor; that descriptor's data[0] describes itself and
-    // must be skipped as file payload. This odd 123-slot layout is protected by
-    // pfs_segi_tests.cpp and documented in docs/pfs-format-notes.md.
-    for (std::size_t global = 1; global < node.inode.number_data && written < out.size(); ++global) {
+    // First walk only as far as this request needs. Adjacent PFS payload
+    // descriptors in the same APA subpart are collapsed into a single logical
+    // run. This removes artificial host-I/O boundaries created by inode metadata
+    // without ever crossing an APA main/sub boundary or a physical zone gap.
+    for (std::size_t global = 1;
+         global < node.inode.number_data && logical < request_end;
+         ++global) {
         BlockInfo block{};
 
         if (global < kInodeMaxBlocks) {
@@ -416,21 +423,57 @@ bool Reader::read(const Node& node, std::uint64_t offset, std::span<std::byte> o
         }
         const std::uint64_t segment_size =
             static_cast<std::uint64_t>(block.count) * probe_.super.zone_size;
-        if (request_position >= logical + segment_size) {
-            logical += segment_size;
+        if (logical > std::numeric_limits<std::uint64_t>::max() - segment_size) {
+            fail("PFS logical file extent overflows");
+            return false;
+        }
+        const std::uint64_t segment_end = logical + segment_size;
+
+        if (segment_end > offset && logical < request_end) {
+            bool merged = false;
+            if (!runs.empty()) {
+                auto& previous = runs.back();
+                const std::uint64_t expected_zone =
+                    static_cast<std::uint64_t>(previous.block.number) + previous.block.count;
+                const std::uint64_t combined_count =
+                    static_cast<std::uint64_t>(previous.block.count) + block.count;
+                if (previous.block.subpart == block.subpart &&
+                    expected_zone == block.number &&
+                    previous.logical_start + previous.logical_bytes == logical &&
+                    combined_count <= std::numeric_limits<std::uint16_t>::max()) {
+                    previous.block.count = static_cast<std::uint16_t>(combined_count);
+                    previous.logical_bytes += segment_size;
+                    merged = true;
+                }
+            }
+            if (!merged) {
+                runs.push_back({block, logical, segment_size});
+            }
+        }
+        logical = segment_end;
+    }
+
+    std::uint64_t request_position = offset;
+    std::size_t written = 0;
+    for (const auto& run : runs) {
+        if (written == out.size()) {
+            break;
+        }
+        const std::uint64_t run_end = run.logical_start + run.logical_bytes;
+        if (request_position >= run_end) {
             continue;
         }
 
-        const std::uint64_t within = request_position > logical ? request_position - logical : 0;
-        const std::uint64_t available = segment_size - within;
+        const std::uint64_t within =
+            request_position > run.logical_start ? request_position - run.logical_start : 0;
+        const std::uint64_t available = run.logical_bytes - within;
         const std::size_t take = static_cast<std::size_t>(
             std::min<std::uint64_t>(available, out.size() - written));
-        if (!read_zone_bytes(block, within, out.subspan(written, take))) {
+        if (!read_zone_bytes(run.block, within, out.subspan(written, take))) {
             return false;
         }
         written += take;
         request_position += take;
-        logical += segment_size;
     }
 
     if (written != out.size()) {

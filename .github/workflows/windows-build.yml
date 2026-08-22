@@ -1,4 +1,4 @@
-name: Windows x64 — Darkness
+name: Windows x64 — Emilia
 
 on:
   workflow_dispatch:
@@ -11,12 +11,15 @@ permissions:
 
 jobs:
   build-windows:
-    name: MSVC x64 / Release + Dokany
+    name: MSVC x64 / Release + WinUI + Dokany
     runs-on: windows-2022
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up MSBuild for WinUI
+        uses: microsoft/setup-msbuild@v2
 
       - name: Install Dokany 2.3.1 SDK/runtime
         shell: pwsh
@@ -61,13 +64,22 @@ jobs:
           Write-Host "Dokany library: $($library.FullName)"
           "root=$($root.FullName)" >> $env:GITHUB_OUTPUT
 
-      - name: Build, test and package
+      - name: Build, test and package complete Emilia payload
         shell: pwsh
         run: .\build-windows.ps1 -Configuration Release -Clean -WithDokany -DokanyRoot '${{ steps.dokany.outputs.root }}'
+
+      - name: Verify WinUI is inside canonical package staging
+        shell: pwsh
+        run: |
+          $exe = '.\dist\windows-x64\WinUI\PS2-DriveForge-WinUI.exe'
+          if (-not (Test-Path $exe)) {
+            Get-ChildItem .\dist\windows-x64 -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw 'Canonical Emilia staging does not contain the WinUI frontend.'
+          }
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.4.0-Darkness-windows-x64
-          path: dist/PS2-DriveForge-0.4.0-Darkness-Release-windows-x64.zip
+          name: PS2-DriveForge-0.5.0-Emilia-windows-x64
+          path: dist/PS2-DriveForge-0.5.0-Emilia-Release-windows-x64.zip
           if-no-files-found: error

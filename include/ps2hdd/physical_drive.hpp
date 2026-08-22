@@ -8,7 +8,6 @@
 #endif
 #include <windows.h>
 
-#include <mutex>
 #include <string>
 
 namespace ps2hdd {
@@ -26,6 +25,10 @@ public:
     [[nodiscard]] unsigned index() const noexcept;
     [[nodiscard]] std::uint64_t size_bytes() const override;
     [[nodiscard]] std::string display_name() const override;
+    [[nodiscard]] StorageCharacteristics storage_characteristics() const noexcept override
+    {
+        return characteristics_;
+    }
     bool read(std::uint64_t offset, std::span<std::byte> out) override;
 
 private:
@@ -33,7 +36,7 @@ private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
     DWORD open_error_{ERROR_SUCCESS};
     std::uint64_t size_{};
-    mutable std::mutex mutex_;
+    StorageCharacteristics characteristics_{};
 };
 
 } // namespace ps2hdd

@@ -199,12 +199,71 @@ void session_roundtrip()
     check(stats.read_operations == 1, "session read counter");
     check(stats.export_operations == 1, "session export counter");
     check(stats.backing_io.read_calls > 0, "backing I/O calls are instrumented");
+    check(stats.backing_io.small_read_calls > 0, "small backing reads are classified");
+    check(stats.backing_io.max_in_flight >= 1, "backing I/O concurrency is instrumented");
 
     session.reset_stats();
     const auto reset = session.stats();
     check(reset.backing_io.read_calls == 0 && reset.apa_scans == 0 && reset.browse_operations == 0 &&
-              reset.stat_operations == 0 && reset.read_operations == 0,
+              reset.stat_operations == 0 && reset.read_operations == 0 && reset.cache.browse_hits == 0,
           "session statistics reset");
+}
+
+void cache_roundtrip()
+{
+    ps2hdd::DriveSession session(fixture());
+    check(session.scan(), "cache fixture scan succeeds");
+
+    const auto cold_browse = session.browse("+TEST", "/");
+    check(cold_browse.ok && cold_browse.entries.size() == 1, "cold browse succeeds");
+    const auto cold_stat = session.stat("+TEST", kFileName);
+    check(cold_stat.ok, "cold stat succeeds");
+    check(session.stats().backing_io.read_calls > 0, "cold metadata workload performs backing reads");
+
+    // reset_stats deliberately keeps immutable session caches warm. The second
+    // identical Explorer-style metadata workload must therefore be satisfied
+    // without touching the backing BlockDevice at all.
+    session.reset_stats();
+    const auto warm_browse = session.browse("+TEST", "/");
+    const auto warm_stat = session.stat("+TEST", kFileName);
+    check(warm_browse.ok && warm_stat.ok, "warm metadata workload succeeds");
+    const auto warm = session.stats();
+    check(warm.backing_io.read_calls == 0, "warm browse/stat performs zero backing reads");
+    check(warm.cache.browse_hits == 1 && warm.cache.browse_misses == 0,
+          "warm browse is served from browse cache");
+    check(warm.cache.stat_hits == 1 && warm.cache.stat_misses == 0,
+          "warm stat is served from stat cache");
+
+    // With probe + node caches warm, a small random file read should issue only
+    // the actual payload-sector read. Before Emilia this also reread both PFS
+    // superblocks and walked metadata again for every Dokany ReadFile callback.
+    session.reset_stats();
+    std::array<std::byte, 5> payload{};
+    const auto warm_read = session.read_file("+TEST", kFileName, 5, payload);
+    check(warm_read.ok && warm_read.bytes_read == payload.size(), "warm cached read succeeds");
+    check(std::string(reinterpret_cast<const char*>(payload.data()), payload.size()) ==
+              kFileData.substr(5, payload.size()),
+          "warm cached read returns correct payload");
+    const auto read_stats = session.stats();
+    check(read_stats.backing_io.read_calls == 1,
+          "warm small read performs only one payload backing read");
+    check(read_stats.cache.probe_hits == 1 && read_stats.cache.probe_misses == 0,
+          "warm read reuses validated PFS probe");
+    check(read_stats.cache.node_hits == 1 && read_stats.cache.node_misses == 0,
+          "warm read reuses cached file inode");
+
+    // clear_caches is the explicit cold-cache benchmark boundary. After it, the
+    // same operation must perform real metadata reads again rather than retaining
+    // hidden process-global state.
+    session.clear_caches();
+    session.reset_stats();
+    const auto recold = session.stat("+TEST", kFileName);
+    check(recold.ok, "stat succeeds after cache clear");
+    const auto cold_again = session.stats();
+    check(cold_again.backing_io.read_calls > 1, "cache clear restores metadata/probe I/O");
+    check(cold_again.cache.probe_misses == 1 && cold_again.cache.stat_misses == 1 &&
+              cold_again.cache.node_misses == 1,
+          "cache clear restores probe and metadata misses");
 }
 
 void mount_view_roundtrip()
@@ -245,8 +304,9 @@ int main()
 {
     try {
         session_roundtrip();
+        cache_roundtrip();
         mount_view_roundtrip();
-        std::cout << "DriveSession / Darkness mount-view tests passed.\n";
+        std::cout << "DriveSession / Emilia cache / mount-view tests passed.\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Test failure: " << e.what() << '\n';

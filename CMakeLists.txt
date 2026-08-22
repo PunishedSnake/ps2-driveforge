@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 if(POLICY CMP0144)
     # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
-    # Darkness passes DOKANY_ROOT explicitly in CI, so opt into the policy
+    # Emilia passes DOKANY_ROOT explicitly in CI, so opt into the policy
     # instead of emitting a developer warning on newer CMake releases.
     cmake_policy(SET CMP0144 NEW)
 endif()
 
-project(ps2_driveforge VERSION 0.4.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.5.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Darkness" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Emilia" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
@@ -58,6 +58,7 @@ add_library(ps2driveforge_host
     src/host/pfs_export.cpp
     src/host/drive_session.cpp
     src/host/mount_view.cpp
+    src/host/hdl_enrichment.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -80,6 +81,10 @@ endif()
 add_executable(ps2-driveforge-inspect src/cli/main.cpp)
 target_link_libraries(ps2-driveforge-inspect PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
+
+add_executable(ps2-driveforge-benchmark src/cli/benchmark.cpp)
+target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
+target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
 
 if(WIN32)
     add_executable(ps2-driveforge-gui WIN32
@@ -181,6 +186,31 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-session-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-session-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-session-tests COMMAND ps2-driveforge-session-tests)
+
+    add_executable(ps2-driveforge-read-cache-tests tests/read_cache_tests.cpp)
+    target_link_libraries(ps2-driveforge-read-cache-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-read-cache-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-read-cache-tests COMMAND ps2-driveforge-read-cache-tests)
+
+    add_executable(ps2-driveforge-read-ahead-tests tests/read_ahead_tests.cpp)
+    target_link_libraries(ps2-driveforge-read-ahead-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-read-ahead-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-read-ahead-tests COMMAND ps2-driveforge-read-ahead-tests)
+
+    add_executable(ps2-driveforge-partition-catalog-tests tests/partition_catalog_tests.cpp)
+    target_link_libraries(ps2-driveforge-partition-catalog-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-partition-catalog-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-partition-catalog-tests COMMAND ps2-driveforge-partition-catalog-tests)
+
+    add_executable(ps2-driveforge-hdl-enrichment-tests tests/hdl_enrichment_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-enrichment-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-hdl-enrichment-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-enrichment-tests COMMAND ps2-driveforge-hdl-enrichment-tests)
+
+    add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
+    target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-storage-profile-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-storage-profile-tests COMMAND ps2-driveforge-storage-profile-tests)
 
     # This test is deliberately portable even though the policy belongs to the
     # Dokany frontend. It protects the NT FILE_OPEN/FILE_CREATE numeric contract

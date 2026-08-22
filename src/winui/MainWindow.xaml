@@ -1,0 +1,369 @@
+<Window
+    x:Class="PS2DriveForge.WinUI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:PS2DriveForge.WinUI"
+    Title="PS2 DriveForge — Emilia">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt"/>
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="30"/>
+        </Grid.RowDefinitions>
+
+        <!-- Native custom title bar. Keep the right side sparse so Windows caption buttons remain unobstructed. -->
+        <Grid x:Name="TitleBarDragRegion" Grid.Row="0" Padding="16,0,148,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Grid Width="28" Height="28">
+                    <Border Background="{ThemeResource AccentFillColorDefaultBrush}" CornerRadius="7"/>
+                    <FontIcon Glyph="&#xE7F8;" FontSize="15" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                    <TextBlock Text="PS2 DriveForge" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <Border Background="{ThemeResource AccentFillColorTertiaryBrush}" CornerRadius="6" Padding="7,2">
+                        <TextBlock Text="Emilia 0.5" FontSize="10" FontWeight="SemiBold"/>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+
+            <Border Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{ThemeResource SystemFillColorCautionBackgroundBrush}" CornerRadius="12" Padding="9,3">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                    <FontIcon Glyph="&#xE72E;" FontSize="10" Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
+                    <TextBlock Text="READ ONLY" FontSize="10" FontWeight="SemiBold"
+                               Foreground="{ThemeResource SystemFillColorCautionBrush}"/>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <Button x:Name="OpenImageButton" Style="{StaticResource DriveForgeIconButtonStyle}"
+                        ToolTipService.ToolTip="Open disk image">
+                    <FontIcon Glyph="&#xE8E5;" FontSize="15"/>
+                </Button>
+                <Button x:Name="RescanButton" Style="{StaticResource DriveForgeIconButtonStyle}"
+                        ToolTipService.ToolTip="Rescan PS2 drives">
+                    <FontIcon Glyph="&#xE72C;" FontSize="15"/>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <NavigationView x:Name="Navigation" Grid.Row="1"
+                        Background="Transparent"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="True"
+                        PaneDisplayMode="Left"
+                        IsPaneOpen="True"
+                        OpenPaneLength="220"
+                        CompactPaneLength="52"
+                        IsPaneToggleButtonVisible="True">
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="HDD Manager" Tag="drive" IsSelected="True">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE7F8;"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Files" Tag="files">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE8B7;"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Mount" Tag="mount">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xEDA2;"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Performance" Tag="performance">
+                    <NavigationViewItem.Icon><FontIcon Glyph="&#xE9D9;"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <Grid Padding="26,20,26,28" MaxWidth="1560" HorizontalAlignment="Stretch">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Page heading -->
+                    <Grid Grid.Row="0" Margin="0,0,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="HDD Manager" Style="{ThemeResource TitleTextBlockStyle}"/>
+                            <TextBlock Text="The APA catalog appears immediately. Optional game metadata fills in progressively."
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Button x:Name="MountButton" Content="Mount read-only" Style="{StaticResource DriveForgeToolbarButtonStyle}"/>
+                            <Button x:Name="OpenExplorerButton" Content="Open in Explorer" Style="{StaticResource DriveForgeToolbarButtonStyle}"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Source and headline metrics -->
+                    <Grid Grid.Row="1" ColumnSpacing="12" Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.25*"/>
+                            <ColumnDefinition Width="1*"/>
+                            <ColumnDefinition Width="1*"/>
+                            <ColumnDefinition Width="1*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource DriveForgeCardStyle}">
+                            <Grid ColumnSpacing="14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Width="42" Height="42" CornerRadius="10"
+                                        Background="{ThemeResource AccentFillColorTertiaryBrush}" VerticalAlignment="Center">
+                                    <FontIcon Glyph="&#xEDA2;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
+                                    <TextBlock Text="Source" Style="{StaticResource DriveForgeMetricLabelStyle}"/>
+                                    <TextBlock x:Name="SourceNameText" Text="No PS2 HDD opened" FontSize="17" FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock x:Name="SourceDetailText" Text="Automatic discovery runs through the shared native host"
+                                               Style="{StaticResource DriveForgeCaptionStyle}" TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                                <Border Grid.Column="2" CornerRadius="10" Padding="8,3" VerticalAlignment="Center"
+                                        Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                    <TextBlock x:Name="SourceMediaText" Text="waiting" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                </Border>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Column="1" Style="{StaticResource DriveForgeCardStyle}">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="APA rows" Style="{StaticResource DriveForgeMetricLabelStyle}"/>
+                                <TextBlock x:Name="ApaRowsText" Text="—" Style="{StaticResource DriveForgeMetricValueStyle}"/>
+                                <TextBlock Text="zero-I/O catalog" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2" Style="{StaticResource DriveForgeCardStyle}">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="HDL games" Style="{StaticResource DriveForgeMetricLabelStyle}"/>
+                                <TextBlock x:Name="HdlGamesText" Text="—" Style="{StaticResource DriveForgeMetricValueStyle}"/>
+                                <TextBlock x:Name="EnrichmentStateText" Text="metadata idle" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="3" Style="{StaticResource DriveForgeCardStyle}">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="Backing I/O" Style="{StaticResource DriveForgeMetricLabelStyle}"/>
+                                <TextBlock x:Name="BackingReadsText" Text="—" Style="{StaticResource DriveForgeMetricValueStyle}"/>
+                                <TextBlock Text="reads this session" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- Non-modal progress strip -->
+                    <Border Grid.Row="2" Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,0,0,14">
+                        <Grid ColumnSpacing="14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="32" Height="32" CornerRadius="8" Background="{ThemeResource AccentFillColorTertiaryBrush}">
+                                <FontIcon Glyph="&#xE895;" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                <Grid>
+                                    <TextBlock Text="Game metadata enrichment" Style="{StaticResource DriveForgeSectionTitleStyle}"/>
+                                    <TextBlock x:Name="EnrichmentProgressText" Text="Waiting for a source"
+                                               HorizontalAlignment="Right" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                </Grid>
+                                <ProgressBar x:Name="EnrichmentProgress" Minimum="0" Maximum="1" Value="0" Height="3"/>
+                            </StackPanel>
+                            <Button Grid.Column="2" x:Name="CancelEnrichmentButton" Content="Cancel" IsEnabled="False"
+                                    Style="{StaticResource DriveForgeToolbarButtonStyle}" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Main workspace -->
+                    <Grid Grid.Row="3" ColumnSpacing="14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="640"/>
+                            <ColumnDefinition Width="310"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Style="{StaticResource DriveForgeCardStyle}" Padding="0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="40"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Padding="16,14,16,12" ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="FilterBox" PlaceholderText="Search title, startup ID or partition…"
+                                             MinWidth="280" VerticalAlignment="Center">
+                                        <TextBox.HeaderTemplate>
+                                            <DataTemplate/>
+                                        </TextBox.HeaderTemplate>
+                                    </TextBox>
+                                    <ComboBox x:Name="PartitionKindFilter" Grid.Column="1" SelectedIndex="0" MinWidth="136">
+                                        <ComboBoxItem Content="All partitions" Tag="all"/>
+                                        <ComboBoxItem Content="HDL games" Tag="hdl"/>
+                                        <ComboBoxItem Content="PFS" Tag="pfs"/>
+                                        <ComboBoxItem Content="System" Tag="system"/>
+                                    </ComboBox>
+                                    <ToggleSwitch x:Name="ShowSubsToggle" Grid.Column="2" Header="Sub-partitions" IsOn="True"
+                                                  VerticalAlignment="Center"/>
+                                    <Button x:Name="RefreshMetadataButton" Grid.Column="3" Style="{StaticResource DriveForgeIconButtonStyle}"
+                                            ToolTipService.ToolTip="Refresh metadata">
+                                        <FontIcon Glyph="&#xE72C;" FontSize="14"/>
+                                    </Button>
+                                </Grid>
+
+                                <Grid Grid.Row="1" Padding="16,0" Background="{ThemeResource SubtleFillColorSecondaryBrush}" ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="2.5*"/>
+                                        <ColumnDefinition Width="1.1*"/>
+                                        <ColumnDefinition Width="1.05*"/>
+                                        <ColumnDefinition Width="0.9*"/>
+                                        <ColumnDefinition Width="0.9*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Title / partition" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                    <TextBlock Grid.Column="1" Text="Startup" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                    <TextBlock Grid.Column="2" Text="Type" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                    <TextBlock Grid.Column="3" Text="Allocated" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                    <TextBlock Grid.Column="4" Text="LBA" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                    <TextBlock Grid.Column="5" Text="State" FontWeight="SemiBold" VerticalAlignment="Center" FontSize="12"/>
+                                </Grid>
+
+                                <Grid Grid.Row="2" MinHeight="410">
+                                    <ListView x:Name="PartitionList" SelectionMode="Extended"
+                                              HorizontalContentAlignment="Stretch"
+                                              Background="Transparent"/>
+                                    <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                Spacing="10" Margin="24,72" IsHitTestVisible="False" MaxWidth="420">
+                                        <Border Width="58" Height="58" CornerRadius="16" Background="{ThemeResource AccentFillColorTertiaryBrush}">
+                                            <FontIcon Glyph="&#xE7F8;" FontSize="25" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <TextBlock Text="Open a PS2 HDD or disk image" FontSize="17" FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center" TextAlignment="Center"/>
+                                        <TextBlock Text="DriveForge will publish the APA partition list first, then enrich HDL and PFS metadata without blocking the workspace."
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextAlignment="Center" TextWrapping="Wrap"/>
+                                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center" Margin="0,4,0,0">
+                                            <Button Content="Open image" Style="{StaticResource DriveForgeToolbarButtonStyle}"/>
+                                            <Button Content="Scan drives" Style="{StaticResource DriveForgeToolbarButtonStyle}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                        <!-- Context/telemetry rail -->
+                        <StackPanel Grid.Column="1" Spacing="12">
+                            <Border Style="{StaticResource DriveForgeCardStyle}">
+                                <StackPanel Spacing="10">
+                                    <Grid>
+                                        <TextBlock Text="Storage profile" Style="{StaticResource DriveForgeSectionTitleStyle}"/>
+                                        <FontIcon Glyph="&#xE950;" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </Grid>
+                                    <Grid RowSpacing="8" ColumnSpacing="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Media" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="MediaClassText" Grid.Column="1" Text="Unknown" FontSize="12" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="1" Text="Bus" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="BusTypeText" Grid.Row="1" Grid.Column="1" Text="—" FontSize="12" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="2" Text="Seek penalty" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="SeekPenaltyText" Grid.Row="2" Grid.Column="1" Text="Unknown" FontSize="12" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="3" Text="TRIM" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="TrimText" Grid.Row="3" Grid.Column="1" Text="Unknown" FontSize="12" FontWeight="SemiBold"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource DriveForgeCardStyle}">
+                                <StackPanel Spacing="9">
+                                    <Grid>
+                                        <TextBlock Text="Performance" Style="{StaticResource DriveForgeSectionTitleStyle}"/>
+                                        <FontIcon Glyph="&#xE9D9;" HorizontalAlignment="Right" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </Grid>
+                                    <Grid RowSpacing="8" ColumnSpacing="10">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="APA scan" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="ApaScanTimeText" Grid.Column="1" Text="—" FontSize="12" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="1" Text="Catalog build" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="CatalogBuildTimeText" Grid.Row="1" Grid.Column="1" Text="—" FontSize="12" FontWeight="SemiBold"/>
+                                        <TextBlock Grid.Row="2" Text="Avg. backing read" Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                        <TextBlock x:Name="AverageReadText" Grid.Row="2" Grid.Column="1" Text="—" FontSize="12" FontWeight="SemiBold"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Style="{StaticResource DriveForgeCardStyle}">
+                                <StackPanel Spacing="8">
+                                    <TextBlock Text="Safety" Style="{StaticResource DriveForgeSectionTitleStyle}"/>
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                                        <TextBlock Text="Raw source opens GENERIC_READ only" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                                        <TextBlock Text="No public source write API" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Spacing="7">
+                                        <FontIcon Glyph="&#xE73E;" FontSize="12" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/>
+                                        <TextBlock Text="Explorer mount remains write-protected" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </ScrollViewer>
+        </NavigationView>
+
+        <Grid Grid.Row="2" Padding="12,0,12,0" Background="{ThemeResource SolidBackgroundFillColorSecondaryBrush}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                <FontIcon Glyph="&#xE946;" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBlock x:Name="StatusText" Text="Ready — source access is structurally read-only"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11"/>
+            </StackPanel>
+            <TextBlock Grid.Column="1" Text="WinUI 3 · Windows App SDK 2.3.1"
+                       VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11"/>
+        </Grid>
+    </Grid>
+</Window>
