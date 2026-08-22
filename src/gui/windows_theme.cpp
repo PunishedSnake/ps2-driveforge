@@ -9,6 +9,7 @@
 #include <uxtheme.h>
 
 #include <cstring>
+#include <string>
 
 namespace ps2driveforge::gui {
 namespace {
@@ -18,6 +19,7 @@ constexpr wchar_t kPreferenceValue[] = L"Theme";
 constexpr wchar_t kWindowsPersonalizeKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 constexpr wchar_t kAppsUseLightTheme[] = L"AppsUseLightTheme";
+constexpr UINT_PTR kStatusSubclassId = 0x50533244; // "PS2D"
 
 // UxTheme does not expose a documented process-wide Win32 dark-menu switch.
 // Windows 10/11 nevertheless export these entry points by ordinal and native
@@ -78,6 +80,107 @@ void allow_dark_for_window(HWND window, bool dark)
         allow(window, dark ? TRUE : FALSE);
     }
     FreeLibrary(theme);
+}
+
+struct StatusThemeState {
+    bool dark{};
+    COLORREF background{};
+    COLORREF text{};
+};
+
+void paint_dark_status_bar(HWND window, HDC dc, const StatusThemeState& state)
+{
+    RECT rect{};
+    GetClientRect(window, &rect);
+
+    HBRUSH brush = CreateSolidBrush(state.background);
+    if (brush) {
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+    }
+
+    const LRESULT raw_length = SendMessageW(window, SB_GETTEXTLENGTHW, 0, 0);
+    const int length = LOWORD(raw_length);
+    if (length <= 0) {
+        return;
+    }
+
+    std::wstring text(static_cast<std::size_t>(length) + 1U, L'\0');
+    SendMessageW(window, SB_GETTEXTW, 0, reinterpret_cast<LPARAM>(text.data()));
+    text.resize(std::wcslen(text.c_str()));
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, state.text);
+
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0));
+    HGDIOBJ old_font = nullptr;
+    if (font) {
+        old_font = SelectObject(dc, font);
+    }
+
+    // Leave a little room for the standard resize grip at the right edge. The
+    // native status control keeps handling sizing/layout; only the dark client
+    // paint is replaced so its text cannot fall back to COLOR_WINDOWTEXT black.
+    rect.left += 6;
+    rect.right = (rect.right > 18) ? rect.right - 18 : rect.right;
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    if (old_font) {
+        SelectObject(dc, old_font);
+    }
+}
+
+LRESULT CALLBACK status_subclass_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                      UINT_PTR subclass_id, DWORD_PTR ref_data)
+{
+    auto* state = reinterpret_cast<StatusThemeState*>(ref_data);
+
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(window, status_subclass_proc, subclass_id);
+        delete state;
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+
+    if (state && state->dark) {
+        if (message == WM_ERASEBKGND) {
+            return 1;
+        }
+        if (message == WM_PAINT) {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(window, &paint);
+            if (dc) {
+                paint_dark_status_bar(window, dc, *state);
+            }
+            EndPaint(window, &paint);
+            return 0;
+        }
+        if (message == WM_PRINTCLIENT) {
+            HDC dc = reinterpret_cast<HDC>(wparam);
+            if (dc) {
+                paint_dark_status_bar(window, dc, *state);
+                return 0;
+            }
+        }
+    }
+
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+StatusThemeState* ensure_status_theme_state(HWND status)
+{
+    DWORD_PTR ref_data = 0;
+    if (GetWindowSubclass(status, status_subclass_proc, kStatusSubclassId, &ref_data)) {
+        return reinterpret_cast<StatusThemeState*>(ref_data);
+    }
+
+    auto* state = new StatusThemeState{};
+    if (!SetWindowSubclass(status, status_subclass_proc, kStatusSubclassId,
+                           reinterpret_cast<DWORD_PTR>(state))) {
+        delete state;
+        return nullptr;
+    }
+    return state;
 }
 
 } // namespace
@@ -229,6 +332,13 @@ void apply_window_theme(HWND window, HWND tree, HWND list, HWND status,
         SetWindowTheme(status, theme_name, nullptr);
         SendMessageW(status, SB_SETBKCOLOR, 0,
                      static_cast<LPARAM>(palette.dark ? palette.control_background : CLR_DEFAULT));
+
+        if (auto* state = ensure_status_theme_state(status)) {
+            state->dark = palette.dark && !high_contrast;
+            state->background = palette.control_background;
+            state->text = palette.text;
+        }
+        InvalidateRect(status, nullptr, TRUE);
     }
 
     if (window) {
