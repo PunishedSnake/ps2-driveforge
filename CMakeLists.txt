@@ -113,6 +113,21 @@ if(WIN32)
             target_compile_options(ps2-driveforge-gui PRIVATE /WX)
         endif()
     endif()
+
+    # User-facing entrypoint for Emilia. It launches the modern WinUI frontend,
+    # waits for a post-Activate readiness handshake, and offers the proven Win32
+    # GUI plus the startup log if WinUI exits before becoming ready.
+    add_executable(ps2-driveforge-launcher WIN32 src/launcher/windows_launcher.cpp)
+    set_target_properties(ps2-driveforge-launcher PROPERTIES OUTPUT_NAME "PS2-DriveForge-Launcher")
+    target_link_libraries(ps2-driveforge-launcher PRIVATE comctl32 shell32)
+    target_compile_features(ps2-driveforge-launcher PRIVATE cxx_std_20)
+    target_compile_definitions(ps2-driveforge-launcher PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(ps2-driveforge-launcher PRIVATE /W4 /permissive- /utf-8)
+        if(PS2DF_WARNINGS_AS_ERRORS)
+            target_compile_options(ps2-driveforge-launcher PRIVATE /WX)
+        endif()
+    endif()
 endif()
 
 if(PS2DF_BUILD_DOKANY)
