@@ -30,6 +30,7 @@ add_library(ps2driveforge_core
     src/core/pfs.cpp
     src/core/hdl.cpp
     src/core/partition_catalog.cpp
+    src/core/rescue_capsule.cpp
 )
 
 target_include_directories(ps2driveforge_core
@@ -243,6 +244,13 @@ if(PS2DF_BUILD_TESTS)
     add_executable(ps2-driveforge-darkness-policy-tests tests/darkness_policy_tests.cpp)
     target_compile_features(ps2-driveforge-darkness-policy-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-darkness-policy-tests COMMAND ps2-driveforge-darkness-policy-tests)
+
+    # 0.7 recovery/forensics foundation: bit-for-bit Rescue Capsule v1 metadata,
+    # digest, embedded APA MBR and same-disk identity compatibility.
+    add_executable(ps2-driveforge-rescue-capsule-tests tests/rescue_capsule_tests.cpp)
+    target_link_libraries(ps2-driveforge-rescue-capsule-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-rescue-capsule-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-rescue-capsule-tests COMMAND ps2-driveforge-rescue-capsule-tests)
 endif()
 
 if(PS2DF_BUILD_FUZZERS)
