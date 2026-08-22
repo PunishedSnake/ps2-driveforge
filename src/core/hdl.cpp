@@ -1,4 +1,5 @@
 #include "ps2hdd/hdl.hpp"
+#include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
 #include <array>
@@ -72,23 +73,6 @@ void store_u16_le(std::byte* p, std::uint16_t value) noexcept
     return range_fits(out, kMetadataBytes, device.size_bytes());
 }
 
-[[nodiscard]] bool restore_metadata(WritableBlockDevice& device, std::uint64_t offset,
-                                    const std::array<std::byte, kMetadataBytes>& original)
-{
-    if (!device.write(offset, original) || !device.flush()) {
-        return false;
-    }
-
-    std::array<std::byte, kMetadataBytes> verify{};
-    return device.read(offset, verify) && verify == original;
-}
-
-[[nodiscard]] std::string rollback_suffix(bool rollback_ok)
-{
-    return rollback_ok ? "; original metadata restored"
-                       : "; WARNING: automatic metadata rollback failed";
-}
-
 } // namespace
 
 const char* media_type_name(MediaType media) noexcept
@@ -135,9 +119,6 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         return result;
     }
 
-    // HDLoader stores a fixed metadata header at main-partition +0x101000. Read
-    // the complete 1536-byte window once so all declared allocation entries can
-    // be validated before any field is exposed to a frontend.
     std::array<std::byte, kMetadataBytes> bytes{};
     if (!device.read(metadata_offset, bytes)) {
         result.error = "Could not read HDL metadata header";
@@ -188,8 +169,6 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         raw_units += load_u32_le(bytes.data() + entry + 8);
     }
 
-    // hdl-dump exposes raw_size_in_kb as sum(length) / 4, therefore one
-    // allocation-table length unit represents 256 bytes on disk.
     if (raw_units <= std::numeric_limits<std::uint64_t>::max() / 256ULL) {
         result.game.raw_size_bytes = raw_units * 256ULL;
     } else {
@@ -256,48 +235,37 @@ GameResult patch_game_metadata(WritableBlockDevice& device,
         store_u16_le(modified.data() + kDmaOffset, *patch.dma);
     }
 
-    if (!device.write(metadata_offset, modified)) {
+    WriteTransaction transaction(device);
+    if (!transaction.stage(metadata_offset, modified, "HDL metadata")) {
         GameResult result;
-        result.error = "Could not write HDL metadata" +
-                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        result.error = "Could not stage HDL metadata mutation: " + transaction.stage_error();
         return result;
     }
-    if (!device.flush()) {
+
+    GameResult verified;
+    const auto commit = transaction.commit([&]() -> std::string {
+        verified = read_game_info(device, partition);
+        if (!verified.ok) {
+            return "normal HDL parser rejected the written header: " + verified.error;
+        }
+        if (patch.title.has_value() && verified.game.title != *patch.title) {
+            return "HDL title did not round-trip";
+        }
+        if (patch.compat_flags.has_value() && verified.game.compat_flags != *patch.compat_flags) {
+            return "HDL compatibility flags did not round-trip";
+        }
+        if (patch.dma.has_value() && verified.game.dma != *patch.dma) {
+            return "HDL DMA mode did not round-trip";
+        }
+        return {};
+    });
+
+    if (!commit.ok) {
         GameResult result;
-        result.error = "Could not flush HDL metadata" +
-                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        result.error = commit.error;
         return result;
     }
-
-    std::array<std::byte, kMetadataBytes> verify{};
-    if (!device.read(metadata_offset, verify) || verify != modified) {
-        GameResult result;
-        result.error = "HDL metadata read-back verification failed" +
-                       rollback_suffix(restore_metadata(device, metadata_offset, original));
-        return result;
-    }
-
-    auto result = read_game_info(device, partition);
-    if (!result.ok) {
-        const auto parse_error = result.error;
-        result.error = "Written HDL metadata failed normal parser validation: " + parse_error +
-                       rollback_suffix(restore_metadata(device, metadata_offset, original));
-        result.ok = false;
-        return result;
-    }
-
-    const bool title_matches = !patch.title.has_value() || result.game.title == *patch.title;
-    const bool compat_matches =
-        !patch.compat_flags.has_value() || result.game.compat_flags == *patch.compat_flags;
-    const bool dma_matches = !patch.dma.has_value() || result.game.dma == *patch.dma;
-    if (!title_matches || !compat_matches || !dma_matches) {
-        result.ok = false;
-        result.error = "Written HDL metadata did not round-trip requested values" +
-                       rollback_suffix(restore_metadata(device, metadata_offset, original));
-        return result;
-    }
-
-    return result;
+    return verified;
 }
 
 CatalogResult read_catalog(BlockDevice& device, const apa::ScanResult& scan,
@@ -310,8 +278,6 @@ CatalogResult read_catalog(BlockDevice& device, const apa::ScanResult& scan,
         }
     }
 
-    // Physical-LBA order is the safe baseline for rotational and unknown media:
-    // it avoids arbitrary head bouncing while remaining harmless for SSDs.
     std::sort(partitions.begin(), partitions.end(), [](const auto* left, const auto* right) {
         return left->start_lba < right->start_lba;
     });
