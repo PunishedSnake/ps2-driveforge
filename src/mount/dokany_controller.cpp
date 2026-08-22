@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/darkness_policy.hpp"
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/mount_view.hpp"
 #include "dokany_open_policy.hpp"
@@ -73,8 +74,7 @@ std::optional<std::string> wide_to_utf8(LPCWSTR value)
         return std::nullopt;
     }
     std::string result(static_cast<std::size_t>(bytes), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, length,
-                            result.data(), bytes, nullptr, nullptr) != bytes) {
+    if (WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), count) != count) {
         return std::nullopt;
     }
     return result;
@@ -595,32 +595,13 @@ std::wstring DokanyMountController::normalize_mount_point(std::wstring value)
     return {};
 }
 
-std::wstring DokanyMountController::suggest_mount_point(wchar_t preferred)
+std::wstring DokanyMountController::suggest_mount_point(wchar_t)
 {
-    const DWORD mask = GetLogicalDrives();
-    auto available = [mask](wchar_t letter) {
-        if (letter < L'D' || letter > L'Z') {
-            return false;
-        }
-        const DWORD bit = 1UL << static_cast<unsigned>(letter - L'A');
-        return (mask & bit) == 0;
-    };
-
-    preferred = static_cast<wchar_t>(towupper(preferred));
-    if (available(preferred)) {
-        return std::wstring{preferred, L':', L'\\'};
+    const auto letter = darkness_policy::choose_mount_letter(GetLogicalDrives());
+    if (!letter) {
+        return {};
     }
-    for (wchar_t letter = L'P'; letter <= L'Z'; ++letter) {
-        if (letter != preferred && available(letter)) {
-            return std::wstring{letter, L':', L'\\'};
-        }
-    }
-    for (wchar_t letter = L'O'; letter >= L'D'; --letter) {
-        if (letter != preferred && available(letter)) {
-            return std::wstring{letter, L':', L'\\'};
-        }
-    }
-    return {};
+    return std::wstring{*letter, L':', L'\\'};
 }
 
 bool remove_dokany_mount_point(std::wstring mount_point)
