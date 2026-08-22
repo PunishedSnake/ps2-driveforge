@@ -1,174 +1,172 @@
 # PS2 DriveForge
 
-**Modern APA/PFS HDD management for PlayStation 2.**
+**Modern read-only APA/PFS HDD management for PlayStation 2.**
 
 Current development train: **0.5.x — “Emilia”**  
 Current source version: **0.5.0-dev**
 
-PS2 DriveForge is a Windows-first PS2 HDD management stack built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`. One read-only parser/reader stack is shared by the native GUI frontends, CLI, host exporter, Dokany Explorer provider, and Emilia benchmark tools.
+PS2 DriveForge is a Windows-first PS2 HDD management stack built as a safe, testable alternative to shell-oriented `pfsshell` workflows. One native C++20 storage stack is shared by the CLI, host exporter, Win32 GUI, Dokany Explorer provider, benchmark tooling, and the in-progress WinUI 3 frontend.
 
-> **Safety status:** source devices remain read-only. There is no public HDD write API. `PhysicalDrive` requests `GENERIC_READ` only. Dokany uses `DOKAN_OPTION_WRITE_PROTECT` plus callback-level mutation rejection.
+> **Safety status:** source HDDs/images are read-only. There is no public source write API. Windows `PhysicalDrive` opens with `GENERIC_READ` only. Dokany adds `DOKAN_OPTION_WRITE_PROTECT` and callback-level mutation rejection.
 
-## Why another APA/PFS tool?
+## What Emilia changes
 
-`pfsshell` remains useful as a compatibility/reference implementation. DriveForge deliberately avoids its interactive selected-device/current-mount/current-directory shell model and does not shell out for ordinary GUI navigation.
+Emilia is the performance and Windows-frontend modernization release. It does not trade format validation for speed.
 
-Emilia also targets a second practical pain point: HDD-manager initialization must not walk/probe every partition just to populate a list. The complete management catalog is derived from the already validated APA scan with **zero additional device I/O**; optional PFS/HDL details can be enriched lazily afterwards.
+The HDD-manager contract is deliberately simple:
 
-Current architectural differences include:
+```text
+one validated APA scan
+   -> zero-I/O PartitionCatalog
+   -> complete management rows immediately
+   -> filter / sort / select in memory
+   -> optional progressive HDL/PFS enrichment
+```
 
-- byte-addressed `BlockDevice` instead of exposing iomanX semantics to frontends;
-- APA main/sub translation isolated in `ApaVolume`;
-- explicit PFS path/range reads;
-- reusable `DriveSession` shared by CLI, GUI, export, mount, and benchmark code;
-- immutable PFS/session metadata caches for read-only sources;
+DriveForge does not launch one `HDL.EXE` process per game and does not require probing every PFS filesystem before a management list becomes usable.
+
+The storage path now includes:
+
+- immutable validated PFS probe/node/directory/stat caches;
 - bounded 4 KiB small-read cache;
 - adaptive sequential read-ahead;
-- offset-based physical/image I/O instead of a shared seek pointer;
-- a zero-I/O `PartitionCatalog` for fast HDD-manager first paint;
-- backing-I/O latency/concurrency instrumentation for measured optimization.
+- backing-I/O latency, byte, small-read, cache and concurrency counters;
+- explicit-offset `OVERLAPPED` physical/image reads on Windows;
+- `pread()` image I/O on POSIX;
+- native read-only HDLoader `0xDEADFEED` metadata parsing;
+- storage-characteristic hints (`rotational` / `solid-state` / `unknown`) without assuming every user's bridge/HDD behaves like the validation machine.
 
-DriveForge does not publish throughput wins without measurements. See [`docs/performance.md`](docs/performance.md), [`docs/emilia-plan.md`](docs/emilia-plan.md), and the preserved real-HDD Emilia benchmark record.
+The first complete real-HDD sweep is preserved in [`docs/emilia-benchmark-2026-08-22.md`](docs/emilia-benchmark-2026-08-22.md). On that specific disk the complete 190-row partition catalog builds in a median **0.006 ms after the APA scan and performs zero additional device I/O**. The result is evidence for the architecture, not a universal speed claim.
 
 ## What works now
 
-- image-backed PS2 HDD inspection on Windows/Linux/macOS;
+- disk-image inspection on portable core/host builds;
 - read-only Windows `PhysicalDriveN` backend;
-- Windows SetupAPI enumeration of real disk interfaces followed by DriveForge APA classification;
-- APA v2 MBR/checksum/link traversal and diagnostics;
-- bounds checking for main/sub extents;
-- MBR, PFS, HDL, and free partition recognition;
-- zero-I/O partition catalog built directly from the APA scan;
-- PFS v3 superblock probing and backup comparison;
-- SEGD inode reads and SEGI indirect descriptor chains;
-- PFS directories/path resolution/random byte-range reads;
-- recursive host export with Windows-safe filename handling;
-- native Win32 GUI with System/Light/Dark themes;
-- automatic raw-disk elevation workflow with limited non-admin fallback;
-- automatic startup PS2-HDD discovery and rescan;
-- direct GUI read-only mount/open-in-Explorer/unmount commands;
-- standalone `PS2-DriveForge-Mount.exe` retained for scripts/debugging;
+- SetupAPI enumeration of actual disk interfaces followed by APA classification;
+- APA v2 MBR/checksum/link traversal, main/sub relationships and bounds diagnostics;
+- MBR, PFS, HDL and free-space partition classification;
+- PFS v3 superblock probing/backup comparison;
+- SEGD inode and SEGI indirect descriptor traversal;
+- PFS directory/path resolution and arbitrary byte-range reads;
+- recursive host export with Windows-safe naming/collision policy;
+- zero-I/O `PartitionCatalog` and frontend-neutral `ManagementModel`;
+- native scheduled/cancellable HDL metadata enrichment;
+- Win32 GUI with System/Light/Dark themes;
+- controlled UAC relaunch for raw-disk workflows with non-admin image fallback;
+- automatic PS2 HDD discovery/rescan and one-candidate auto-open;
+- direct GUI read-only mount / Explorer open / clean unmount;
+- standalone `PS2-DriveForge-Mount.exe` diagnostics frontend;
 - Dokany 2.3.1 read-only `Partitions\...` namespace;
-- immutable probe/node/stat/directory caches;
-- 4 KiB bounded raw read-window cache;
-- adaptive large sequential read-ahead;
-- Windows physical-disk reads through `FILE_FLAG_OVERLAPPED` with explicit offsets;
-- Windows image reads through OVERLAPPED offsets and POSIX image reads through `pread()`;
-- native scheduled HDLoader metadata enrichment with measured queue-depth behavior;
-- frontend-neutral `ManagementModel` for instant HDD-manager rows and progressive HDL updates;
-- native WinUI 3 / C++/WinRT Emilia shell with Mica and the shared `DriveSession`/`ManagementModel` bridge;
-- canonical Windows build pipeline that includes the self-contained WinUI payload alongside the legacy fallback during parity work;
-- `ps2-driveforge-benchmark` cold/warm performance harness;
-- generated APA/PFS image E2E with SHA-256 verification;
-- deterministic corruption corpus and optional APA libFuzzer target;
-- MSVC Windows CI and Clang ASan+UBSan+`-Werror` CI.
+- `ps2-driveforge-inspect` and `ps2-driveforge-benchmark` tooling;
+- WinUI 3 / C++/WinRT frontend project using the same native host/session model;
+- generated APA/PFS image E2E with exported-content SHA-256 validation;
+- deterministic corruption tests and optional APA libFuzzer target;
+- **14 normal regression executables**;
+- Windows/MSVC + Dokany/WinUI CI and Linux Clang ASan+UBSan+`-Werror` CI;
+- deterministic verification of the canonical Windows release staging tree.
 
-Ayanami, Bocchi, Chisato, and Darkness are hardware validated. Darkness validated the complete integrated GUI discovery/elevation/read-only mount workflow on the real 149.05 GiB APA v2 test HDD. Emilia now has a preserved real-HDD performance baseline and is integrating the WinUI frontend against the same native backend.
+Ayanami, Bocchi, Chisato and Darkness have real-hardware validation. Emilia has real-HDD performance measurements; its final 0.5 release still requires the exact RC artifact to pass the documented Windows/Dokany/Explorer hardware checklist.
 
-## Emilia performance pipeline
+## Windows package
 
-Current data path:
+During WinUI parity work the canonical Windows package intentionally carries both frontends:
 
 ```text
-APA / PFS
-   -> 4 KiB small-read cache
-   -> adaptive sequential read-ahead
-   -> backing I/O instrumentation
-   -> FileBlockDevice / PhysicalDrive
+PS2-DriveForge.exe                validated Win32 frontend / current normal entrypoint
+WinUI\PS2-DriveForge-WinUI.exe    modern frontend under parity validation
+PS2-DriveForge-Mount.exe          thin Dokany diagnostics/script frontend
+ps2-driveforge-inspect.exe        inspection CLI
+ps2-driveforge-benchmark.exe      benchmark/diagnostics CLI
 ```
 
-Backing counters sit below both cache layers, so a cache hit genuinely disappears from reported physical/image read calls rather than merely being relabeled.
+WinUI is **not** a second filesystem implementation. It consumes the same `DriveSession`, `PartitionCatalog`, `ManagementModel`, discovery and enrichment services. It becomes the default only after feature parity and real-hardware validation; 0.5 does not need to fake that milestone by removing the proven Win32 fallback early.
 
-Session-level caches additionally retain validated PFS probes, resolved nodes/inodes, directory listings, and stat results. `reset_stats()` keeps caches warm for warm-workload measurements; `clear_caches()` provides an explicit cold-cache boundary.
+The long-term raw-disk architecture is a normal-user WinUI shell plus a narrow elevated read-only broker. Disk-image workflows must never require elevation merely because the UI is WinUI.
 
-The benchmark frontend can be run read-only against an image or physical disk:
+## Build
+
+Full Windows release candidate build:
+
+```powershell
+.\build-windows.ps1 `
+  -Configuration Release `
+  -Clean `
+  -WithDokany `
+  -DokanyRoot 'C:\Program Files\Dokan\DokanLibrary-2.3.1'
+
+.\scripts\verify-windows-package.ps1
+```
+
+See [`BUILDING.md`](BUILDING.md) for prerequisites, WinUI package restore, developer variants, Linux builds and sanitizer/fuzzer configurations.
+
+Portable Linux build/test:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPS2DF_BUILD_TESTS=ON
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+## Performance benchmark
+
+Examples against a physical disk identified for the current Windows session:
 
 ```powershell
 .\ps2-driveforge-benchmark.exe --physical 3
 .\ps2-driveforge-benchmark.exe --physical 3 --browse +OPL /
+.\ps2-driveforge-benchmark.exe --physical 3 --hdl
 ```
 
-It reports APA scan time, zero-I/O catalog build time, cold/warm metadata workloads, backing calls/bytes/service time, max I/O concurrency, cache hit/miss data, and read-ahead activity.
+`PhysicalDrive3` above is only an example. Windows can renumber physical disks after reboot/reconnection; the GUI discovery path must remain the normal user-facing way to identify the PS2 HDD.
 
-## HDD Manager direction
+The benchmark reports cold APA/catalog behavior, optional PFS browse/stat cold-vs-warm behavior, backing reads/bytes/service time, max reads in flight, cache/read-ahead counters and native HDL enrichment. `--hdl-qd N` is a developer benchmark override, not a recommendation to force a particular queue depth on every PS2 HDD.
 
-The management UI model is intentionally split into two phases:
+## Architecture at a glance
 
 ```text
-one APA scan
-   -> PartitionCatalog
-   -> complete rows immediately
-   -> UI first paint
-   -> optional lazy/batched metadata enrichment
+Win32 GUI        WinUI 3          CLI / benchmark       Dokany
+    \              |                   |                  /
+     +-------------+-------- ps2driveforge_host --------+
+                              |       |       |
+                         DriveSession |  ManagementModel
+                              |   PartitionCatalog
+                              |
+                      ps2driveforge_core
+                         APA / PFS / HDL
+                              |
+                 cache / read-ahead / instrumentation
+                              |
+                    image file / PhysicalDrive
 ```
 
-Sorting, filtering, showing/hiding sub-partitions, and selecting rows are memory-only operations. The first usable list must not wait for every PFS filesystem to be probed or for every HDL game title to be resolved.
+Windows device discovery, elevation, theme behavior and Dokany remain above the portable format layers. PFS physical extent translation goes through `ApaVolume`; frontends do not reproduce APA/PFS parsing.
 
-## Windows GUI and Emilia release contract
-
-**WinUI 3 is part of the PS2 DriveForge 0.5 Emilia release target.** It is not being developed as a separate post-0.5 experiment.
-
-During parity development the canonical Emilia Windows package contains both frontends:
-
-```text
-PS2-DriveForge.exe             legacy Win32 fallback / current default
-WinUI\PS2-DriveForge-WinUI.exe modern Emilia frontend under validation
-```
-
-The WinUI project links the same native `ps2driveforge_core` and `ps2driveforge_host` libraries used elsewhere. The canonical `build-windows.ps1` builds and stages the self-contained WinUI payload into the normal Emilia ZIP by default; `-SkipWinUI` exists only for developer troubleshooting.
-
-The WinUI executable becomes the normal release entrypoint before 0.5.0 is signed off once these parity gates are green:
-
-- disk-image open and native PS2 HDD discovery;
-- least-privilege read-only raw-disk broker instead of elevating the whole shell;
-- instant APA/HDL HDD Manager with filtering and progressive metadata enrichment;
-- PFS file browsing and export;
-- read-only Dokany mount / open in Explorer / unmount;
-- System/Light/Dark behavior and usable error/progress states;
-- canonical Windows CI/package validation;
-- real-HDD validation of the WinUI workflow.
-
-After that switch, the Win32 frontend remains available as a legacy/debug fallback rather than defining the normal Emilia user experience.
-
-## Current Win32 fallback
-
-The existing Win32 frontend currently provides:
-
-- `Open disk image...`;
-- automatic PS2 HDD detection and selection;
-- APA/PFS browsing;
-- file export;
-- `Mount read-only...`;
-- `Open mounted volume in Explorer`;
-- `Unmount`;
-- `View -> Theme -> System / Light / Dark`.
-
-The old visible `PhysicalDrive0..31` list is gone. SetupAPI discovers actual disk interfaces, DriveForge validates APA, and one candidate can auto-open.
-
-## WinUI architecture
-
-Storage, APA/PFS, discovery, catalog, performance, and Dokany code stay outside XAML/Windows App SDK. The WinUI layer consumes immutable frontend snapshots from a native session controller rather than reimplementing disk logic.
-
-The target elevation model is:
-
-```text
-WinUI 3 shell (normal user)
-        |
- controlled read-only IPC
-        |
-elevated raw-disk broker
-        |
-GENERIC_READ PhysicalDrive
-```
-
-This keeps the user-facing UI out of an elevated process and limits administrator privileges to the smallest component that actually needs raw disk access.
+See [`docs/architecture.md`](docs/architecture.md) for dependency rules and layer ownership.
 
 ## Current limitations
 
-- source HDD/image mutation is not implemented;
-- real-HDD PFS SEGI/large-fragmented-file traversal has not been observed because the current test HDD stores large content as HDL; generated-image SEGI/main-sub coverage is green;
-- additional cache/read-ahead policy tuning may still be driven by wider real-hardware samples;
-- the WinUI native controller is integrated, but complete MainWindow data binding, file workflow, mount workflow, and the raw-disk broker are still being completed;
-- the WinUI frontend has not yet replaced the legacy package entrypoint because feature/hardware parity is a release gate;
+- source HDD/image mutation is intentionally not implemented;
+- writable HDD management requires a future explicit capability with metadata backup/recovery and destructive disposable-image tests;
+- the current physical validation HDD does not provide a real large/fragmented PFS SEGI case, so generated-image SEGI/main-sub coverage remains the deterministic guard;
+- wider HDD/SSD/USB-bridge samples may justify additional measured tuning, but `unknown` remains a supported normal storage profile;
+- WinUI currently has the native session/catalog/enrichment bridge and visual shell, but full image/PFS/export/mount workflows and the least-privilege raw-disk broker have not reached legacy parity;
 - HDL virtual ISO browsing/import/export remains later roadmap work;
-- project licensing remains TBD until the upstream-definition/code audit is complete.
+- project licensing remains TBD pending the upstream-definition/code audit.
+
+## Developer documentation
+
+- [`BUILDING.md`](BUILDING.md) — reproducible Windows/Linux builds and package verification
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — safety, tests, evidence and change expectations
+- [`docs/architecture.md`](docs/architecture.md) — current dependency/layer model
+- [`docs/testing.md`](docs/testing.md) — all 14 regressions, CI and benchmark test shapes
+- [`docs/release-process.md`](docs/release-process.md) — RC/final release gates and rollback evidence
+- [`docs/rc-hardware-checklist.md`](docs/rc-hardware-checklist.md) — exact Windows + real-PS2-HDD validation sequence
+- [`docs/emilia-plan.md`](docs/emilia-plan.md) — Emilia goals/workstreams
+- [`docs/emilia-benchmark-2026-08-22.md`](docs/emilia-benchmark-2026-08-22.md) — measured real-HDD baseline
+- [`docs/performance.md`](docs/performance.md) — instrumentation and benchmarking policy
+- [`docs/apa-format-notes.md`](docs/apa-format-notes.md) / [`docs/pfs-format-notes.md`](docs/pfs-format-notes.md) — format/addressing notes
+- [`docs/REAL_HARDWARE_VALIDATION.md`](docs/REAL_HARDWARE_VALIDATION.md) — preserved hardware evidence and coverage gaps
+
+## Release rule
+
+Do not call a candidate 0.5.0 merely because CI produced a ZIP. Final release requires green deterministic CI, canonical package verification, and the exact candidate artifact passing [`docs/rc-hardware-checklist.md`](docs/rc-hardware-checklist.md) on a real PS2 HDD/Windows/Dokany/Explorer setup.
