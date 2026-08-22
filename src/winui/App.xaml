@@ -31,6 +31,25 @@
             <SolidColorBrush x:Key="DriveForgeSuccessBrush"
                              Color="#FF0F7B0F"/>
 
+            <!--
+                RC compatibility aliases. MainWindow.xaml still carries the
+                original Emilia names; defining them here makes resolution
+                deterministic on every supported Windows App SDK runtime. A
+                later UI-only cleanup can switch the markup to DriveForge* keys.
+            -->
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush"
+                             Color="{ThemeResource SystemAccentColor}"/>
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush"
+                             Color="{ThemeResource SystemAccentColor}"
+                             Opacity="0.20"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBackgroundBrush"
+                             Color="#FFFFB900"
+                             Opacity="0.16"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBrush"
+                             Color="#FFFFB900"/>
+            <SolidColorBrush x:Key="SystemFillColorSuccessBrush"
+                             Color="#FF0F7B0F"/>
+
             <Style x:Key="DriveForgeCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
                 <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
