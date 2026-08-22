@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0-dev "Emilia" - 2026-08-22
+## 0.5.0-rc5 "Emilia" - 2026-08-22
 
 - Started the performance/frontend-modernization release above the hardware-validated Darkness read-only Explorer stack.
 - Added backing service-time, small-read and maximum-in-flight instrumentation so performance work can separate request count from actual device latency/concurrency.
@@ -24,7 +24,19 @@
 - Moved native HDL parsing and zero-I/O partition-catalog implementation out of public headers into owned `src/core` translation units, and moved ManagementModel mutation/construction code into `src/host` without changing behavior.
 - Added deterministic `scripts/verify-windows-package.ps1` validation of required release binaries/docs, the exact 14 packaged regression executables and the WinUI payload.
 - Added reproducible Windows/Linux build documentation, refreshed architecture/testing/contributing/development docs for Emilia, and added explicit RC/release gates plus a real-Windows/real-PS2-HDD checklist.
-- Final 0.5.0 remains gated on the exact RC artifact passing the documented UAC/SetupAPI/Dokany/Explorer/write-rejection/remount and WinUI-startup hardware smoke sequence; a green CI ZIP alone is not treated as final-release validation.
+- Changed automatic Explorer mount-letter policy from a hard/preferred `P:` scheme to the **lowest currently free letter from C: through Z:** while always excluding A: and B:, with deterministic regression coverage.
+- Fixed the unpackaged WinUI self-contained deployment so the release payload includes the actual Windows App SDK/WinUI runtime rather than a misleading seven-file frontend-only directory; release verification now requires `Microsoft.UI.Xaml.dll` and Windows App Runtime components.
+- Added very-early WinUI startup diagnostics under `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log`, including XAML/WinRT `HRESULT`, native unhandled-exception and activation stage markers.
+- Fixed real-machine WinUI XAML startup failures first exposed as missing `AccentFillColorDefaultBrush`, then as missing `TabViewButtonBackground`; DriveForge now owns its application semantic brushes and merges `Microsoft.UI.Xaml.Controls.XamlControlsResources` for control-internal Fluent resources.
+- Added a clean user-facing release layout with a small root `PS2-DriveForge.exe` launcher, WinUI/runtime under `app\winui`, the supported Win32 fallback under `legacy`, tools under `tools`, and regression executables kept out of normal user packages.
+- Added a post-`Window.Activate()` WinUI readiness handshake and `PS2-DriveForge.exe --legacy` direct fallback path so a modern-frontend startup failure does not strand the user without the validated Win32 interface.
+- Fixed RC4's root-launcher loader crash caused by a `TaskDialogIndirect`/COMCTL32 ordinal import that could abort the process before `wWinMain()` and therefore before `--legacy` argument handling.
+- Added `PS2-DriveForge.exe --self-test` and made release staging execute the **exact staged launcher** before building Portable/Setup artifacts, turning loader/import failures into CI packaging failures.
+- Fixed Win32 dark-theme status-bar readability by custom-painting the status client with the active DriveForge dark palette while preserving normal Light/System/High-Contrast behavior.
+- Added Inno Setup installer generation alongside the clean Portable ZIP, including explicit Start Menu access to the supported Legacy Win32 fallback and optional verified Dokany prerequisite installation.
+- Added an MIT license for original DriveForge code, public credits/acknowledgements and third-party notices; user packages now require these files and the installer displays the project license.
+- Added an explicit public-release legal gate for the current Windows App SDK 2.3.x self-contained deployment while Microsoft's WinUI package-license mismatch remains unresolved; private RC hardware/UI testing can continue without pretending the redistribution question is settled.
+- Final 0.5.0 remains gated on the exact RC artifact passing the documented launcher/WinUI/Win32-theme/UAC/SetupAPI/Dokany/Explorer/write-rejection/remount hardware sequence and the public-distribution license review; a green CI ZIP alone is not treated as final-release validation.
 
 ## 0.4.0-dev "Darkness" - 2026-08-21
 
