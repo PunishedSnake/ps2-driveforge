@@ -140,7 +140,8 @@ if (-not $SkipWinUI) {
     New-Item -ItemType Directory -Force -Path $WinUIPackages | Out-Null
     Invoke-Native -FilePath $NuGet -Arguments @(
         'install', 'Microsoft.WindowsAppSDK',
-        '-Version', '2.3.1',
+        '-Version', '2.4.0',
+        '-DependencyVersion', 'Lowest',
         '-OutputDirectory', $WinUIPackages,
         '-NonInteractive',
         '-Source', 'https://api.nuget.org/v3/index.json'
