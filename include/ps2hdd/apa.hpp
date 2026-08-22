@@ -84,6 +84,8 @@ struct Partition {
     std::uint64_t total_sectors{};
     std::uint16_t type{};
     std::uint16_t flags{};
+    std::uint32_t prev_lba{};
+    std::uint32_t next_lba{};
     std::uint32_t main_lba{};
     std::uint32_t number{};
     std::uint32_t sub_count{};
