@@ -11,7 +11,7 @@ PS2 DriveForge is a C++20 project with a portable APA/PFS/HDL core, a shared hos
 | Linux developer/CI | yes | yes | no | no | no | no |
 | Clang sanitizer CI | yes | yes | no | no | no | no |
 
-The current Emilia WinUI project resolves Windows App SDK **2.3.1** and Microsoft.Windows.CppWinRT **3.0.260715.1**. Explorer mounting is validated against Dokany **2.3.1**.
+The private RC5 WinUI project resolves Windows App SDK **2.3.1** and Microsoft.Windows.CppWinRT **3.0.260715.1**. Explorer mounting is validated against Dokany **2.3.1**. Before a public 0.5 candidate, Windows App SDK must be upgraded to **2.4.0 or later with an unaffected resolved WinUI package**, as documented under the publication gate below.
 
 ## Windows prerequisites
 
@@ -96,11 +96,21 @@ The launcher also supports:
 
 which starts the supported Win32 fallback without entering WinUI.
 
-## WinUI self-contained development payload
+## WinUI deployment and public-publication gate
 
-The current RC branch uses `WindowsAppSDKSelfContained=true` so WinUI runtime files are copied below the app payload. The release verifier requires actual runtime DLLs (including `Microsoft.UI.Xaml.dll` and Windows App Runtime components), not merely the frontend EXE.
+The private RC5 branch uses `WindowsAppSDKSelfContained=true` so WinUI runtime files are copied below the app payload. The release verifier requires actual runtime DLLs (including `Microsoft.UI.Xaml.dll` and Windows App Runtime components), not merely the frontend EXE.
 
-This deployment is useful for deterministic private RC testing, but **public 0.5 distribution must also pass the package-license review documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)**. Windows App SDK 2.3.x currently has an upstream licensing mismatch under review. A public build may move to the official Windows App Runtime prerequisite/framework-dependent model instead of shipping the self-contained set.
+RC5 resolves Windows App SDK **2.3.1** and transitive `Microsoft.WindowsAppSDK.WinUI` **2.3.0**. Microsoft has confirmed that WinUI 2.3.0 is among the package versions affected by an incorrect Engineering Preview license and states that the issue is fixed in **Windows App SDK 2.4.0**, which resolves WinUI 2.3.6. Affected applications are instructed to upgrade to 2.4.0 before publishing.
+
+Therefore the 2.3.1 self-contained RC5 payload is for **private hardware/UI validation only**. Before a public 0.5 candidate:
+
+1. update the pinned Windows App SDK dependency to **2.4.0 or later**;
+2. verify the resolved WinUI package is not one of the affected versions;
+3. rebuild the self-contained/runtime layout from scratch;
+4. re-run standalone WinUI and full Windows package CI;
+5. re-run real-machine WinUI startup/launcher tests on the resulting artifact.
+
+See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the upstream issue/resolution and dependency notices.
 
 ## Useful Windows variants
 
@@ -186,4 +196,4 @@ Treat all of these as real failures:
 - generated-image SHA-256 mismatches;
 - corruption fixtures unexpectedly being accepted.
 
-A storage-tool release is not validated because an EXE exists. Build verification, package verification and real-HDD testing are separate gates by design.
+A storage-tool release is not validated because an EXE exists. Build verification, package verification, dependency/publication review and real-HDD testing are separate gates by design.
