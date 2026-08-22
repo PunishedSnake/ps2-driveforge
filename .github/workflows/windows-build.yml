@@ -68,14 +68,9 @@ jobs:
         shell: pwsh
         run: .\build-windows.ps1 -Configuration Release -Clean -WithDokany -DokanyRoot '${{ steps.dokany.outputs.root }}'
 
-      - name: Verify WinUI is inside canonical package staging
+      - name: Verify canonical Windows package staging
         shell: pwsh
-        run: |
-          $exe = '.\dist\windows-x64\WinUI\PS2-DriveForge-WinUI.exe'
-          if (-not (Test-Path $exe)) {
-            Get-ChildItem .\dist\windows-x64 -Recurse -File | ForEach-Object { Write-Host $_.FullName }
-            throw 'Canonical Emilia staging does not contain the WinUI frontend.'
-          }
+        run: .\scripts\verify-windows-package.ps1
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
