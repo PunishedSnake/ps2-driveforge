@@ -6,6 +6,7 @@ This directory contains developer, format, performance and real-hardware documen
 
 - [`../BUILDING.md`](../BUILDING.md) — Windows/Linux build prerequisites and release packaging.
 - [`architecture.md`](architecture.md) — module boundaries, ownership and frontend/storage dependency rules.
+- [`windows-frontends.md`](windows-frontends.md) — launcher, WinUI, supported Win32 fallback and package layout.
 - [`testing.md`](testing.md) — deterministic test suite, CI and package smoke tests.
 - [`release-process.md`](release-process.md) — RC/final release gates.
 - [`rc-hardware-checklist.md`](rc-hardware-checklist.md) — exact real-Windows/real-PS2-HDD validation procedure.
