@@ -34,6 +34,18 @@ std::wstring utf8_to_wide(std::string_view value)
     return result;
 }
 
+std::wstring normalize_cli_mount_point(std::wstring value)
+{
+    // RC6's WinUI helper command line quoted a root path as "C:\\". Windows
+    // CRT parsing treats the final backslash as escaping the closing quote,
+    // yielding C:" as argv. Accept that exact legacy form here so RC7 mounts
+    // are robust, while the canonical normalized value remains C:\\.
+    if (value.size() == 3 && value[1] == L':' && value[2] == L'"') {
+        value.resize(2);
+    }
+    return ps2hdd::DokanyMountController::normalize_mount_point(std::move(value));
+}
+
 BOOL WINAPI console_handler(DWORD control_type)
 {
     if (control_type == CTRL_C_EVENT || control_type == CTRL_BREAK_EVENT ||
@@ -55,8 +67,7 @@ void usage()
                   L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:> [--debug]\n"
                   L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> [--debug]\n"
                   L"  PS2-DriveForge-Mount.exe --unmount <P:>\n\n"
-                  L"The CLI remains a diagnostic/script frontend. The native GUI uses the same\n"
-                  L"DokanyMountController directly; no helper subprocess is required.\n"
+                  L"The CLI remains a diagnostic/script frontend and packaged mount helper.\n"
                   L"Source devices are always opened read-only and mounted mutations are rejected.\n";
 }
 
@@ -82,9 +93,9 @@ int wmain(int argc, wchar_t** argv)
                 return 2;
             }
         } else if (arg == L"--mount" && i + 1 < argc) {
-            mount_point = ps2hdd::DokanyMountController::normalize_mount_point(argv[++i]);
+            mount_point = normalize_cli_mount_point(argv[++i]);
         } else if (arg == L"--unmount" && i + 1 < argc) {
-            unmount_point = ps2hdd::DokanyMountController::normalize_mount_point(argv[++i]);
+            unmount_point = normalize_cli_mount_point(argv[++i]);
         } else if (arg == L"--debug") {
             debug = true;
         } else if (arg == L"--help" || arg == L"-h") {
