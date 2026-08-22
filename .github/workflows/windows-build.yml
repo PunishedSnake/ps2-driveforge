@@ -123,6 +123,9 @@ jobs:
           if ($code -ne 1) {
             throw "Expected accepted arguments followed by missing-image exit code 1, got $code."
           }
+          # Exit 1 is the expected post-parse missing-image result. Do not leak it
+          # as the PowerShell step status after the assertions above succeeded.
+          $global:LASTEXITCODE = 0
           Write-Host 'Mount helper drive-argument regression passed.'
 
       - name: Build clean RC7 portable and installer packages
