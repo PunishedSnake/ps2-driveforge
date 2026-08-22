@@ -27,10 +27,11 @@ MainWindow::MainWindow()
         SetTitleBar(TitleBarDragRegion());
         ps2df::winui::diag::log("MainWindow::SetTitleBar complete");
     } catch (winrt::hresult_error const& error) {
+        const auto message = error.message();
         ps2df::winui::diag::log_hresult(
             "MainWindow construction failed",
             error.code().value,
-            std::wstring_view(error.message().c_str(), error.message().size()));
+            std::wstring_view(message.c_str(), message.size()));
         throw;
     } catch (std::exception const& error) {
         ps2df::winui::diag::log(std::string("MainWindow construction std::exception: ") + error.what());
