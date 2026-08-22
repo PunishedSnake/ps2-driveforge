@@ -28,12 +28,12 @@
                 </Border>
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <TextBlock Text="PS2 DriveForge" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                    <Border x:Name="VersionBadge" Visibility="Collapsed" Background="{StaticResource DriveForgeAccentSubtleBrush}" CornerRadius="6" Padding="7,2">
+                    <Border x:Name="VersionBadge" Background="{StaticResource DriveForgeAccentSubtleBrush}" CornerRadius="6" Padding="7,2">
                         <TextBlock Text="Emilia 0.5" FontSize="10" FontWeight="SemiBold"/>
                     </Border>
                 </StackPanel>
             </StackPanel>
-            <Border x:Name="ReadOnlyBadge" Grid.Column="1" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
+            <Border x:Name="ReadOnlyBadge" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
                     Background="{StaticResource DriveForgeCautionBackgroundBrush}" CornerRadius="12" Padding="9,3">
                 <StackPanel Orientation="Horizontal" Spacing="5">
                     <FontIcon Glyph="&#xE72E;" FontSize="10" Foreground="{StaticResource DriveForgeCautionBrush}"/>
@@ -48,23 +48,6 @@
                     <FontIcon Glyph="&#xE72C;" FontSize="15"/>
                 </Button>
             </StackPanel>
-            <VisualStateManager.VisualStateGroups>
-                <VisualStateGroup>
-                    <VisualState x:Name="TitleCompact">
-                        <VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="560"/></VisualState.StateTriggers>
-                        <VisualState.Setters>
-                            <Setter Target="ReadOnlyBadge.Visibility" Value="Visible"/>
-                        </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="TitleWide">
-                        <VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="760"/></VisualState.StateTriggers>
-                        <VisualState.Setters>
-                            <Setter Target="VersionBadge.Visibility" Value="Visible"/>
-                            <Setter Target="ReadOnlyBadge.Visibility" Value="Visible"/>
-                        </VisualState.Setters>
-                    </VisualState>
-                </VisualStateGroup>
-            </VisualStateManager.VisualStateGroups>
         </Grid>
 
         <NavigationView x:Name="Navigation" Grid.Row="1"
@@ -106,8 +89,8 @@
                     </InfoBar.ActionButton>
                 </InfoBar>
 
-                <ScrollViewer x:Name="HddPage" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                    <Grid x:Name="HddContent" Padding="24,20,24,28" MinWidth="620" MaxWidth="1560" HorizontalAlignment="Stretch">
+                <ScrollViewer x:Name="HddPage" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid x:Name="HddContent" Padding="24,20,24,28" MaxWidth="1560" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
@@ -134,18 +117,6 @@
                                 <Button x:Name="MountButton" Content="Mount read-only" Style="{StaticResource DriveForgeToolbarButtonStyle}" IsEnabled="False"/>
                                 <Button x:Name="OpenExplorerButton" Content="Open in Explorer" Style="{StaticResource DriveForgeToolbarButtonStyle}" IsEnabled="False"/>
                             </StackPanel>
-                            <VisualStateManager.VisualStateGroups>
-                                <VisualStateGroup>
-                                    <VisualState x:Name="HeaderWide">
-                                        <VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="1040"/></VisualState.StateTriggers>
-                                        <VisualState.Setters>
-                                            <Setter Target="HddHeaderActions.(Grid.Row)" Value="0"/>
-                                            <Setter Target="HddHeaderActions.(Grid.Column)" Value="1"/>
-                                            <Setter Target="HddHeaderActions.Margin" Value="0"/>
-                                        </VisualState.Setters>
-                                    </VisualState>
-                                </VisualStateGroup>
-                            </VisualStateManager.VisualStateGroups>
                         </Grid>
 
                         <Border Grid.Row="1" Style="{StaticResource DriveForgeCardStyle}" Margin="0,0,0,12">
@@ -213,16 +184,15 @@
                             </Grid>
                         </Border>
 
-                        <Grid x:Name="HddWorkspace" Grid.Row="4" ColumnSpacing="12" RowSpacing="12">
+                        <Grid x:Name="HddWorkspace" Grid.Row="4" RowSpacing="12">
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition x:Name="TelemetryColumn" Width="0"/></Grid.ColumnDefinitions>
-                            <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource DriveForgeCardStyle}" Padding="0" MinHeight="390">
+                            <Border Grid.Row="0" Style="{StaticResource DriveForgeCardStyle}" Padding="0" MinHeight="390">
                                 <Grid>
                                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="40"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                                     <Grid Padding="14,12" ColumnSpacing="8" RowSpacing="8">
                                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                        <TextBox x:Name="FilterBox" Grid.ColumnSpan="3" PlaceholderText="Search title, startup ID or partition…" MinWidth="180"/>
+                                        <TextBox x:Name="FilterBox" Grid.ColumnSpan="3" PlaceholderText="Search title, startup ID or partition…" MinWidth="120"/>
                                         <ComboBox x:Name="PartitionKindFilter" Grid.Row="1" SelectedIndex="0" MinWidth="126">
                                             <ComboBoxItem Content="All partitions"/><ComboBoxItem Content="HDL games"/><ComboBoxItem Content="PFS"/><ComboBoxItem Content="System"/>
                                         </ComboBox>
@@ -243,42 +213,32 @@
                                     </Grid>
                                 </Grid>
                             </Border>
-                            <StackPanel x:Name="TelemetryRail" Grid.Row="1" Grid.Column="0" Orientation="Vertical" Spacing="12">
-                                <Border Style="{StaticResource DriveForgeCardStyle}" MinWidth="220">
+                            <ItemsControl Grid.Row="1" Margin="0,0,0,4">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" ItemWidth="280" ItemHeight="118"/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <Border Style="{StaticResource DriveForgeCardStyle}" Margin="0,0,10,10">
                                     <StackPanel Spacing="8"><TextBlock Text="Storage profile" Style="{StaticResource DriveForgeSectionTitleStyle}"/><TextBlock x:Name="MediaClassText" Text="Media: Unknown" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="BusTypeText" Text="Bus: —" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="SeekPenaltyText" Text="Seek penalty: Unknown" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="TrimText" Text="TRIM: Unknown" Style="{StaticResource DriveForgeCaptionStyle}"/></StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource DriveForgeCardStyle}" MinWidth="220">
+                                <Border Style="{StaticResource DriveForgeCardStyle}" Margin="0,0,10,10">
                                     <StackPanel Spacing="8"><TextBlock Text="Performance" Style="{StaticResource DriveForgeSectionTitleStyle}"/><TextBlock x:Name="ApaScanTimeText" Text="APA scan: —" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="CatalogBuildTimeText" Text="Catalog build: —" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="AverageReadText" Text="Avg. backing read: —" Style="{StaticResource DriveForgeCaptionStyle}"/></StackPanel>
                                 </Border>
-                                <Border Style="{StaticResource DriveForgeCardStyle}" MinWidth="220">
+                                <Border Style="{StaticResource DriveForgeCardStyle}" Margin="0,0,10,10">
                                     <StackPanel Spacing="8"><TextBlock Text="Safety" Style="{StaticResource DriveForgeSectionTitleStyle}"/><TextBlock Text="✓ Raw source opens read-only" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock Text="✓ No public source write API" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock Text="✓ Explorer mount rejects writes" Style="{StaticResource DriveForgeCaptionStyle}"/></StackPanel>
                                 </Border>
-                            </StackPanel>
-                            <VisualStateManager.VisualStateGroups>
-                                <VisualStateGroup>
-                                    <VisualState x:Name="HddWide">
-                                        <VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="1220"/></VisualState.StateTriggers>
-                                        <VisualState.Setters>
-                                            <Setter Target="TelemetryColumn.Width" Value="300"/>
-                                            <Setter Target="TelemetryRail.(Grid.Row)" Value="0"/>
-                                            <Setter Target="TelemetryRail.(Grid.Column)" Value="1"/>
-                                            <Setter Target="TelemetryRail.Orientation" Value="Vertical"/>
-                                        </VisualState.Setters>
-                                    </VisualState>
-                                </VisualStateGroup>
-                            </VisualStateManager.VisualStateGroups>
+                            </ItemsControl>
                         </Grid>
                     </Grid>
                 </ScrollViewer>
 
-                <ScrollViewer x:Name="FilesPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                    <Grid Padding="24,20,24,28" MinWidth="520" MaxWidth="1400" HorizontalAlignment="Stretch">
+                <ScrollViewer x:Name="FilesPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Padding="24,20,24,28" MaxWidth="1400" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <TextBlock Text="Files" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Browse PFS partitions through the same cached read-only DriveSession used by the rest of DriveForge." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
                         <Border Grid.Row="2" Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,0,0,12">
                             <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <ComboBox x:Name="PfsPartitionPicker" MinWidth="220" PlaceholderText="PFS partition"/>
+                                <ComboBox x:Name="PfsPartitionPicker" MinWidth="180" PlaceholderText="PFS partition"/>
                                 <TextBlock x:Name="FilesPathText" Grid.Column="1" Text="/" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                                 <Button x:Name="FilesUpButton" Grid.Column="2" Content="Up" Style="{StaticResource DriveForgeToolbarButtonStyle}" IsEnabled="False"/>
                                 <Button x:Name="ExportButton" Grid.Column="3" Content="Export selected" Style="{StaticResource DriveForgeToolbarButtonStyle}" IsEnabled="False"/>
@@ -290,8 +250,8 @@
                     </Grid>
                 </ScrollViewer>
 
-                <ScrollViewer x:Name="MountPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                    <Grid Padding="24,20,24,28" MinWidth="480" MaxWidth="980" HorizontalAlignment="Stretch">
+                <ScrollViewer x:Name="MountPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Mount" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Expose the current source in Explorer through the read-only Dokany helper. The lowest free drive letter from C: to Z: is selected automatically." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
@@ -309,19 +269,19 @@
                     </Grid>
                 </ScrollViewer>
 
-                <ScrollViewer x:Name="PerformancePage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                    <Grid Padding="24,20,24,28" MinWidth="460" MaxWidth="1100" HorizontalAlignment="Stretch">
+                <ScrollViewer x:Name="PerformancePage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Padding="24,20,24,28" MaxWidth="1100" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Performance" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Live counters from the shared instrumented read-only I/O pipeline." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
                         <Border Grid.Row="2" Style="{StaticResource DriveForgeCardStyle}">
                             <StackPanel Spacing="10">
-                                <TextBlock x:Name="PerfSourceText" Text="No source" FontSize="18" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="PerfSourceText" Text="No source" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                 <TextBlock x:Name="PerfApaText" Text="APA scan: —"/>
                                 <TextBlock x:Name="PerfCatalogText" Text="Catalog build: —"/>
                                 <TextBlock x:Name="PerfReadsText" Text="Backing reads: —"/>
                                 <TextBlock x:Name="PerfBytesText" Text="Backing bytes: —"/>
-                                <TextBlock x:Name="PerfAvgText" Text="Average backing read: —"/>
+                                <TextBlock x:Name="PerfAvgText" Text="Average backing read: —" TextWrapping="Wrap"/>
                                 <TextBlock x:Name="PerfCacheText" Text="Cache: —" TextWrapping="Wrap"/>
                                 <Button x:Name="ResetStatsButton" Content="Reset counters" HorizontalAlignment="Left"/>
                             </StackPanel>
@@ -329,14 +289,14 @@
                     </Grid>
                 </ScrollViewer>
 
-                <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
-                    <Grid Padding="24,20,24,28" MinWidth="500" MaxWidth="980" HorizontalAlignment="Stretch">
+                <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Stretch">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Frontend preferences and diagnostic shortcuts. Storage access remains read-only regardless of theme or frontend." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
                         <Border Grid.Row="2" Style="{StaticResource DriveForgeCardStyle}" Margin="0,0,0,12">
                             <Grid ColumnSpacing="18"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <StackPanel><TextBlock Text="Theme" FontWeight="SemiBold"/><TextBlock Text="Use the Windows theme or force light/dark for WinUI." Style="{StaticResource DriveForgeCaptionStyle}"/></StackPanel>
+                                <StackPanel><TextBlock Text="Theme" FontWeight="SemiBold"/><TextBlock Text="Use the Windows theme or force light/dark for WinUI." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/></StackPanel>
                                 <ComboBox x:Name="ThemeSelector" Grid.Column="1" MinWidth="130" SelectedIndex="0"><ComboBoxItem Content="System"/><ComboBoxItem Content="Light"/><ComboBoxItem Content="Dark"/></ComboBox>
                             </Grid>
                         </Border>
@@ -348,7 +308,7 @@
                                     <Button x:Name="OpenLogButton" Content="Open startup log"/>
                                     <Button x:Name="OpenLegacyButton" Content="Open Legacy Win32"/>
                                 </StackPanel>
-                                <TextBlock Text="Legacy Win32 remains a supported fallback for Emilia 0.5." Style="{StaticResource DriveForgeCaptionStyle}"/>
+                                <TextBlock Text="Legacy Win32 remains a supported fallback for Emilia 0.5." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
                     </Grid>
@@ -362,7 +322,7 @@
                 <FontIcon Glyph="&#xE946;" FontSize="10" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 <TextBlock x:Name="StatusText" Text="Ready — scanning for PS2 HDDs" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
-            <TextBlock Grid.Column="1" Text="WinUI 3 · Windows App SDK 2.4.0" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11"/>
+            <TextBlock Grid.Column="1" Text="WinUI 3 · Windows App SDK 2.4.0" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
         </Grid>
     </Grid>
 </Window>
