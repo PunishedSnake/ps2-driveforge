@@ -23,4 +23,8 @@ If the process exits without creating any log file at all, the failure happened 
 
 ## RC2 real-machine finding
 
-The first real-machine trace after self-contained runtime packaging was fixed reached `MainWindow::InitializeComponent()` and failed with `HRESULT 0x802B000A` because the XAML referenced `AccentFillColorDefaultBrush`, which was not present in the runtime resource dictionaries on the validation machine. The frontend now defines its semantic accent/caution/success brushes in `App.xaml` instead of assuming those optional Fluent brush keys exist. The startup logger remains enabled through the RC cycle so any later XAML/runtime failure leaves a precise stage marker.
+The first real-machine trace after self-contained runtime packaging was fixed reached `MainWindow::InitializeComponent()` and failed with `HRESULT 0x802B000A` because the XAML referenced `AccentFillColorDefaultBrush`, which was not present in the runtime resource dictionaries on the validation machine.
+
+The frontend now defines DriveForge-owned semantic accent/caution/success brushes in `App.xaml`, based on the stable `SystemAccentColor` platform resource where appropriate. Compatibility aliases for the current Emilia XAML are also app-owned, so resource resolution is deterministic instead of depending on optional Fluent brush keys in a particular Windows App SDK theme dictionary. The aliases can be renamed to the `DriveForge*` keys during the later UI-only cleanup without changing behavior.
+
+The startup logger remains enabled through the RC cycle so any later XAML/runtime failure leaves a precise stage marker.
