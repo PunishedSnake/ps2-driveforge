@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.0-rc4',
+    [string]$Version = '0.5.0-rc5',
     [string]$CanonicalRoot = (Join-Path $PSScriptRoot '..\dist\windows-x64'),
     [string]$BuildBin = (Join-Path $PSScriptRoot '..\build\windows-x64\Release'),
     [string]$InnoCompiler = '',
@@ -122,6 +122,17 @@ $leakedTests = @(
 if ($leakedTests.Count -ne 0) {
     throw "User release contains regression test executables: $($leakedTests.Name -join ', ')"
 }
+
+# Compilation is not enough for the tiny bootstrap executable: RC4 proved that
+# a valid PE can still die in the Windows loader before wWinMain() because of an
+# unavailable ordinal import. Execute the exact staged launcher and verify that
+# it can also resolve the two payload paths it is responsible for dispatching.
+$StagedLauncher = Join-Path $UserRoot 'PS2-DriveForge.exe'
+$LauncherSmoke = Start-Process -FilePath $StagedLauncher -ArgumentList '--self-test' -Wait -PassThru
+if ($LauncherSmoke.ExitCode -ne 0) {
+    throw "Staged launcher smoke-test failed with exit code $($LauncherSmoke.ExitCode)."
+}
+Write-Host 'Staged launcher smoke-test: PASS' -ForegroundColor Green
 
 if (Test-Path -LiteralPath $PortableZip) {
     Remove-Item -LiteralPath $PortableZip -Force
