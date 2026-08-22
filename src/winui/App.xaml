@@ -5,6 +5,16 @@
     xmlns:local="using:PS2DriveForge.WinUI">
     <Application.Resources>
         <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!--
+                    WinUI control templates reference shared Fluent resources
+                    such as TabViewButtonBackground. Those keys live in
+                    XamlControlsResources and must be merged explicitly for an
+                    unpackaged/self-contained C++ WinUI app.
+                -->
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/>
+            </ResourceDictionary.MergedDictionaries>
+
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
