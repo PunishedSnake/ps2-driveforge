@@ -65,7 +65,7 @@ if (-not (Test-Path -LiteralPath $CanonicalWinUI -PathType Container)) {
 }
 $WinUIDestination = Join-Path $UserRoot 'app\winui'
 New-Item -ItemType Directory -Force -Path $WinUIDestination | Out-Null
-Copy-Item -LiteralPath (Join-Path $CanonicalWinUI '*') -Destination $WinUIDestination -Recurse -Force
+Copy-Item -Path (Join-Path $CanonicalWinUI '*') -Destination $WinUIDestination -Recurse -Force
 
 # Proven Win32 frontend is an explicit supported fallback, not a deprecated copy.
 Copy-RequiredFile (Join-Path $CanonicalRoot 'PS2-DriveForge.exe') `
@@ -90,7 +90,7 @@ $CanonicalDocs = Join-Path $CanonicalRoot 'docs'
 if (Test-Path -LiteralPath $CanonicalDocs -PathType Container) {
     $DocsDestination = Join-Path $UserRoot 'docs'
     New-Item -ItemType Directory -Force -Path $DocsDestination | Out-Null
-    Copy-Item -LiteralPath (Join-Path $CanonicalDocs '*') -Destination $DocsDestination -Recurse -Force
+    Copy-Item -Path (Join-Path $CanonicalDocs '*') -Destination $DocsDestination -Recurse -Force
 }
 
 # Release-layout verification. This is intentionally separate from the canonical
@@ -126,7 +126,7 @@ if ($leakedTests.Count -ne 0) {
 if (Test-Path -LiteralPath $PortableZip) {
     Remove-Item -LiteralPath $PortableZip -Force
 }
-Compress-Archive -LiteralPath (Join-Path $UserRoot '*') -DestinationPath $PortableZip -CompressionLevel Optimal
+Compress-Archive -Path (Join-Path $UserRoot '*') -DestinationPath $PortableZip -CompressionLevel Optimal
 Write-Host "Portable package: $PortableZip" -ForegroundColor Green
 Write-Host "Portable SHA-256: $((Get-FileHash -LiteralPath $PortableZip -Algorithm SHA256).Hash)"
 
