@@ -16,6 +16,8 @@ inline constexpr std::uint32_t kAllocationChunkSectors =
 struct PlannedExtent {
     std::uint32_t start_lba{};
     std::uint32_t length_sectors{};
+    std::uint32_t prev_lba{};
+    std::uint32_t next_lba{};
 
     [[nodiscard]] std::uint32_t chunks() const noexcept
     {
