@@ -110,31 +110,31 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Build clean RC5 portable and installer packages
+      - name: Build clean RC6 portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.5.0-rc5' `
+            -Version '0.5.0-rc6' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Verify RC5 release artifacts
+      - name: Verify RC6 release artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.5.0-rc5-Emilia-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.5.0-rc5-Emilia-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.5.0-rc6-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-rc6-Emilia-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Expected RC5 artifact was not produced: $path"
+              throw "Expected RC6 artifact was not produced: $path"
             }
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload RC5 user release
+      - name: Upload RC6 user release
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc5-Emilia-windows-x64
+          name: PS2-DriveForge-0.5.0-rc6-Emilia-windows-x64
           path: |
-            dist/PS2-DriveForge-0.5.0-rc5-Emilia-Portable-x64.zip
-            dist/PS2-DriveForge-0.5.0-rc5-Emilia-Setup-x64.exe
+            dist/PS2-DriveForge-0.5.0-rc6-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-rc6-Emilia-Setup-x64.exe
           if-no-files-found: error
