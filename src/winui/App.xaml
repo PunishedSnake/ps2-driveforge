@@ -92,6 +92,40 @@
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
             </Style>
 
+            <!--
+                Canonical page viewport for every NavigationView page. The host
+                owns vertical scrolling and constrains its presenter to the real
+                ScrollViewer viewport width. Individual pages may still cap the
+                width of their inner content, but they no longer implement their
+                own scrolling/measurement contract.
+            -->
+            <Style x:Key="DriveForgeResponsivePageHostStyle" TargetType="ContentControl">
+                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                <Setter Property="VerticalAlignment" Value="Stretch"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ContentControl">
+                            <ScrollViewer x:Name="PageViewport"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          HorizontalScrollMode="Disabled"
+                                          HorizontalContentAlignment="Stretch">
+                                <Grid Width="{Binding ViewportWidth, ElementName=PageViewport}"
+                                      MaxWidth="1560"
+                                      HorizontalAlignment="Center">
+                                    <ContentPresenter Content="{TemplateBinding Content}"
+                                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                      HorizontalContentAlignment="Stretch"
+                                                      VerticalContentAlignment="Stretch"/>
+                                </Grid>
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <Style x:Key="DriveForgeToolbarButtonStyle" TargetType="Button">
                 <Setter Property="MinHeight" Value="32"/>
                 <Setter Property="Padding" Value="12,5"/>
