@@ -5,6 +5,11 @@ on:
   pull_request:
     paths:
       - 'src/winui/**'
+      - 'src/core/**'
+      - 'src/host/**'
+      - 'src/platform/windows/**'
+      - 'include/ps2hdd/**'
+      - 'CMakeLists.txt'
       - '.github/workflows/winui-build.yml'
 
 permissions:
@@ -12,7 +17,7 @@ permissions:
 
 jobs:
   build-winui:
-    name: WinUI 3 / C++WinRT x64 Release
+    name: WinUI 3 + native backend / x64 Release
     runs-on: windows-2022
 
     steps:
@@ -21,6 +26,16 @@ jobs:
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
+
+      - name: Build native DriveForge libraries
+        shell: pwsh
+        run: |
+          cmake -S . -B .\build\windows-x64 -G 'Visual Studio 17 2022' -A x64 `
+            -DPS2DF_BUILD_TESTS=OFF `
+            -DPS2DF_BUILD_DOKANY=OFF
+          if ($LASTEXITCODE -ne 0) { throw "Native CMake configure failed with exit code $LASTEXITCODE" }
+          cmake --build .\build\windows-x64 --config Release --target ps2driveforge_host --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Native backend build failed with exit code $LASTEXITCODE" }
 
       - name: Restore native WinUI packages
         shell: pwsh
@@ -44,23 +59,25 @@ jobs:
             /p:Platform=x64
           if ($LASTEXITCODE -ne 0) { throw "WinUI MSBuild failed with exit code $LASTEXITCODE" }
 
-      - name: Verify frontend executable
+      - name: Verify self-contained frontend output
         shell: pwsh
         run: |
-          $exe = Get-ChildItem .\src\winui -Recurse -File -Filter 'PS2-DriveForge-WinUI.exe' |
-            Where-Object { $_.FullName -match '\\x64\\Release\\' } |
-            Select-Object -First 1
-          if (-not $exe) {
+          $output = Join-Path $PWD 'src\winui\x64\Release'
+          $exe = Join-Path $output 'PS2-DriveForge-WinUI.exe'
+          if (-not (Test-Path $exe)) {
             Get-ChildItem .\src\winui -Recurse -File | ForEach-Object { Write-Host $_.FullName }
             throw 'Expected PS2-DriveForge-WinUI.exe was not produced.'
           }
-          Write-Host "WinUI frontend: $($exe.FullName)"
+          $files = @(Get-ChildItem $output -File)
+          if ($files.Count -lt 2) {
+            throw 'Self-contained WinUI output did not contain runtime payload files.'
+          }
+          Write-Host "WinUI frontend: $exe"
+          Write-Host "Runtime payload files: $($files.Count)"
 
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4
         with:
           name: PS2-DriveForge-0.5.0-Emilia-WinUI-x64
-          path: |
-            src/winui/x64/Release/**
-            src/winui/Generated Files/**
-          if-no-files-found: warn
+          path: src/winui/x64/Release/**
+          if-no-files-found: error
