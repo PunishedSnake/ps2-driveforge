@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0-dev "Emilia" - 2026-08-22
+
+- Started the performance/frontend-modernization release above the hardware-validated Darkness read-only Explorer stack.
+- Added backing service-time, small-read and maximum-in-flight instrumentation so performance work can separate request count from actual device latency/concurrency.
+- Added immutable session caches for validated PFS probes, nodes/inodes, directory listings and stat results with explicit cold-cache reset semantics.
+- Added a bounded 4 KiB small-read window cache and adaptive sequential read-ahead with usefulness/waste counters.
+- Replaced shared seek-pointer physical/image I/O with explicit-offset operations: Windows uses OVERLAPPED request offsets; POSIX images use `pread()`.
+- Added Windows storage-characteristic hints for rotational/solid-state/unknown media, seek penalty, TRIM, bus and optional ATA nominal rotation rate without treating missing hints as errors.
+- Added zero-I/O `PartitionCatalog` construction from an existing APA scan; filtering/sorting/selecting the management list no longer requires payload probes.
+- Added native read-only HDLoader metadata parsing from the main APA partition at `+0x101000` (`0xDEADFEED`) instead of spawning `HDL.EXE` per game.
+- Added physical-LBA-ordered progressive/cancellable HDL enrichment plus a frontend-neutral `ManagementModel` whose base rows exist before optional title/detail enrichment completes.
+- Added measured HDL queue-depth policy and developer-only `--hdl-qd N` overrides; normal `unknown`/rotational behavior remains conservative rather than copying the fastest setting from one disk.
+- Added `ps2-driveforge-benchmark` support for cold APA/catalog, PFS browse+stat cold/warm behavior, native HDL enrichment and storage/I/O counters.
+- Recorded the first full real-HDD Emilia sweep: 190-header cold APA median 1555.022 ms, zero-I/O 190-row catalog median 0.006 ms, cold `+OPL` browse+stat 10 reads/16 KiB with a zero-backing-read warm repeat, and 35/35 native HDL rows readable.
+- Preserved the automatic `unknown`-media QD1 policy despite QD8 completing the narrow 35-title workload ~9.6% faster on the validation HDD because QD8 multiplied average read service latency and management rows are already usable before enrichment finishes.
+- Added native WinUI 3 / C++/WinRT source using Windows App SDK 2.3.1 and the shared DriveSession/PartitionCatalog/ManagementModel backend rather than a second parser stack.
+- Added a self-contained unpackaged WinUI build to canonical Windows CI/package staging while retaining the hardware-validated Win32 frontend as the normal fallback until parity is demonstrated.
+- Fixed WinUI release staging so build/CI discover the actual MSBuild output directory instead of assuming `src\winui\x64\Release\PS2-DriveForge-WinUI.exe` is flat; current MSBuild emits a project-name subdirectory.
+- Expanded the normal regression suite to **14 executables** covering read cache, read-ahead, partition catalog/management model, HDL enrichment, storage policy and existing APA/PFS/session/Dokany/Darkness contracts.
+- Merged the stable Emilia functionality baseline to `main` as commit `210d598442641291f12ecb03323d8a91586b6dfd` after Windows + Dokany + WinUI and Linux sanitizer CI were green and the canonical artifact was smoke-checked.
+- Began 0.5 release-prep cleanup on a separate branch so the stable functionality baseline remains available for regression comparison.
+- Moved native HDL parsing and zero-I/O partition-catalog implementation out of public headers into owned `src/core` translation units, and moved ManagementModel mutation/construction code into `src/host` without changing behavior.
+- Added deterministic `scripts/verify-windows-package.ps1` validation of required release binaries/docs, the exact 14 packaged regression executables and the WinUI payload.
+- Added reproducible Windows/Linux build documentation, refreshed architecture/testing/contributing/development docs for Emilia, and added explicit RC/release gates plus a real-Windows/real-PS2-HDD checklist.
+- Final 0.5.0 remains gated on the exact RC artifact passing the documented UAC/SetupAPI/Dokany/Explorer/write-rejection/remount and WinUI-startup hardware smoke sequence; a green CI ZIP alone is not treated as final-release validation.
+
 ## 0.4.0-dev "Darkness" - 2026-08-21
 
 - Started the read-only Dokany Explorer-mount release train above the hardware-validated Chisato stack.
