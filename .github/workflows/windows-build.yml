@@ -21,9 +21,26 @@ jobs:
       - name: Set up MSBuild for WinUI
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install Inno Setup 6.7.3 compiler
+      - name: Install verified Inno Setup 6.7.3 compiler
         shell: pwsh
-        run: choco install innosetup --version=6.7.3 --no-progress -y
+        run: |
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest $url -OutFile $installer
+          $expected = '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732'
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "Inno Setup SHA-256 mismatch: expected $expected, got $actual"
+          }
+          $process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-'
+          )
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installation failed with exit code $($process.ExitCode)"
+          }
 
       - name: Locate Inno Setup compiler
         id: inno
