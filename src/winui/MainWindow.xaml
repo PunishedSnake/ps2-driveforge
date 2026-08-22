@@ -89,13 +89,9 @@
                     </InfoBar.ActionButton>
                 </InfoBar>
 
-                <ScrollViewer x:Name="HddPage" Grid.Row="1"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled"
-                              HorizontalScrollMode="Disabled"
-                              HorizontalContentAlignment="Stretch">
+                <ContentControl x:Name="HddPage" Grid.Row="1"
+                                Style="{StaticResource DriveForgeResponsivePageHostStyle}">
                     <Grid x:Name="HddContent" Padding="24,20,24,28"
-                          Width="{Binding ViewportWidth, ElementName=HddPage}"
                           MaxWidth="1560" HorizontalAlignment="Center">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -235,10 +231,11 @@
                             </ItemsControl>
                         </Grid>
                     </Grid>
-                </ScrollViewer>
+                </ContentControl>
 
-                <ScrollViewer x:Name="FilesPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <Grid Padding="24,20,24,28" MaxWidth="1400" HorizontalAlignment="Stretch">
+                <ContentControl x:Name="FilesPage" Grid.Row="1" Visibility="Collapsed"
+                                Style="{StaticResource DriveForgeResponsivePageHostStyle}">
+                    <Grid Padding="24,20,24,28" MaxWidth="1400" HorizontalAlignment="Center">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                         <TextBlock Text="Files" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Browse PFS partitions through the same cached read-only DriveSession used by the rest of DriveForge." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
@@ -254,10 +251,11 @@
                             <ListView x:Name="FilesList" SelectionMode="Single" HorizontalContentAlignment="Stretch" Background="Transparent"/>
                         </Border>
                     </Grid>
-                </ScrollViewer>
+                </ContentControl>
 
-                <ScrollViewer x:Name="MountPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Stretch">
+                <ContentControl x:Name="MountPage" Grid.Row="1" Visibility="Collapsed"
+                                Style="{StaticResource DriveForgeResponsivePageHostStyle}">
+                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Center">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Mount" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Expose the current source in Explorer through the read-only Dokany helper. The lowest free drive letter from C: to Z: is selected automatically." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
@@ -273,10 +271,11 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                </ScrollViewer>
+                </ContentControl>
 
-                <ScrollViewer x:Name="PerformancePage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <Grid Padding="24,20,24,28" MaxWidth="1100" HorizontalAlignment="Stretch">
+                <ContentControl x:Name="PerformancePage" Grid.Row="1" Visibility="Collapsed"
+                                Style="{StaticResource DriveForgeResponsivePageHostStyle}">
+                    <Grid Padding="24,20,24,28" MaxWidth="1100" HorizontalAlignment="Center">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Performance" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Live counters from the shared instrumented read-only I/O pipeline." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
@@ -293,10 +292,11 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                </ScrollViewer>
+                </ContentControl>
 
-                <ScrollViewer x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Stretch">
+                <ContentControl x:Name="SettingsPage" Grid.Row="1" Visibility="Collapsed"
+                                Style="{StaticResource DriveForgeResponsivePageHostStyle}">
+                    <Grid Padding="24,20,24,28" MaxWidth="980" HorizontalAlignment="Center">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                         <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}"/>
                         <TextBlock Grid.Row="1" Margin="0,4,0,16" Text="Frontend preferences and diagnostic shortcuts. Storage access remains read-only regardless of theme or frontend." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/>
@@ -318,7 +318,7 @@
                             </StackPanel>
                         </Border>
                     </Grid>
-                </ScrollViewer>
+                </ContentControl>
             </Grid>
         </NavigationView>
 
