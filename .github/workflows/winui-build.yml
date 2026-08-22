@@ -83,19 +83,37 @@ jobs:
             Get-ChildItem .\src\winui -Recurse -File | ForEach-Object { Write-Host $_.FullName }
             throw "Expected exactly one PS2-DriveForge-WinUI.exe below $outputRoot, found $($candidates.Count)."
           }
+
           $exe = $candidates[0]
           $payload = Split-Path -Parent $exe.FullName
           $files = @(Get-ChildItem $payload -Recurse -File)
-          if ($files.Count -lt 2) {
-            throw 'Self-contained WinUI output did not contain runtime payload files.'
+          $xaml = @(Get-ChildItem $payload -Recurse -File -Filter 'Microsoft.UI.Xaml.dll')
+          $runtime = @(
+            Get-ChildItem $payload -Recurse -File |
+              Where-Object { $_.Name -like 'Microsoft.WindowsAppRuntime*.dll' }
+          )
+
+          if ($xaml.Count -ne 1) {
+            Get-ChildItem $payload -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw "Self-contained WinUI output is missing Microsoft.UI.Xaml.dll (found $($xaml.Count))."
           }
+          if ($runtime.Count -eq 0) {
+            Get-ChildItem $payload -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw 'Self-contained WinUI output is missing Microsoft.WindowsAppRuntime*.dll.'
+          }
+          if ($files.Count -lt 10) {
+            throw "Self-contained WinUI payload is implausibly small: only $($files.Count) files."
+          }
+
           Write-Host "WinUI frontend: $($exe.FullName)"
           Write-Host "WinUI payload: $payload"
-          Write-Host "Runtime payload files: $($files.Count)"
+          Write-Host "Payload files: $($files.Count)"
+          Write-Host "XAML runtime: $($xaml[0].FullName)"
+          Write-Host "Windows App Runtime DLLs: $($runtime.Count)"
 
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc1-Emilia-WinUI-x64
+          name: PS2-DriveForge-0.5.0-rc2-Emilia-WinUI-x64
           path: src/winui/x64/Release/**
           if-no-files-found: error
