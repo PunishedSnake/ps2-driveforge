@@ -74,7 +74,8 @@ std::optional<std::string> wide_to_utf8(LPCWSTR value)
         return std::nullopt;
     }
     std::string result(static_cast<std::size_t>(bytes), '\0');
-    if (WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), count) != count) {
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, length,
+                            result.data(), bytes, nullptr, nullptr) != bytes) {
         return std::nullopt;
     }
     return result;
