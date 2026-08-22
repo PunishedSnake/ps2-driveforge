@@ -29,6 +29,7 @@ add_library(ps2driveforge_core
     src/core/write_transaction.cpp
     src/core/apa.cpp
     src/core/apa_allocation.cpp
+    src/core/apa_hdl_headers.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
     src/core/hdl.cpp
@@ -91,6 +92,13 @@ target_compile_features(ps2-driveforge-inspect PRIVATE cxx_std_20)
 add_executable(ps2-driveforge-benchmark src/cli/benchmark.cpp)
 target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
+
+# Frieren developer surface. It can dry-run APA allocation plans and perform the
+# explicitly gated image-only HDL metadata patch operation. There is deliberately
+# no PhysicalDrive write path in this executable.
+add_executable(ps2-driveforge-hdl-tools src/cli/hdl_tools.cpp)
+target_link_libraries(ps2-driveforge-hdl-tools PRIVATE ps2driveforge_core)
+target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
 
 if(WIN32)
     add_executable(ps2-driveforge-gui WIN32
@@ -242,6 +250,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-apa-allocation-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-apa-allocation-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-apa-allocation-tests COMMAND ps2-driveforge-apa-allocation-tests)
+
+    add_executable(ps2-driveforge-apa-hdl-header-tests tests/apa_hdl_header_tests.cpp)
+    target_link_libraries(ps2-driveforge-apa-hdl-header-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-apa-hdl-header-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-apa-hdl-header-tests COMMAND ps2-driveforge-apa-hdl-header-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
