@@ -123,36 +123,34 @@ jobs:
           if ($code -ne 1) {
             throw "Expected accepted arguments followed by missing-image exit code 1, got $code."
           }
-          # Exit 1 is the expected post-parse missing-image result. Do not leak it
-          # as the PowerShell step status after the assertions above succeeded.
           $global:LASTEXITCODE = 0
           Write-Host 'Mount helper drive-argument regression passed.'
 
-      - name: Build clean RC8 portable and installer packages
+      - name: Build clean RC9 portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.5.0-rc8' `
+            -Version '0.5.0-rc9' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Verify RC8 release artifacts
+      - name: Verify RC9 release artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.5.0-rc8-Emilia-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.5.0-rc8-Emilia-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.5.0-rc9-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-rc9-Emilia-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Expected RC8 artifact was not produced: $path"
+              throw "Expected RC9 artifact was not produced: $path"
             }
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload RC8 user release
+      - name: Upload RC9 user release
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc8-Emilia-windows-x64
+          name: PS2-DriveForge-0.5.0-rc9-Emilia-windows-x64
           path: |
-            dist/PS2-DriveForge-0.5.0-rc8-Emilia-Portable-x64.zip
-            dist/PS2-DriveForge-0.5.0-rc8-Emilia-Setup-x64.exe
+            dist/PS2-DriveForge-0.5.0-rc9-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-rc9-Emilia-Setup-x64.exe
           if-no-files-found: error
