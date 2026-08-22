@@ -54,12 +54,24 @@ jobs:
         run: |
           $packages = Join-Path $PWD 'src\winui\packages'
           New-Item -ItemType Directory -Force -Path $packages | Out-Null
-          nuget install Microsoft.WindowsAppSDK -Version 2.3.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          nuget install Microsoft.WindowsAppSDK -Version 2.4.0 -DependencyVersion Lowest -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw "Windows App SDK restore failed with exit code $LASTEXITCODE" }
           nuget install Microsoft.Windows.CppWinRT -Version 3.0.260715.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw "C++/WinRT restore failed with exit code $LASTEXITCODE" }
-          if (-not (Test-Path (Join-Path $packages 'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654'))) {
-            throw 'Expected Microsoft.Windows.SDK.BuildTools 10.0.26100.4654 dependency was not restored.'
+
+          foreach ($required in @(
+            'Microsoft.WindowsAppSDK.2.4.0',
+            'Microsoft.WindowsAppSDK.Runtime.2.4.0',
+            'Microsoft.WindowsAppSDK.WinUI.2.3.6',
+            'Microsoft.WindowsAppSDK.Foundation.2.3.9',
+            'Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6',
+            'Microsoft.WindowsAppSDK.Base.2.0.4',
+            'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654',
+            'Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100'
+          )) {
+            if (-not (Test-Path (Join-Path $packages $required))) {
+              throw "Expected Windows App SDK dependency was not restored: $required"
+            }
           }
 
       - name: Build WinUI frontend
@@ -114,6 +126,6 @@ jobs:
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc2-Emilia-WinUI-x64
+          name: PS2-DriveForge-0.5.0-Emilia-WinUI-x64
           path: src/winui/x64/Release/**
           if-no-files-found: error
