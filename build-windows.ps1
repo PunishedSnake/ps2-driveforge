@@ -5,6 +5,7 @@ param(
 
     [switch]$Clean,
     [switch]$SkipTests,
+    [switch]$SkipWinUI,
     [switch]$WithDokany,
     [string]$DokanyRoot = ''
 )
@@ -27,21 +28,33 @@ function Invoke-Native {
     }
 }
 
+function Require-Command {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if (-not $command) {
+        throw "Required command was not found in PATH: $Name"
+    }
+    return $command.Source
+}
+
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BuildDir = Join-Path $Root 'build\windows-x64'
 $DistDir = Join-Path $Root 'dist\windows-x64'
+$WinUIRoot = Join-Path $Root 'src\winui'
+$WinUIConfiguration = if ($Configuration -eq 'Debug') { 'Debug' } else { 'Release' }
+$WinUIOutputDir = Join-Path $WinUIRoot "x64\$WinUIConfiguration"
 
-if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-    throw @'
-CMake was not found in PATH.
-Install Visual Studio 2022 with the "Desktop development with C++" workload,
-including MSVC, a Windows 10/11 SDK, and CMake tools for Windows.
-'@
+$CMake = Require-Command 'cmake'
+$CTest = Require-Command 'ctest'
+if (-not $SkipWinUI) {
+    $NuGet = Require-Command 'nuget'
+    $MSBuild = Require-Command 'msbuild'
 }
 
 Write-Host 'PS2 DriveForge - Windows x64 build' -ForegroundColor Cyan
 Write-Host "Configuration: $Configuration"
 Write-Host "Dokany mount:  $WithDokany"
+Write-Host "WinUI frontend: $(-not $SkipWinUI)"
 Write-Host "Build dir:     $BuildDir"
 Write-Host "Output dir:    $DistDir"
 
@@ -52,6 +65,16 @@ if ($Clean) {
     }
     if (Test-Path $DistDir) {
         Remove-Item -Recurse -Force $DistDir
+    }
+    if (-not $SkipWinUI) {
+        foreach ($Path in @(
+            (Join-Path $WinUIRoot 'x64'),
+            (Join-Path $WinUIRoot 'Generated Files')
+        )) {
+            if (Test-Path $Path) {
+                Remove-Item -Recurse -Force $Path
+            }
+        }
     }
 }
 
@@ -71,20 +94,57 @@ if ($DokanyRoot) {
     $ConfigureArgs += "-DDOKANY_ROOT=$DokanyRoot"
 }
 
-Write-Host "`n[1/4] Configuring with Visual Studio 2022..." -ForegroundColor Yellow
-Invoke-Native -FilePath cmake -Arguments $ConfigureArgs
+Write-Host "`n[1/6] Configuring native DriveForge with Visual Studio 2022..." -ForegroundColor Yellow
+Invoke-Native -FilePath $CMake -Arguments $ConfigureArgs
 
-Write-Host "`n[2/4] Building..." -ForegroundColor Yellow
-Invoke-Native -FilePath cmake -Arguments @('--build', $BuildDir, '--config', $Configuration, '--parallel')
+Write-Host "`n[2/6] Building native core/host/frontends..." -ForegroundColor Yellow
+Invoke-Native -FilePath $CMake -Arguments @('--build', $BuildDir, '--config', $Configuration, '--parallel')
 
 if (-not $SkipTests) {
-    Write-Host "`n[3/4] Running tests..." -ForegroundColor Yellow
-    Invoke-Native -FilePath ctest -Arguments @('--test-dir', $BuildDir, '-C', $Configuration, '--output-on-failure')
+    Write-Host "`n[3/6] Running native tests..." -ForegroundColor Yellow
+    Invoke-Native -FilePath $CTest -Arguments @('--test-dir', $BuildDir, '-C', $Configuration, '--output-on-failure')
 } else {
-    Write-Host "`n[3/4] Tests skipped." -ForegroundColor DarkYellow
+    Write-Host "`n[3/6] Native tests skipped." -ForegroundColor DarkYellow
 }
 
-Write-Host "`n[4/4] Packaging..." -ForegroundColor Yellow
+if (-not $SkipWinUI) {
+    Write-Host "`n[4/6] Restoring Windows App SDK / C++WinRT packages..." -ForegroundColor Yellow
+    $WinUIPackages = Join-Path $WinUIRoot 'packages'
+    New-Item -ItemType Directory -Force -Path $WinUIPackages | Out-Null
+    Invoke-Native -FilePath $NuGet -Arguments @(
+        'install', 'Microsoft.WindowsAppSDK',
+        '-Version', '2.3.1',
+        '-OutputDirectory', $WinUIPackages,
+        '-NonInteractive',
+        '-Source', 'https://api.nuget.org/v3/index.json'
+    )
+    Invoke-Native -FilePath $NuGet -Arguments @(
+        'install', 'Microsoft.Windows.CppWinRT',
+        '-Version', '3.0.260715.1',
+        '-OutputDirectory', $WinUIPackages,
+        '-NonInteractive',
+        '-Source', 'https://api.nuget.org/v3/index.json'
+    )
+
+    Write-Host "`n[5/6] Building self-contained WinUI frontend..." -ForegroundColor Yellow
+    $WinUIProject = Join-Path $WinUIRoot 'PS2DriveForge.WinUI.vcxproj'
+    Invoke-Native -FilePath $MSBuild -Arguments @(
+        $WinUIProject,
+        '/m',
+        "/p:Configuration=$WinUIConfiguration",
+        '/p:Platform=x64'
+    )
+
+    $WinUIExe = Join-Path $WinUIOutputDir 'PS2-DriveForge-WinUI.exe'
+    if (-not (Test-Path $WinUIExe)) {
+        throw "Expected self-contained WinUI executable was not produced: $WinUIExe"
+    }
+} else {
+    Write-Host "`n[4/6] WinUI package restore skipped." -ForegroundColor DarkYellow
+    Write-Host "`n[5/6] WinUI build skipped." -ForegroundColor DarkYellow
+}
+
+Write-Host "`n[6/6] Packaging Emilia..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 $BinDir = Join-Path $BuildDir $Configuration
@@ -101,6 +161,16 @@ foreach ($Required in $RequiredExecutables) {
         throw "Expected executable was not produced: $Required"
     }
     Copy-Item $Required $DistDir -Force
+}
+
+# WinUI is part of the canonical Emilia release payload from this point forward.
+# Until feature/hardware parity it lives beside, rather than replaces, the legacy
+# Win32 frontend. Once parity is signed off the package entrypoint can be swapped
+# without changing the native core/host build or the release pipeline again.
+if (-not $SkipWinUI) {
+    $WinUIDist = Join-Path $DistDir 'WinUI'
+    New-Item -ItemType Directory -Force -Path $WinUIDist | Out-Null
+    Copy-Item (Join-Path $WinUIOutputDir '*') $WinUIDist -Recurse -Force
 }
 
 $PdbNames = @('ps2-driveforge-inspect.pdb', 'ps2-driveforge-benchmark.pdb', 'PS2-DriveForge.pdb')
@@ -152,7 +222,8 @@ foreach ($Doc in @(
     'docs\REAL_HARDWARE_VALIDATION.md',
     'docs\darkness-plan.md',
     'docs\emilia-plan.md',
-    'docs\performance.md'
+    'docs\performance.md',
+    'docs\EMILIA_REAL_HDD_BENCHMARK_2026-08-22.md'
 )) {
     $Source = Join-Path $Root $Doc
     if (Test-Path $Source) {
@@ -168,7 +239,10 @@ if (Test-Path $ZipPath) {
 Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -CompressionLevel Optimal
 
 Write-Host "`nBuild completed successfully." -ForegroundColor Green
-Write-Host "GUI:        $GuiExe"
+Write-Host "Legacy GUI: $GuiExe"
+if (-not $SkipWinUI) {
+    Write-Host "WinUI:      $(Join-Path $WinUIOutputDir 'PS2-DriveForge-WinUI.exe')"
+}
 Write-Host "Inspector:  $InspectorExe"
 Write-Host "Benchmark:  $BenchmarkExe"
 if ($WithDokany) {
