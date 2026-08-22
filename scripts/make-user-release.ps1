@@ -47,18 +47,22 @@ if (Test-Path -LiteralPath $UserRoot) {
 }
 New-Item -ItemType Directory -Force -Path $UserRoot | Out-Null
 
-# The root contains only the normal entrypoint and human-facing release docs.
-# Runtime/detail binaries are deliberately placed below app/legacy/tools.
+# One normal entrypoint. WinUI/runtime, fallback frontend and tools stay below
+# their own implementation directories instead of cluttering the user root.
 $Launcher = Join-Path $BuildBin 'PS2-DriveForge-Launcher.exe'
 Copy-RequiredFile $Launcher (Join-Path $UserRoot 'PS2-DriveForge.exe')
 
+# Human-facing project and legal material is required in every user package.
+# README/CHANGELOG come from canonical staging so they match the built source;
+# legal/credits files are project-root inputs and packaging fails if absent.
 foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     Copy-RequiredFile (Join-Path $CanonicalRoot $Doc) (Join-Path $UserRoot $Doc)
 }
+foreach ($Doc in @('LICENSE', 'CREDITS.md', 'THIRD_PARTY_NOTICES.md')) {
+    Copy-RequiredFile (Join-Path $Root $Doc) (Join-Path $UserRoot $Doc)
+}
 
-# Modern frontend + Windows App SDK runtime. The self-contained payload remains
-# intact but is hidden below app/winui instead of spilling hundreds of files into
-# the directory a normal user opens.
+# Modern frontend and its Windows App SDK payload.
 $CanonicalWinUI = Join-Path $CanonicalRoot 'WinUI'
 if (-not (Test-Path -LiteralPath $CanonicalWinUI -PathType Container)) {
     throw "Canonical WinUI payload is missing: $CanonicalWinUI"
@@ -67,11 +71,11 @@ $WinUIDestination = Join-Path $UserRoot 'app\winui'
 New-Item -ItemType Directory -Force -Path $WinUIDestination | Out-Null
 Copy-Item -Path (Join-Path $CanonicalWinUI '*') -Destination $WinUIDestination -Recurse -Force
 
-# Proven Win32 frontend is an explicit supported fallback, not a deprecated copy.
+# Proven Win32 frontend remains an explicitly supported fallback.
 Copy-RequiredFile (Join-Path $CanonicalRoot 'PS2-DriveForge.exe') `
     (Join-Path $UserRoot 'legacy\PS2-DriveForge-Win32.exe')
 
-# Developer/advanced utilities are available but no longer clutter the root.
+# Advanced/diagnostic utilities remain available without cluttering the root.
 $Tools = Join-Path $UserRoot 'tools'
 New-Item -ItemType Directory -Force -Path $Tools | Out-Null
 foreach ($Tool in @(
@@ -85,7 +89,6 @@ foreach ($Tool in @(
     }
 }
 
-# Keep detailed documentation accessible without exposing regression executables.
 $CanonicalDocs = Join-Path $CanonicalRoot 'docs'
 if (Test-Path -LiteralPath $CanonicalDocs -PathType Container) {
     $DocsDestination = Join-Path $UserRoot 'docs'
@@ -93,15 +96,18 @@ if (Test-Path -LiteralPath $CanonicalDocs -PathType Container) {
     Copy-Item -Path (Join-Path $CanonicalDocs '*') -Destination $DocsDestination -Recurse -Force
 }
 
-# Release-layout verification. This is intentionally separate from the canonical
-# CI package verifier because the end-user package should NOT contain test EXEs.
+# User-layout verification is separate from canonical CI staging because normal
+# users should not receive the regression executable set.
 $requiredUserFiles = @(
     'PS2-DriveForge.exe',
     'legacy\PS2-DriveForge-Win32.exe',
     'app\winui\PS2-DriveForge-WinUI.exe',
     'app\winui\Microsoft.UI.Xaml.dll',
     'README.md',
-    'CHANGELOG.md'
+    'CHANGELOG.md',
+    'LICENSE',
+    'CREDITS.md',
+    'THIRD_PARTY_NOTICES.md'
 )
 foreach ($Relative in $requiredUserFiles) {
     Require-File (Join-Path $UserRoot $Relative)
@@ -123,10 +129,9 @@ if ($leakedTests.Count -ne 0) {
     throw "User release contains regression test executables: $($leakedTests.Name -join ', ')"
 }
 
-# Compilation is not enough for the tiny bootstrap executable: RC4 proved that
-# a valid PE can still die in the Windows loader before wWinMain() because of an
-# unavailable ordinal import. Execute the exact staged launcher and verify that
-# it can also resolve the two payload paths it is responsible for dispatching.
+# Execute the exact staged bootstrap. RC4 demonstrated that a successfully
+# linked PE can still die in the Windows loader before wWinMain() due to an
+# unavailable ordinal import. Compilation alone is therefore not a startup test.
 $StagedLauncher = Join-Path $UserRoot 'PS2-DriveForge.exe'
 $LauncherSmoke = Start-Process -FilePath $StagedLauncher -ArgumentList '--self-test' -Wait -PassThru
 if ($LauncherSmoke.ExitCode -ne 0) {
