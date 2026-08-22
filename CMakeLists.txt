@@ -30,6 +30,7 @@ add_library(ps2driveforge_core
     src/core/apa.cpp
     src/core/apa_allocation.cpp
     src/core/apa_hdl_headers.cpp
+    src/core/apa_mutation.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
     src/core/hdl.cpp
@@ -258,6 +259,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-apa-hdl-header-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-apa-hdl-header-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-apa-hdl-header-tests COMMAND ps2-driveforge-apa-hdl-header-tests)
+
+    add_executable(ps2-driveforge-apa-mutation-tests tests/apa_mutation_tests.cpp)
+    target_link_libraries(ps2-driveforge-apa-mutation-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-apa-mutation-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-apa-mutation-tests COMMAND ps2-driveforge-apa-mutation-tests)
 
     add_executable(ps2-driveforge-ps2-iso-tests tests/ps2_iso_tests.cpp)
     target_link_libraries(ps2-driveforge-ps2-iso-tests PRIVATE ps2driveforge_core)
