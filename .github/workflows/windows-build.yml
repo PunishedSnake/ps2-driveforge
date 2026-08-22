@@ -21,6 +21,27 @@ jobs:
       - name: Set up MSBuild for WinUI
         uses: microsoft/setup-msbuild@v2
 
+      - name: Install Inno Setup 6.7.3 compiler
+        shell: pwsh
+        run: choco install innosetup --version=6.7.3 --no-progress -y
+
+      - name: Locate Inno Setup compiler
+        id: inno
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+            $candidate = foreach ($root in $roots) {
+              Get-ChildItem -LiteralPath $root -Recurse -File -Filter ISCC.exe -ErrorAction SilentlyContinue
+            }
+            $compiler = $candidate | Select-Object -First 1
+          }
+          if (-not $compiler) { throw 'ISCC.exe was not found after installing Inno Setup.' }
+          $path = if ($compiler.Source) { $compiler.Source } else { $compiler.FullName }
+          Write-Host "Inno Setup compiler: $path"
+          "compiler=$path" >> $env:GITHUB_OUTPUT
+
       - name: Install Dokany 2.3.1 SDK/runtime
         shell: pwsh
         run: |
@@ -72,21 +93,31 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Freeze RC2 archive name
+      - name: Build clean RC4 portable and installer packages
         shell: pwsh
         run: |
-          $source = '.\dist\PS2-DriveForge-0.5.0-Emilia-Release-windows-x64.zip'
-          $target = '.\dist\PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64.zip'
-          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "Canonical Emilia ZIP was not produced: $source"
-          }
-          Copy-Item -LiteralPath $source -Destination $target -Force
-          Write-Host "RC2 package: $target"
-          Write-Host "SHA-256: $((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)"
+          .\scripts\make-user-release.ps1 `
+            -Version '0.5.0-rc4' `
+            -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
+            -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Upload Windows package
+      - name: Verify RC4 release artifacts
+        shell: pwsh
+        run: |
+          $portable = '.\dist\PS2-DriveForge-0.5.0-rc4-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-rc4-Emilia-Setup-x64.exe'
+          foreach ($path in @($portable, $setup)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Expected RC4 artifact was not produced: $path"
+            }
+            Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
+          }
+
+      - name: Upload RC4 user release
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64
-          path: dist/PS2-DriveForge-0.5.0-rc2-Emilia-windows-x64.zip
+          name: PS2-DriveForge-0.5.0-rc4-Emilia-windows-x64
+          path: |
+            dist/PS2-DriveForge-0.5.0-rc4-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-rc4-Emilia-Setup-x64.exe
           if-no-files-found: error
