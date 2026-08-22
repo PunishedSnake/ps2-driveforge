@@ -76,7 +76,9 @@ Before a **public** release:
 - third-party code/assets are not incorrectly presented as MIT DriveForge code;
 - Windows App SDK deployment is legally distributable under the actual package/runtime terms used by that build.
 
-The current self-contained Windows App SDK 2.3.x RC path has an upstream WinUI package-license mismatch under review; see [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). Private hardware/UI candidates may be used for testing, but this review is not optional for the final public release.
+Microsoft confirmed that the `Microsoft.WindowsAppSDK.WinUI` **2.3.0** package currently resolved by DriveForge's Windows App SDK **2.3.1** RC configuration is affected by the incorrect Engineering Preview license. Microsoft states that the issue is fixed in **Windows App SDK 2.4.0**, which resolves WinUI 2.3.6, and instructs affected applications to update before publishing.
+
+Consequently the RC5 2.3.1/WinUI 2.3.0 self-contained artifact is a **private validation build**, not the final public binary. Public 0.5 sign-off requires a dependency bump to Windows App SDK 2.4.0 or later with an unaffected WinUI package followed by fresh WinUI/package/hardware validation. See [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
 ## Gate 7 — real Windows + real PS2 HDD
 
@@ -121,7 +123,7 @@ Final 0.5.0 requires:
 - real-hardware checklist passed on that artifact or a byte-identical rebuild;
 - README/changelog/docs reflect what actually ships;
 - LICENSE/credits/third-party notices included;
-- Windows App SDK public-distribution license gate resolved;
+- Windows App SDK upgraded from the affected 2.3.1/WinUI 2.3.0 combination and the replacement payload revalidated;
 - no unresolved release-blocking issue in APA/PFS correctness, read-only safety, mount lifecycle, frontend startup or package startup.
 
 Win32 remains supported fallback for 0.5 even if WinUI is the default frontend.
