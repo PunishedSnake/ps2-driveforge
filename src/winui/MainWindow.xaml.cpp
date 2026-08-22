@@ -1096,7 +1096,7 @@ void MainWindow::on_telemetry_tick(IInspectable const&, IInspectable const&)
 
 void MainWindow::on_mount_tick(IInspectable const&, IInspectable const&) { poll_mount_state(); }
 
-void MainWindow::on_closed(Microsoft::UI::Xaml::Window const&, Microsoft::UI::Xaml::WindowEventArgs const&)
+void MainWindow::on_closed(IInspectable const&, Microsoft::UI::Xaml::WindowEventArgs const&)
 {
     if (!mount_point_.empty()) request_unmount(false);
     if (telemetry_timer_) telemetry_timer_.Stop();
