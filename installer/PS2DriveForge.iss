@@ -5,13 +5,15 @@
   #error OutputDir must be supplied with /DOutputDir=...
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.5.0"
+  #define AppVersion "0.6.0-dev"
+#endif
+#ifndef AppCodename
+  #define AppCodename "Frieren"
 #endif
 
 #define AppName "PS2 DriveForge"
 #define AppPublisher "Hifu Himejima"
 #define AppExeName "PS2-DriveForge.exe"
-#define AppCodename "Emilia"
 
 [Setup]
 AppId={{70F721C1-06E5-4F75-90A6-DF51E568ED47}
@@ -26,7 +28,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 OutputDir={#OutputDir}
-OutputBaseFilename=PS2-DriveForge-{#AppVersion}-Emilia-Setup-x64
+OutputBaseFilename=PS2-DriveForge-{#AppVersion}-{#AppCodename}-Setup-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
