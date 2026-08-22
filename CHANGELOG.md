@@ -35,8 +35,8 @@
 - Fixed Win32 dark-theme status-bar readability by custom-painting the status client with the active DriveForge dark palette while preserving normal Light/System/High-Contrast behavior.
 - Added Inno Setup installer generation alongside the clean Portable ZIP, including explicit Start Menu access to the supported Legacy Win32 fallback and optional verified Dokany prerequisite installation.
 - Added an MIT license for original DriveForge code, public credits/acknowledgements and third-party notices; user packages now require these files and the installer displays the project license.
-- Added an explicit public-release legal gate for the current Windows App SDK 2.3.x self-contained deployment while Microsoft's WinUI package-license mismatch remains unresolved; private RC hardware/UI testing can continue without pretending the redistribution question is settled.
-- Final 0.5.0 remains gated on the exact RC artifact passing the documented launcher/WinUI/Win32-theme/UAC/SetupAPI/Dokany/Explorer/write-rejection/remount hardware sequence and the public-distribution license review; a green CI ZIP alone is not treated as final-release validation.
+- Microsoft confirmed that the WinUI **2.3.0** package resolved by the RC5 Windows App SDK **2.3.1** configuration is affected by the incorrect Engineering Preview license and instructs affected applications to update to **Windows App SDK 2.4.0**, which resolves WinUI 2.3.6, before publishing. RC5 therefore remains a private validation build and the next public candidate must bump/revalidate that dependency.
+- Final 0.5.0 remains gated on the exact post-upgrade RC artifact passing the documented launcher/WinUI/Win32-theme/UAC/SetupAPI/Dokany/Explorer/write-rejection/remount hardware sequence; a green CI ZIP alone is not treated as final-release validation.
 
 ## 0.4.0-dev "Darkness" - 2026-08-21
 
