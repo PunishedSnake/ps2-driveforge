@@ -23,6 +23,12 @@ namespace {
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[3])) << 24U);
 }
 
+void store_u16_le(std::byte* p, std::uint16_t value) noexcept
+{
+    p[0] = static_cast<std::byte>(value & 0xFFU);
+    p[1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+}
+
 [[nodiscard]] std::string read_c_string(const std::byte* p, std::size_t storage,
                                         bool& terminated)
 {
@@ -44,6 +50,43 @@ namespace {
                               std::uint64_t size) noexcept
 {
     return offset <= size && bytes <= size - offset;
+}
+
+[[nodiscard]] bool metadata_offset_for(const BlockDevice& device,
+                                       const apa::Partition& partition,
+                                       std::uint64_t& out) noexcept
+{
+    const std::uint64_t main_bytes =
+        static_cast<std::uint64_t>(partition.length_sectors) * apa::kSectorSize;
+    if (!range_fits(kMetadataOffset, kMetadataBytes, main_bytes)) {
+        return false;
+    }
+
+    const std::uint64_t partition_offset =
+        static_cast<std::uint64_t>(partition.start_lba) * apa::kSectorSize;
+    if (partition_offset > std::numeric_limits<std::uint64_t>::max() - kMetadataOffset) {
+        return false;
+    }
+
+    out = partition_offset + kMetadataOffset;
+    return range_fits(out, kMetadataBytes, device.size_bytes());
+}
+
+[[nodiscard]] bool restore_metadata(WritableBlockDevice& device, std::uint64_t offset,
+                                    const std::array<std::byte, kMetadataBytes>& original)
+{
+    if (!device.write(offset, original) || !device.flush()) {
+        return false;
+    }
+
+    std::array<std::byte, kMetadataBytes> verify{};
+    return device.read(offset, verify) && verify == original;
+}
+
+[[nodiscard]] std::string rollback_suffix(bool rollback_ok)
+{
+    return rollback_ok ? "; original metadata restored"
+                       : "; WARNING: automatic metadata rollback failed";
 }
 
 } // namespace
@@ -158,6 +201,102 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         partition.sub_count + 1U, static_cast<std::uint32_t>(kMaxAllocationEntries));
     result.game.allocation_table_consistent = declared == expected_parts;
     result.ok = true;
+    return result;
+}
+
+GameResult patch_game_metadata(WritableBlockDevice& device,
+                               const apa::Partition& partition,
+                               const MetadataPatch& patch)
+{
+    if (patch.empty()) {
+        GameResult result;
+        result.error = "No HDL metadata fields were requested for update";
+        return result;
+    }
+    if (patch.title.has_value() && patch.title->size() >= kTitleStorage) {
+        GameResult result;
+        result.error = "HDL title exceeds the 64-byte format limit";
+        return result;
+    }
+
+    const auto current = read_game_info(device, partition);
+    if (!current.ok) {
+        GameResult result;
+        result.error = "Refusing to patch invalid HDL metadata: " + current.error;
+        return result;
+    }
+
+    std::uint64_t metadata_offset = 0;
+    if (!metadata_offset_for(device, partition, metadata_offset)) {
+        GameResult result;
+        result.error = "HDL metadata write range is outside the main APA extent or backing device";
+        return result;
+    }
+
+    std::array<std::byte, kMetadataBytes> original{};
+    if (!device.read(metadata_offset, original)) {
+        GameResult result;
+        result.error = "Could not capture HDL metadata before-image";
+        return result;
+    }
+
+    auto modified = original;
+    if (patch.title.has_value()) {
+        std::fill_n(modified.begin() + static_cast<std::ptrdiff_t>(kTitleOffset),
+                    kTitleStorage, std::byte{0});
+        for (std::size_t i = 0; i < patch.title->size(); ++i) {
+            modified[kTitleOffset + i] =
+                static_cast<std::byte>(static_cast<unsigned char>((*patch.title)[i]));
+        }
+    }
+    if (patch.compat_flags.has_value()) {
+        modified[kCompatOffset] = static_cast<std::byte>(*patch.compat_flags);
+    }
+    if (patch.dma.has_value()) {
+        store_u16_le(modified.data() + kDmaOffset, *patch.dma);
+    }
+
+    if (!device.write(metadata_offset, modified)) {
+        GameResult result;
+        result.error = "Could not write HDL metadata" +
+                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        return result;
+    }
+    if (!device.flush()) {
+        GameResult result;
+        result.error = "Could not flush HDL metadata" +
+                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        return result;
+    }
+
+    std::array<std::byte, kMetadataBytes> verify{};
+    if (!device.read(metadata_offset, verify) || verify != modified) {
+        GameResult result;
+        result.error = "HDL metadata read-back verification failed" +
+                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        return result;
+    }
+
+    auto result = read_game_info(device, partition);
+    if (!result.ok) {
+        const auto parse_error = result.error;
+        result.error = "Written HDL metadata failed normal parser validation: " + parse_error +
+                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        result.ok = false;
+        return result;
+    }
+
+    const bool title_matches = !patch.title.has_value() || result.game.title == *patch.title;
+    const bool compat_matches =
+        !patch.compat_flags.has_value() || result.game.compat_flags == *patch.compat_flags;
+    const bool dma_matches = !patch.dma.has_value() || result.game.dma == *patch.dma;
+    if (!title_matches || !compat_matches || !dma_matches) {
+        result.ok = false;
+        result.error = "Written HDL metadata did not round-trip requested values" +
+                       rollback_suffix(restore_metadata(device, metadata_offset, original));
+        return result;
+    }
+
     return result;
 }
 
