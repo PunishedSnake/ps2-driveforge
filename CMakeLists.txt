@@ -33,6 +33,8 @@ add_library(ps2driveforge_core
     src/core/apa_volume.cpp
     src/core/pfs.cpp
     src/core/hdl.cpp
+    src/core/ps2_iso.cpp
+    src/core/hdl_install_plan.cpp
     src/core/partition_catalog.cpp
 )
 
@@ -93,9 +95,9 @@ add_executable(ps2-driveforge-benchmark src/cli/benchmark.cpp)
 target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
 
-# Frieren developer surface. It can dry-run APA allocation plans and perform the
-# explicitly gated image-only HDL metadata patch operation. There is deliberately
-# no PhysicalDrive write path in this executable.
+# Frieren developer surface. It can dry-run APA allocation/install plans and
+# perform the explicitly gated image-only HDL metadata patch operation. There is
+# deliberately no PhysicalDrive write path in this executable.
 add_executable(ps2-driveforge-hdl-tools src/cli/hdl_tools.cpp)
 target_link_libraries(ps2-driveforge-hdl-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
@@ -255,6 +257,16 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-apa-hdl-header-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-apa-hdl-header-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-apa-hdl-header-tests COMMAND ps2-driveforge-apa-hdl-header-tests)
+
+    add_executable(ps2-driveforge-ps2-iso-tests tests/ps2_iso_tests.cpp)
+    target_link_libraries(ps2-driveforge-ps2-iso-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-ps2-iso-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-ps2-iso-tests COMMAND ps2-driveforge-ps2-iso-tests)
+
+    add_executable(ps2-driveforge-hdl-install-plan-tests tests/hdl_install_plan_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-install-plan-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-hdl-install-plan-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-install-plan-tests COMMAND ps2-driveforge-hdl-install-plan-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
