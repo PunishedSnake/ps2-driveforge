@@ -2,7 +2,6 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <commctrl.h>
 #include <shellapi.h>
 
 #include <array>
@@ -86,50 +85,39 @@ void open_log_or_folder()
 
 int fallback_dialog(const std::filesystem::path& root, std::wstring_view detail)
 {
-    constexpr int kOpenLegacy = 1001;
-    constexpr int kOpenLog = 1002;
-    constexpr int kExit = 1003;
-
-    const TASKDIALOG_BUTTON buttons[] = {
-        {kOpenLegacy, L"Open Win32 fallback\nStart the proven legacy interface using the same DriveForge backend."},
-        {kOpenLog, L"Open startup log\nShow the WinUI diagnostic log for troubleshooting."},
-        {kExit, L"Exit"},
-    };
-
     std::wstring content = L"The modern WinUI frontend could not finish starting.";
     if (!detail.empty()) {
         content += L"\n\n";
         content += detail;
     }
-    content += L"\n\nYour PS2 HDD has not been modified by this startup failure.";
+    content +=
+        L"\n\nYour PS2 HDD has not been modified by this startup failure."
+        L"\n\nYes  — Open Win32 fallback"
+        L"\nNo   — Open startup log"
+        L"\nCancel — Exit";
 
-    TASKDIALOGCONFIG config{};
-    config.cbSize = sizeof(config);
-    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT;
-    config.pszWindowTitle = L"PS2 DriveForge — Emilia";
-    config.pszMainIcon = TD_WARNING_ICON;
-    config.pszMainInstruction = L"DriveForge WinUI could not start";
-    config.pszContent = content.c_str();
-    config.cButtons = static_cast<UINT>(std::size(buttons));
-    config.pButtons = buttons;
-    config.nDefaultButton = kOpenLegacy;
+    // Deliberately use USER32 only. RC4 used TaskDialogIndirect, which imports
+    // COMCTL32 ordinal 345 at process-load time. Systems that resolve the legacy
+    // common-controls DLL fail before wWinMain() is reached, so even --legacy
+    // cannot run. A plain MessageBox keeps the recovery path load-time safe.
+    const int pressed = MessageBoxW(
+        nullptr,
+        content.c_str(),
+        L"PS2 DriveForge — Emilia",
+        MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON1 | MB_SETFOREGROUND);
 
-    int pressed = kExit;
-    if (SUCCEEDED(TaskDialogIndirect(&config, &pressed, nullptr, nullptr))) {
-        if (pressed == kOpenLegacy) {
-            if (!launch_legacy(root)) {
-                MessageBoxW(nullptr,
-                            L"The legacy Win32 fallback could not be started.\n\nExpected: legacy\\PS2-DriveForge-Win32.exe",
-                            L"PS2 DriveForge",
-                            MB_OK | MB_ICONERROR);
-                return 2;
-            }
-            return 0;
+    if (pressed == IDYES) {
+        if (!launch_legacy(root)) {
+            MessageBoxW(nullptr,
+                        L"The legacy Win32 fallback could not be started.\n\nExpected: legacy\\PS2-DriveForge-Win32.exe",
+                        L"PS2 DriveForge",
+                        MB_OK | MB_ICONERROR);
+            return 2;
         }
-        if (pressed == kOpenLog) {
-            open_log_or_folder();
-            return 1;
-        }
+        return 0;
+    }
+    if (pressed == IDNO) {
+        open_log_or_folder();
     }
     return 1;
 }
@@ -152,11 +140,30 @@ bool has_argument(std::wstring_view expected)
     LocalFree(argv);
     return found;
 }
+
+int self_test(const std::filesystem::path& root)
+{
+    const auto legacy = root / L"legacy" / L"PS2-DriveForge-Win32.exe";
+    const auto winui = root / L"app" / L"winui" / L"PS2-DriveForge-WinUI.exe";
+    if (!std::filesystem::exists(legacy)) {
+        return 10;
+    }
+    if (!std::filesystem::exists(winui)) {
+        return 11;
+    }
+    return 0;
+}
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     const auto root = executable_directory();
+
+    // CI executes the staged launcher itself. This catches PE loader/import
+    // failures that compilation and archive-layout checks cannot detect.
+    if (has_argument(L"--self-test")) {
+        return self_test(root);
+    }
 
     if (has_argument(L"--legacy")) {
         if (!launch_legacy(root)) {
