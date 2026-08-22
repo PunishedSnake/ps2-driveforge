@@ -1,122 +1,148 @@
 # PS2 DriveForge release process
 
-This document separates machine-verifiable release gates from the real-Windows/real-HDD gate. A green CI run is required, but it cannot prove UAC, SetupAPI, Dokany driver behavior, Explorer integration, or a particular USB/SATA bridge.
+A DriveForge release has separate **code**, **package**, **legal** and **real-hardware** gates. A green compiler is necessary but cannot prove Windows loader behavior, XAML resources, UAC, SetupAPI, Dokany, Explorer integration or a specific disk/bridge.
 
-## Release train state
+## Release train
 
-The current release train is **0.5.0 “Emilia”**. Emilia is still read-only. The normal Windows package contains the validated Win32 frontend plus the self-contained WinUI frontend under `WinUI\` while WinUI feature/hardware parity is being completed.
+Current train: **0.5.0 — Emilia**.
 
-The merged Emilia functionality baseline is commit `210d598442641291f12ecb03323d8a91586b6dfd`. Release-prep cleanup is intentionally developed above that baseline so regressions can be compared against a known green state.
+The Windows user package uses a small root launcher, WinUI as the default modern frontend and the proven Win32 interface as a supported fallback. Both frontends share the same native storage/host stack. Source HDD/image access remains read-only.
 
 ## Gate 1 — source safety and architecture
 
-Before an RC:
+Required:
 
-- source physical devices are opened `GENERIC_READ` only;
-- no public source `BlockDevice::write()` capability exists;
-- Dokany uses write protection and rejects create/mutation/overwrite/delete paths;
-- parser format logic stays outside GUI, SetupAPI, UAC and Dokany layers;
-- WinUI does not gain a second APA/PFS parser;
-- automatic storage tuning remains conservative for `unknown` media and is not hard-coded to one validation HDD.
+- physical sources open with `GENERIC_READ`;
+- no public source `BlockDevice::write()` capability;
+- Dokany is write-protected and mutation/create/overwrite/delete paths are rejected;
+- APA/PFS/HDL logic stays below GUI/SetupAPI/UAC/Dokany layers;
+- WinUI and Win32 do not implement independent format parsers;
+- unknown storage profiles remain conservative instead of inheriting one test disk's tuning.
 
-Any deliberate writable-HDD work belongs to a later release train with backup/recovery semantics and disposable-image destructive tests.
+Any writable-HDD feature belongs to a later design with backup/recovery semantics and disposable-image destructive tests.
 
 ## Gate 2 — deterministic tests
 
-The complete normal suite must pass on both Windows/MSVC and Linux/Clang sanitizer CI. The current normal suite contains **14 test executables**.
+The complete normal suite must pass on Windows/MSVC and Linux/Clang sanitizer CI. The current suite contains **14 regression executables** covering APA/PFS, generated-image E2E, corruption rejection, sessions/counters, caches/read-ahead, zero-I/O catalog/model behavior, native HDL enrichment, storage-profile policy, Dokany open policy and discovery/mount-letter policy.
 
-Required coverage includes:
+## Gate 3 — Windows build
 
-- APA links/checksums/bounds;
-- PFS files/directories and SEGI;
-- generated-image cross-layer export and SHA-256;
-- corruption rejection;
-- DriveSession behavior and counters;
-- metadata read cache and read-ahead;
-- zero-I/O partition catalog and ManagementModel;
-- native HDL parsing/enrichment scheduling;
-- storage-profile policy;
-- NT Dokany open-disposition policy;
-- Darkness discovery/mount-letter policy.
-
-## Gate 3 — Windows build and canonical package
-
-Create the candidate using the full release command from [`../BUILDING.md`](../BUILDING.md):
+Build the complete Windows shape described in [`../BUILDING.md`](../BUILDING.md):
 
 ```powershell
 .\build-windows.ps1 -Configuration Release -Clean -WithDokany -DokanyRoot '<Dokany 2.3.1 SDK root>'
 .\scripts\verify-windows-package.ps1
 ```
 
-The canonical package verifier is a release gate, not a cosmetic check. It must prove that the staged package contains the legacy GUI, mount CLI, inspector, benchmark, README/CHANGELOG, exactly 14 packaged regression executables, and a usable WinUI payload.
+The canonical verifier must confirm the native frontends/tools/tests plus a real WinUI runtime payload. The presence of `PS2-DriveForge-WinUI.exe` alone is insufficient.
 
-Record the SHA-256 of the final ZIP.
+## Gate 4 — user package and startup
 
-## Gate 4 — benchmark sanity
+Generate the clean Portable/Setup staging with `scripts/make-user-release.ps1`.
 
-Performance changes do not need to beat one particular disk on every number, but the candidate must not invalidate Emilia's architecture:
+Required package behavior:
 
-- one APA scan produces the complete partition list;
-- `PartitionCatalog` construction performs zero additional device I/O;
-- filtering/sorting/selection remain memory-only;
-- HDL metadata enrichment is optional/progressive/cancellable;
-- PFS warm metadata workloads can be served from session caches;
-- unknown/rotational media are not given an aggressive queue depth merely because a synthetic or single-HDD throughput run looked faster.
+- root `PS2-DriveForge.exe` is the user-facing launcher;
+- WinUI lives below `app\winui`;
+- supported Win32 fallback lives below `legacy`;
+- developer tools live below `tools`;
+- regression test EXEs do not leak into the user package;
+- `LICENSE`, `CREDITS.md` and `THIRD_PARTY_NOTICES.md` are present;
+- the **exact staged launcher** executes `--self-test` successfully before archiving;
+- Setup and Portable artifacts are both hashed.
 
-The reference real-HDD sweep is [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md). Re-run targeted benchmarks after any change to storage policy, cache semantics, overlapped I/O, request ordering, or HDL enrichment.
+The launcher smoke-test is a loader gate. It exists because RC4 produced a validly linked PE that Windows aborted before `wWinMain()` due to a common-controls ordinal import.
 
-## Gate 5 — real Windows + real PS2 HDD
+## Gate 5 — benchmark sanity
 
-Run [`rc-hardware-checklist.md`](rc-hardware-checklist.md) on the exact candidate artifact. This gate must be done after deterministic CI is green.
+Performance changes must preserve Emilia's architectural contract:
 
-It covers normal-user startup/UAC, SetupAPI disk discovery, APA auto-open, Explorer mount, known-file read/hash, write rejection, clean unmount, rescan behavior, UAC-cancel/image mode, and occupied-drive-letter fallback.
+- one APA scan produces the complete base partition model;
+- `PartitionCatalog` construction performs zero additional source I/O;
+- filter/sort/select stay memory-only;
+- HDL metadata enrichment stays optional/progressive/cancellable;
+- warm PFS metadata workloads can benefit from validated session caches;
+- unknown/rotational media are not assigned aggressive concurrency solely from one benchmark.
 
-The physical disk number is not part of the release contract and must not be hard-coded in the report; Windows may renumber `PhysicalDriveN` after reboot/reconnection.
+Reference: [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md).
 
-## RC decision
+## Gate 6 — third-party/license review
 
-An **0.5.0-rc1 candidate** may be produced when Gates 1–4 are green and the release-prep diff is reviewed. It becomes a validated RC only after Gate 5 passes on the exact artifact.
+Before a **public** release:
 
-If Gate 5 fails:
+- DriveForge's MIT `LICENSE` is present;
+- dependency notices are current;
+- bundled Dokany version/source/license information matches the release;
+- third-party code/assets are not incorrectly presented as MIT DriveForge code;
+- Windows App SDK deployment is legally distributable under the actual package/runtime terms used by that build.
 
-1. preserve the exact artifact SHA and DriveForge commit;
-2. preserve the observed Windows/Dokany/Explorer error and relevant logs;
+The current self-contained Windows App SDK 2.3.x RC path has an upstream WinUI package-license mismatch under review; see [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). Private hardware/UI candidates may be used for testing, but this review is not optional for the final public release.
+
+## Gate 7 — real Windows + real PS2 HDD
+
+Run [`rc-hardware-checklist.md`](rc-hardware-checklist.md) against the exact candidate artifact.
+
+The checklist covers:
+
+- launcher and `--legacy` startup;
+- WinUI activation/XAML resources and diagnostics;
+- Win32 theme/statusbar readability;
+- UAC and raw-disk discovery;
+- APA identification/catalog behavior;
+- Explorer mount and first-free C:–Z: drive-letter policy;
+- known-file integrity;
+- write rejection;
+- clean unmount/remount;
+- rescan/source preservation.
+
+`PhysicalDriveN` is never part of the release identity because Windows can renumber disks.
+
+## Failed candidate rule
+
+If a hardware/package candidate fails:
+
+1. preserve its exact SHA and artifact hash;
+2. preserve error text/logs/screenshots;
 3. reproduce at the narrowest deterministic layer possible;
-4. add a regression test when the failure can be represented without hardware;
-5. fix on the release branch and restart the affected gates.
+4. add a regression/smoke test where possible;
+5. issue a new RC number after the fix;
+6. restart the affected gates.
 
-Do not rename a failed candidate and ship it unchanged.
+Do not silently rename a failed artifact and ship it unchanged.
 
-## Final 0.5.0 decision
+## Final 0.5.0 sign-off
 
-Final **0.5.0** requires:
+Final 0.5.0 requires:
 
-- all CI green on the release commit;
-- canonical Windows artifact verified;
-- hardware checklist passed on that artifact or a byte-identical rebuild;
-- changelog moved from development wording to released wording/date;
-- README limitations accurately reflect what ships;
-- no unresolved release-blocking issue in APA/PFS correctness, raw-disk read-only safety, mount lifecycle, or package startup.
+- all required CI green on the release commit;
+- canonical and user-package verification green;
+- launcher startup smoke-test green;
+- exact Setup/Portable artifact hashes recorded;
+- real-hardware checklist passed on that artifact or a byte-identical rebuild;
+- README/changelog/docs reflect what actually ships;
+- LICENSE/credits/third-party notices included;
+- Windows App SDK public-distribution license gate resolved;
+- no unresolved release-blocking issue in APA/PFS correctness, read-only safety, mount lifecycle, frontend startup or package startup.
 
-WinUI does not have to become the default executable merely to ship 0.5.0. Until feature and hardware parity are demonstrated, the package may continue to carry it as the modern frontend preview beside the validated Win32 fallback.
+Win32 remains supported fallback for 0.5 even if WinUI is the default frontend.
 
-## Release evidence to preserve
-
-For every RC/final release, retain:
+## Evidence to preserve
 
 ```text
-version/codename
+version / codename / RC
 commit SHA
-CI run links/status
-Windows artifact SHA-256
-Windows version
+CI run IDs/status
+Setup SHA-256
+Portable SHA-256
+Windows build/version
 Dokany version
-source device model/capacity/bus when relevant
+source disk model/capacity/bus where relevant
 APA header/main/sub counts
 hardware checklist result
 known-file hash result when available
 benchmark report if storage policy changed
+third-party/license review result
 known limitations
 ```
 
-This makes later performance/correctness claims auditable and keeps one user's hardware from silently becoming a universal assumption.
+The goal is an auditable release, not a ZIP that merely happened to compile.
