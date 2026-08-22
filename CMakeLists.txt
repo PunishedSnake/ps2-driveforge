@@ -2,14 +2,14 @@ cmake_minimum_required(VERSION 3.24)
 
 if(POLICY CMP0144)
     # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
-    # Emilia passes DOKANY_ROOT explicitly in CI, so opt into the policy
+    # Frieren passes DOKANY_ROOT explicitly in CI, so opt into the policy
     # instead of emitting a developer warning on newer CMake releases.
     cmake_policy(SET CMP0144 NEW)
 endif()
 
-project(ps2_driveforge VERSION 0.5.0 LANGUAGES CXX)
+project(ps2_driveforge VERSION 0.6.0 LANGUAGES CXX)
 
-set(PS2DF_CODENAME "Emilia" CACHE STRING "Release codename")
+set(PS2DF_CODENAME "Frieren" CACHE STRING "Release codename")
 option(PS2DF_BUILD_TESTS "Build unit tests" ON)
 option(PS2DF_BUILD_FUZZERS "Build libFuzzer parser targets (Clang only)" OFF)
 option(PS2DF_BUILD_DOKANY "Build the Windows Dokany read-only mount frontend" OFF)
@@ -25,6 +25,7 @@ configure_file(
 
 add_library(ps2driveforge_core
     src/core/file_block_device.cpp
+    src/core/writable_file_block_device.cpp
     src/core/apa.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
@@ -114,9 +115,9 @@ if(WIN32)
         endif()
     endif()
 
-    # User-facing entrypoint for Emilia. It launches the modern WinUI frontend,
-    # waits for a post-Activate readiness handshake, and offers the proven Win32
-    # GUI plus the startup log if WinUI exits before becoming ready.
+    # User-facing entrypoint. It launches the modern WinUI frontend, waits for
+    # a post-Activate readiness handshake, and offers the proven Win32 GUI plus
+    # the startup log if WinUI exits before becoming ready.
     add_executable(ps2-driveforge-launcher WIN32 src/launcher/windows_launcher.cpp)
     set_target_properties(ps2-driveforge-launcher PROPERTIES OUTPUT_NAME "PS2-DriveForge-Launcher")
     target_link_libraries(ps2-driveforge-launcher PRIVATE comctl32 shell32)
@@ -224,6 +225,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-hdl-enrichment-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-hdl-enrichment-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-hdl-enrichment-tests COMMAND ps2-driveforge-hdl-enrichment-tests)
+
+    add_executable(ps2-driveforge-hdl-write-tests tests/hdl_write_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-write-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-hdl-write-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-write-tests COMMAND ps2-driveforge-hdl-write-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
