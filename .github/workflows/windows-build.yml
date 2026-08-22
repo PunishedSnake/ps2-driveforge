@@ -110,31 +110,46 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Build clean RC6 portable and installer packages
+      - name: Verify mount helper accepts RC6 quoted drive argument
+        shell: pwsh
+        run: |
+          $helper = '.\dist\windows-x64\PS2-DriveForge-Mount.exe'
+          $missingImage = Join-Path $env:RUNNER_TEMP 'driveforge-missing-test-image.img'
+          & $helper --image $missingImage --mount 'C:"'
+          $code = $LASTEXITCODE
+          if ($code -eq 2) {
+            throw 'Mount helper still rejects the RC6 C:" argv artifact as invalid syntax.'
+          }
+          if ($code -ne 1) {
+            throw "Expected accepted arguments followed by missing-image exit code 1, got $code."
+          }
+          Write-Host 'Mount helper drive-argument regression passed.'
+
+      - name: Build clean RC7 portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.5.0-rc6' `
+            -Version '0.5.0-rc7' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Verify RC6 release artifacts
+      - name: Verify RC7 release artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.5.0-rc6-Emilia-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.5.0-rc6-Emilia-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.5.0-rc7-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-rc7-Emilia-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Expected RC6 artifact was not produced: $path"
+              throw "Expected RC7 artifact was not produced: $path"
             }
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload RC6 user release
+      - name: Upload RC7 user release
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc6-Emilia-windows-x64
+          name: PS2-DriveForge-0.5.0-rc7-Emilia-windows-x64
           path: |
-            dist/PS2-DriveForge-0.5.0-rc6-Emilia-Portable-x64.zip
-            dist/PS2-DriveForge-0.5.0-rc6-Emilia-Setup-x64.exe
+            dist/PS2-DriveForge-0.5.0-rc7-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-rc7-Emilia-Setup-x64.exe
           if-no-files-found: error
