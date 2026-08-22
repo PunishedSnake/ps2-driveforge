@@ -5,7 +5,7 @@
   #error OutputDir must be supplied with /DOutputDir=...
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.5.0-rc4"
+  #define AppVersion "0.5.0-rc5"
 #endif
 
 #define AppName "PS2 DriveForge"
@@ -33,6 +33,7 @@ WizardStyle=modern
 UninstallDisplayIcon={app}\{#AppExeName}
 CloseApplications=yes
 RestartApplications=no
+LicenseFile={#ReleaseRoot}\LICENSE
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
