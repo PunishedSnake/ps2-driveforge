@@ -1,4 +1,4 @@
-name: Windows x64 — Emilia
+name: Windows x64 — Frieren
 
 on:
   workflow_dispatch:
@@ -102,7 +102,7 @@ jobs:
           Write-Host "Dokany library: $($library.FullName)"
           "root=$($root.FullName)" >> $env:GITHUB_OUTPUT
 
-      - name: Build, test and package complete Emilia payload
+      - name: Build, test and stage complete Frieren payload
         shell: pwsh
         run: .\build-windows.ps1 -Configuration Release -Clean -WithDokany -DokanyRoot '${{ steps.dokany.outputs.root }}'
 
@@ -110,7 +110,7 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Verify mount helper accepts RC6 quoted drive argument
+      - name: Verify mount helper accepts quoted drive argument
         shell: pwsh
         run: |
           $helper = '.\dist\windows-x64\PS2-DriveForge-Mount.exe'
@@ -118,7 +118,7 @@ jobs:
           & $helper --image $missingImage --mount 'C:"'
           $code = $LASTEXITCODE
           if ($code -eq 2) {
-            throw 'Mount helper still rejects the RC6 C:" argv artifact as invalid syntax.'
+            throw 'Mount helper rejects the historical C:" argv artifact as invalid syntax.'
           }
           if ($code -ne 1) {
             throw "Expected accepted arguments followed by missing-image exit code 1, got $code."
@@ -126,31 +126,38 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host 'Mount helper drive-argument regression passed.'
 
-      - name: Build final 0.5.0 portable and installer packages
+      - name: Smoke-test Frieren HDL developer tool
+        shell: pwsh
+        run: |
+          .\dist\windows-x64\ps2-driveforge-hdl-tools.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Frieren HDL developer tool did not start.' }
+
+      - name: Build 0.6.0-dev portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.5.0' `
+            -Version '0.6.0-dev' `
+            -Codename 'Frieren' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Verify final 0.5.0 release artifacts
+      - name: Verify Frieren development artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.6.0-dev-Frieren-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.6.0-dev-Frieren-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Expected final 0.5.0 artifact was not produced: $path"
+              throw "Expected Frieren development artifact was not produced: $path"
             }
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload final 0.5.0 user release artifact
+      - name: Upload Frieren development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-Emilia-windows-x64
+          name: PS2-DriveForge-0.6.0-dev-Frieren-windows-x64
           path: |
-            dist/PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip
-            dist/PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe
+            dist/PS2-DriveForge-0.6.0-dev-Frieren-Portable-x64.zip
+            dist/PS2-DriveForge-0.6.0-dev-Frieren-Setup-x64.exe
           if-no-files-found: error
