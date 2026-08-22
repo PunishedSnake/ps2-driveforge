@@ -6,25 +6,85 @@ The Emilia WinUI frontend writes a best-effort startup/crash trace to:
 %LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log
 ```
 
-The file is append-only across launches. Every line contains a local timestamp, process ID and thread ID. The logger is initialized during CRT/static initialization so it can distinguish failures before `App`, during XAML application initialization, during `MainWindow` XAML construction, during custom title-bar setup, and during activation.
+The file is append-only across launches. Every line contains a timestamp, process ID and thread ID. The logger is initialized during CRT/static initialization so it can separate loader/startup failures from `App`, XAML, `MainWindow`, custom-titlebar and activation failures.
 
-For a startup failure:
+## Normal diagnostic path
 
-1. launch `WinUI\PS2-DriveForge-WinUI.exe` once;
-2. open `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log`;
-3. preserve the lines for the most recent PID;
-4. report the last successful stage plus any `HRESULT`, `XAML Application::UnhandledException`, `std::terminate`, or `native unhandled exception` line.
+For a WinUI startup failure:
 
-The same messages are mirrored through `OutputDebugString`, so Sysinternals DebugView or an attached debugger can capture them live.
+1. start the normal root `PS2-DriveForge.exe` launcher;
+2. if the launcher offers recovery, open the startup log or start the Win32 fallback;
+3. inspect `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log`;
+4. preserve the lines for the most recent PID;
+5. report the last successful stage and any `HRESULT`, `XAML Application::UnhandledException`, `std::terminate`, or native-exception line.
 
-The logger flushes every entry immediately. Logging failures are intentionally ignored so diagnostics cannot become a new reason for the frontend to fail.
+The messages are also mirrored through `OutputDebugString`, so DebugView or an attached debugger can capture them live.
 
-If the process exits without creating any log file at all, the failure happened before DriveForge's own CRT/static initialization (for example, loader/runtime startup) and should be investigated with Windows Event Viewer/WER or a debugger rather than as an `App`/XAML exception.
+The logger flushes every entry immediately. Logging failures are intentionally ignored so the diagnostic system cannot become a new startup dependency.
 
-## RC2 real-machine finding
+## No log at all
 
-The first real-machine trace after self-contained runtime packaging was fixed reached `MainWindow::InitializeComponent()` and failed with `HRESULT 0x802B000A` because the XAML referenced `AccentFillColorDefaultBrush`, which was not present in the runtime resource dictionaries on the validation machine.
+If WinUI exits without creating a log, the failure occurred before DriveForge's own CRT/static initializer. Investigate Windows loader/runtime state, Event Viewer/WER and PE imports before treating the problem as an XAML exception.
 
-The frontend now defines DriveForge-owned semantic accent/caution/success brushes in `App.xaml`, based on the stable `SystemAccentColor` platform resource where appropriate. Compatibility aliases for the current Emilia XAML are also app-owned, so resource resolution is deterministic instead of depending on optional Fluent brush keys in a particular Windows App SDK theme dictionary. The aliases can be renamed to the `DriveForge*` keys during the later UI-only cleanup without changing behavior.
+The root launcher has its own loader-level protection: release staging executes:
 
-The startup logger remains enabled through the RC cycle so any later XAML/runtime failure leaves a precise stage marker.
+```powershell
+.\PS2-DriveForge.exe --self-test
+```
+
+before ZIP/setup creation. This catches binaries that compiled successfully but cannot be loaded on Windows because of an unavailable import.
+
+## RC findings preserved as regression knowledge
+
+### Self-contained payload originally incomplete
+
+An early Emilia package contained the WinUI EXE and generated metadata but not the actual Windows App SDK runtime. The release verifier now requires real runtime files such as `Microsoft.UI.Xaml.dll` and Windows App Runtime components rather than treating the existence of the EXE as proof of a self-contained deployment.
+
+### Missing `AccentFillColorDefaultBrush`
+
+The first real-machine trace after runtime staging was repaired reached:
+
+```text
+MainWindow::InitializeComponent()
+```
+
+and failed with `HRESULT 0x802B000A` because `AccentFillColorDefaultBrush` was not available in the runtime resource dictionaries on the validation machine.
+
+DriveForge now owns semantic accent/caution/success brushes in `App.xaml` instead of relying on optional theme keys for application-specific styling.
+
+### Missing `TabViewButtonBackground`
+
+The next real-machine trace reached the same XAML construction phase and failed on `TabViewButtonBackground`. That key is part of WinUI control resources rather than a DriveForge-specific color alias. The underlying issue was that the unpackaged application had not merged the WinUI control resource dictionary.
+
+`App.xaml` now merges:
+
+```text
+Microsoft.UI.Xaml.Controls.XamlControlsResources
+```
+
+so `NavigationView`, `TabView`-derived templates and other WinUI controls resolve their normal Fluent resources from the intended source. This is the correct fix; adding one compatibility alias per missing internal key would merely hide the missing dictionary.
+
+### Root launcher `COMCTL32` ordinal failure
+
+RC4's root launcher used `TaskDialogIndirect`. The produced PE statically imported a common-controls ordinal that was not available through the DLL resolved on the validation machine, causing Windows to abort the process before `wWinMain()`.
+
+Symptoms included:
+
+- an `ordinal 345 could not be located` loader dialog;
+- no launcher recovery UI;
+- `PS2-DriveForge.exe --legacy` also failing, because argument parsing never ran.
+
+The launcher no longer depends on `TaskDialogIndirect`/COMCTL32 for recovery. It uses stable USER32 primitives and the packaging pipeline runs the staged `--self-test`. PE inspection of the corrected launcher shows no COMCTL32 import.
+
+## What to attach to a bug report
+
+For a startup crash, include:
+
+- exact DriveForge version/RC and SHA if known;
+- Windows version/build;
+- whether root launcher, direct WinUI, or `--legacy` was used;
+- `winui-startup.log` for the failing PID;
+- screenshot/text of any Windows loader dialog;
+- whether Win32 fallback starts successfully.
+
+Do not include unrelated personal files or disk contents. The startup log is designed to contain initialization/diagnostic information rather than PS2 filesystem payload data.
