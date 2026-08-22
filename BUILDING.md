@@ -1,34 +1,35 @@
 # Building PS2 DriveForge
 
-PS2 DriveForge is a C++20 project with a portable parser/host stack and Windows-only frontends. The normal Windows release build is intentionally driven by `build-windows.ps1`; WinUI remains an MSBuild/C++/WinRT project because Windows App SDK XAML generation is MSBuild-oriented.
+PS2 DriveForge is a C++20 project with a portable APA/PFS/HDL core, a shared host layer and Windows-only desktop frontends. The normal Windows build is driven by `build-windows.ps1`; WinUI remains an MSBuild/C++/WinRT project because Windows App SDK XAML generation and deployment targets are MSBuild-oriented.
 
 ## Supported build shapes
 
-| Build | Core/host | Tests | Win32 GUI | WinUI 3 | Dokany mount |
-| --- | --- | --- | --- | --- | --- |
-| Windows x64 release | yes | yes | yes | yes | optional/normal release | 
-| Linux developer/CI | yes | yes | no | no | no |
-| Clang sanitizer CI | yes | yes | no | no | no |
+| Build | Core/host | Tests | Win32 | Launcher | WinUI 3 | Dokany |
+| --- | --- | --- | --- | --- | --- | --- |
+| Windows x64 release/RC | yes | yes | yes | yes | yes | yes |
+| Windows developer | yes | optional | yes | yes | optional | optional |
+| Linux developer/CI | yes | yes | no | no | no | no |
+| Clang sanitizer CI | yes | yes | no | no | no | no |
 
-The current WinUI target uses Windows App SDK **2.3.1** and Microsoft.Windows.CppWinRT **3.0.260715.1**. The read-only mount target is validated against Dokany **2.3.1**.
+The current Emilia WinUI project resolves Windows App SDK **2.3.1** and Microsoft.Windows.CppWinRT **3.0.260715.1**. Explorer mounting is validated against Dokany **2.3.1**.
 
 ## Windows prerequisites
 
-Install:
+Install or provide:
 
-- Windows 10 2004 (19041) or newer; Windows 11 is the primary validation host;
-- Visual Studio 2022 with Desktop development with C++ and a current Windows 10/11 SDK;
-- CMake 3.24 or newer;
-- PowerShell 7 or Windows PowerShell capable of running the build script;
-- NuGet CLI available in `PATH`;
-- MSBuild available in `PATH` (a Developer PowerShell/Command Prompt is sufficient);
-- Dokany 2.3.1 development files when building the Explorer mount frontend.
+- Windows 10 2004 (19041) or newer; Windows 11 is the primary validation target;
+- Visual Studio 2022 with **Desktop development with C++** and a current Windows SDK;
+- CMake 3.24+;
+- PowerShell;
+- NuGet CLI in `PATH`;
+- MSBuild in `PATH` (Developer PowerShell/Command Prompt is sufficient);
+- Dokany 2.3.1 SDK/runtime for full Explorer-mount builds.
 
-The CI workflow installs the official Dokany 2.3.1 x64 MSI and verifies SHA-256 before using it. A local installation must expose `dokan.h` and `dokan2.lib` under its SDK root.
+For user-facing installer generation, CI also uses **Inno Setup 6.7.3**. The workflow downloads the official installer and verifies its SHA-256 before running it.
 
-## Full Windows release build
+## Full Windows build
 
-From the repository root in an x64-capable Visual Studio developer shell:
+From the repository root in a Visual Studio developer shell:
 
 ```powershell
 .\build-windows.ps1 `
@@ -38,60 +39,81 @@ From the repository root in an x64-capable Visual Studio developer shell:
   -DokanyRoot 'C:\Program Files\Dokan\DokanLibrary-2.3.1'
 ```
 
-The script performs these stages:
+The script:
 
-1. configures the CMake native core/host/frontends;
-2. builds native targets;
-3. runs all normal regression tests;
+1. configures the native CMake targets;
+2. builds core, host, Win32, launcher, CLI/benchmark and Dokany targets;
+3. runs all 14 normal regression executables;
 4. restores pinned Windows App SDK/C++WinRT packages;
-5. builds the self-contained unpackaged WinUI frontend;
-6. stages the canonical Windows package and creates the release ZIP.
+5. builds the unpackaged WinUI frontend;
+6. verifies and stages the canonical developer/release payload.
 
-The script discovers the actual MSBuild WinUI output directory below `src\winui\x64\<Configuration>` rather than assuming a fixed project-subdirectory layout.
+The WinUI output directory is discovered from the actual MSBuild result below `src\winui\x64\<Configuration>` rather than assuming a flat output layout.
 
-Expected release archive:
-
-```text
-dist\PS2-DriveForge-0.5.0-Emilia-Release-windows-x64.zip
-```
-
-Canonical staging directory:
-
-```text
-dist\windows-x64\
-  PS2-DriveForge.exe
-  PS2-DriveForge-Mount.exe
-  ps2-driveforge-inspect.exe
-  ps2-driveforge-benchmark.exe
-  WinUI\
-    PS2-DriveForge-WinUI.exe
-    ... self-contained WinUI payload ...
-  docs\
-  README.md
-  CHANGELOG.md
-  ... regression executables ...
-```
-
-Verify the staging directory explicitly with:
+Verify canonical staging with:
 
 ```powershell
 .\scripts\verify-windows-package.ps1
 ```
 
-The verifier checks the required release binaries/docs, exactly 14 packaged regression executables, and a non-empty self-contained WinUI payload.
+Canonical staging intentionally contains test executables and is **not** the clean end-user package.
+
+## User-facing portable/setup packages
+
+End-user staging is produced by:
+
+```powershell
+.\scripts\make-user-release.ps1 `
+  -Version '0.5.0-rc5' `
+  -InnoCompiler 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' `
+  -DokanyMsi 'C:\path\to\Dokan_x64.msi'
+```
+
+The release script creates a clean tree:
+
+```text
+PS2-DriveForge.exe              native launcher
+README.md
+CHANGELOG.md
+LICENSE
+CREDITS.md
+THIRD_PARTY_NOTICES.md
+app\winui\                     modern frontend/runtime
+legacy\PS2-DriveForge-Win32.exe
+tools\
+docs\
+```
+
+Regression executables remain in canonical CI staging but are deliberately excluded from the user package.
+
+The Windows CI additionally executes the **exact staged launcher** with `--self-test` before ZIP/setup creation. This is a loader-level smoke test: a binary that links successfully but cannot start because of an invalid DLL/ordinal import fails packaging.
+
+The launcher also supports:
+
+```powershell
+.\PS2-DriveForge.exe --legacy
+```
+
+which starts the supported Win32 fallback without entering WinUI.
+
+## WinUI self-contained development payload
+
+The current RC branch uses `WindowsAppSDKSelfContained=true` so WinUI runtime files are copied below the app payload. The release verifier requires actual runtime DLLs (including `Microsoft.UI.Xaml.dll` and Windows App Runtime components), not merely the frontend EXE.
+
+This deployment is useful for deterministic private RC testing, but **public 0.5 distribution must also pass the package-license review documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)**. Windows App SDK 2.3.x currently has an upstream licensing mismatch under review. A public build may move to the official Windows App Runtime prerequisite/framework-dependent model instead of shipping the self-contained set.
 
 ## Useful Windows variants
 
-Skip tests while iterating on packaging/UI only:
-
-```powershell
-.\build-windows.ps1 -Configuration Release -SkipTests
-```
-
-Skip WinUI while iterating on portable/native code:
+Native/storage iteration without WinUI:
 
 ```powershell
 .\build-windows.ps1 -Configuration Release -SkipWinUI
+```
+
+UI/packaging iteration without running the regression suite:
+
+```powershell
+.\build-windows.ps1 -Configuration Release -SkipTests
 ```
 
 Build without Dokany:
@@ -100,18 +122,16 @@ Build without Dokany:
 .\build-windows.ps1 -Configuration Release
 ```
 
-If verifying such a deliberately reduced staging tree manually, use the matching verifier switches:
+Reduced package verification must explicitly match the intentionally omitted components:
 
 ```powershell
 .\scripts\verify-windows-package.ps1 -WithoutDokany
 .\scripts\verify-windows-package.ps1 -WithoutWinUI
 ```
 
-A release candidate must use the full build with tests, Dokany and WinUI enabled.
+A release candidate uses the full Windows build with tests, Dokany, both frontends, launcher smoke-test and user-package verification.
 
 ## Linux / portable build
-
-Linux builds the storage/parser/host stack and portable regression tests only:
 
 ```bash
 cmake -S . -B build \
@@ -121,11 +141,11 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Dokany and WinUI are Windows-only and must not become dependencies of `ps2driveforge_core` or portable host tests.
+Windows platform code, Dokany and WinUI must not become dependencies of `ps2driveforge_core` or portable host tests.
 
-## Sanitizer configuration
+## Sanitizers
 
-The CI sanitizer job is the authoritative configuration. A representative local Clang build is:
+Representative Clang configuration:
 
 ```bash
 cmake -S . -B build/sanitize \
@@ -150,18 +170,20 @@ cmake --build build/fuzz --target ps2-driveforge-fuzz-apa
 ./build/fuzz/ps2-driveforge-fuzz-apa
 ```
 
-Turn interesting fuzzer/hardware failures into deterministic tests before considering the bug fixed.
+Turn useful fuzzer/hardware failures into deterministic regression tests before considering a parser bug fixed.
 
-## Build failures worth treating as real failures
+## Build failures that must not be bypassed
 
-Do not bypass:
+Treat all of these as real failures:
 
 - missing Windows App SDK/C++WinRT imports;
-- missing Dokany headers/import library in a mount build;
-- package verifier failures;
-- warnings-as-errors failures under Clang CI;
-- any of the 14 regression targets;
+- missing WinUI runtime payload in a self-contained build;
+- missing Dokany headers/import library;
+- any of the 14 regression targets failing;
+- Clang sanitizer or `-Werror` failures;
+- canonical or user-package verifier failures;
+- staged launcher `--self-test` failure;
 - generated-image SHA-256 mismatches;
-- corruption tests that unexpectedly accept malformed metadata.
+- corruption fixtures unexpectedly being accepted.
 
-A release package that merely contains an EXE is not sufficient. The canonical staging verifier exists specifically to catch incomplete or incorrectly staged frontend payloads.
+A storage-tool release is not validated because an EXE exists. Build verification, package verification and real-HDD testing are separate gates by design.
