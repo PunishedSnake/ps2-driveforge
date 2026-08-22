@@ -5,7 +5,7 @@
 Current development train: **0.5.x — “Emilia”**  
 Current source version: **0.5.0-dev**
 
-PS2 DriveForge is a Windows-first PS2 HDD management stack built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`. One read-only parser/reader stack is shared by the native GUI, CLI, host exporter, Dokany Explorer provider, and Emilia benchmark tools.
+PS2 DriveForge is a Windows-first PS2 HDD management stack built as a safe, testable alternative to the old shell-oriented workflow around `pfsshell`. One read-only parser/reader stack is shared by the native GUI frontends, CLI, host exporter, Dokany Explorer provider, and Emilia benchmark tools.
 
 > **Safety status:** source devices remain read-only. There is no public HDD write API. `PhysicalDrive` requests `GENERIC_READ` only. Dokany uses `DOKAN_OPTION_WRITE_PROTECT` plus callback-level mutation rejection.
 
@@ -28,7 +28,7 @@ Current architectural differences include:
 - a zero-I/O `PartitionCatalog` for fast HDD-manager first paint;
 - backing-I/O latency/concurrency instrumentation for measured optimization.
 
-DriveForge does not publish throughput wins without measurements. See [`docs/performance.md`](docs/performance.md) and [`docs/emilia-plan.md`](docs/emilia-plan.md).
+DriveForge does not publish throughput wins without measurements. See [`docs/performance.md`](docs/performance.md), [`docs/emilia-plan.md`](docs/emilia-plan.md), and the preserved real-HDD Emilia benchmark record.
 
 ## What works now
 
@@ -54,12 +54,16 @@ DriveForge does not publish throughput wins without measurements. See [`docs/per
 - adaptive large sequential read-ahead;
 - Windows physical-disk reads through `FILE_FLAG_OVERLAPPED` with explicit offsets;
 - Windows image reads through OVERLAPPED offsets and POSIX image reads through `pread()`;
+- native scheduled HDLoader metadata enrichment with measured queue-depth behavior;
+- frontend-neutral `ManagementModel` for instant HDD-manager rows and progressive HDL updates;
+- native WinUI 3 / C++/WinRT Emilia shell with Mica and the shared `DriveSession`/`ManagementModel` bridge;
+- canonical Windows build pipeline that includes the self-contained WinUI payload alongside the legacy fallback during parity work;
 - `ps2-driveforge-benchmark` cold/warm performance harness;
 - generated APA/PFS image E2E with SHA-256 verification;
 - deterministic corruption corpus and optional APA libFuzzer target;
 - MSVC Windows CI and Clang ASan+UBSan+`-Werror` CI.
 
-Ayanami, Bocchi, Chisato, and Darkness are hardware validated. Darkness validated the complete integrated GUI discovery/elevation/read-only mount workflow on the real 149.05 GiB APA v2 test HDD. Emilia performance measurements are the active development work.
+Ayanami, Bocchi, Chisato, and Darkness are hardware validated. Darkness validated the complete integrated GUI discovery/elevation/read-only mount workflow on the real 149.05 GiB APA v2 test HDD. Emilia now has a preserved real-HDD performance baseline and is integrating the WinUI frontend against the same native backend.
 
 ## Emilia performance pipeline
 
@@ -100,11 +104,35 @@ one APA scan
 
 Sorting, filtering, showing/hiding sub-partitions, and selecting rows are memory-only operations. The first usable list must not wait for every PFS filesystem to be probed or for every HDL game title to be resolved.
 
-## Windows GUI
+## Windows GUI and Emilia release contract
 
-`PS2-DriveForge.exe` remains the normal Windows frontend while the WinUI 3 replacement is developed in parallel.
+**WinUI 3 is part of the PS2 DriveForge 0.5 Emilia release target.** It is not being developed as a separate post-0.5 experiment.
 
-Current Win32 workflow supports:
+During parity development the canonical Emilia Windows package contains both frontends:
+
+```text
+PS2-DriveForge.exe             legacy Win32 fallback / current default
+WinUI\PS2-DriveForge-WinUI.exe modern Emilia frontend under validation
+```
+
+The WinUI project links the same native `ps2driveforge_core` and `ps2driveforge_host` libraries used elsewhere. The canonical `build-windows.ps1` builds and stages the self-contained WinUI payload into the normal Emilia ZIP by default; `-SkipWinUI` exists only for developer troubleshooting.
+
+The WinUI executable becomes the normal release entrypoint before 0.5.0 is signed off once these parity gates are green:
+
+- disk-image open and native PS2 HDD discovery;
+- least-privilege read-only raw-disk broker instead of elevating the whole shell;
+- instant APA/HDL HDD Manager with filtering and progressive metadata enrichment;
+- PFS file browsing and export;
+- read-only Dokany mount / open in Explorer / unmount;
+- System/Light/Dark behavior and usable error/progress states;
+- canonical Windows CI/package validation;
+- real-HDD validation of the WinUI workflow.
+
+After that switch, the Win32 frontend remains available as a legacy/debug fallback rather than defining the normal Emilia user experience.
+
+## Current Win32 fallback
+
+The existing Win32 frontend currently provides:
 
 - `Open disk image...`;
 - automatic PS2 HDD detection and selection;
@@ -117,11 +145,11 @@ Current Win32 workflow supports:
 
 The old visible `PhysicalDrive0..31` list is gone. SetupAPI discovers actual disk interfaces, DriveForge validates APA, and one candidate can auto-open.
 
-## WinUI 3 direction
+## WinUI architecture
 
-Emilia is also building a modern WinUI 3 frontend. Storage, APA/PFS, discovery, catalog, performance, and Dokany code stay outside XAML/Windows App SDK.
+Storage, APA/PFS, discovery, catalog, performance, and Dokany code stay outside XAML/Windows App SDK. The WinUI layer consumes immutable frontend snapshots from a native session controller rather than reimplementing disk logic.
 
-The long-term elevation model is:
+The target elevation model is:
 
 ```text
 WinUI 3 shell (normal user)
@@ -133,14 +161,14 @@ elevated raw-disk broker
 GENERIC_READ PhysicalDrive
 ```
 
-This keeps the user-facing UI out of an elevated process and limits administrator privileges to the smallest component that actually needs raw disk access. The legacy Win32 frontend remains a fallback until WinUI reaches feature and hardware parity.
+This keeps the user-facing UI out of an elevated process and limits administrator privileges to the smallest component that actually needs raw disk access.
 
 ## Current limitations
 
 - source HDD/image mutation is not implemented;
 - real-HDD PFS SEGI/large-fragmented-file traversal has not been observed because the current test HDD stores large content as HDL; generated-image SEGI/main-sub coverage is green;
-- adaptive cache/read-ahead tuning still needs real-HDD benchmark data;
-- queue-depth tuning and HDL title enrichment are active Emilia work;
-- WinUI 3 frontend/broker implementation is not yet feature-complete;
+- additional cache/read-ahead policy tuning may still be driven by wider real-hardware samples;
+- the WinUI native controller is integrated, but complete MainWindow data binding, file workflow, mount workflow, and the raw-disk broker are still being completed;
+- the WinUI frontend has not yet replaced the legacy package entrypoint because feature/hardware parity is a release gate;
 - HDL virtual ISO browsing/import/export remains later roadmap work;
 - project licensing remains TBD until the upstream-definition/code audit is complete.
