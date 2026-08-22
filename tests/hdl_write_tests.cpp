@@ -134,8 +134,6 @@ void seed_valid_metadata(MemoryWritableDevice& device,
     store_u32_le(metadata.data() + ps2hdd::hdl::kMediaOffset, 0x14U);
     metadata[ps2hdd::hdl::kPartCountOffset] = std::byte{1};
 
-    // One allocation entry, with a non-zero length field so the normal parser
-    // exercises its raw-size calculation after the write.
     store_u32_le(metadata.data() + ps2hdd::hdl::kAllocTableOffset + 8, 0x4000U);
 
     auto target = device.bytes().subspan(static_cast<std::size_t>(metadata_offset(partition)),
@@ -254,8 +252,8 @@ void test_patch_rolls_back_failed_readback()
 
     const auto result = ps2hdd::hdl::patch_game_metadata(device, partition, patch);
     check(!result.ok, "corrupted read-back must fail the patch");
-    check(result.error.find("original metadata restored") != std::string::npos,
-          "failed read-back should report successful rollback");
+    check(result.error.find("before-images restored") != std::string::npos,
+          "failed read-back should report successful transaction rollback");
     check(device.write_calls == 2, "failed verification should write once and then roll back");
     check(device.flush_calls == 2, "failed verification should flush write and rollback");
     check(capture_metadata(device, partition) == before,
