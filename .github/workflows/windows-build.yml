@@ -7,7 +7,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -146,7 +146,7 @@ jobs:
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload final 0.5.0 user release
+      - name: Upload final 0.5.0 user release artifact
         uses: actions/upload-artifact@v4
         with:
           name: PS2-DriveForge-0.5.0-Emilia-windows-x64
@@ -154,3 +154,60 @@ jobs:
             dist/PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip
             dist/PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe
           if-no-files-found: error
+
+      - name: Publish GitHub Release v0.5.0
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $portable = '.\dist\PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe'
+          $portableHash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash
+          $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash
+          $notesPath = Join-Path $env:RUNNER_TEMP 'emilia-0.5.0-release-notes.md'
+          @"
+          PS2 DriveForge 0.5.0 **Emilia** is the first public release of the modern WinUI 3 frontend while retaining the proven Win32 interface as a supported fallback.
+
+          Highlights:
+          - read-only APA v2 / PFS v3 inspection and recursive export;
+          - native HDLoader metadata parsing with instant zero-I/O partition catalog construction after the APA scan;
+          - progressive HDL metadata enrichment, caching, read-ahead and backing-I/O instrumentation;
+          - automatic physical PS2 HDD discovery and read-only Dokany Explorer mounting;
+          - self-contained WinUI 3 frontend on Windows App SDK 2.4.0 plus the supported Win32 fallback;
+          - installer and portable packages validated by the complete 14-test Windows regression suite and Linux sanitizer CI.
+
+          Safety remains structural: physical sources open with `GENERIC_READ`, the public block-device API has no source write operation, and Dokany mounts reject mutations.
+
+          ### Downloads
+          - `PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe` (recommended)
+          - `PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip`
+
+          ### SHA-256
+          - Portable: `$portableHash`
+          - Setup: `$setupHash`
+
+          See `CHANGELOG.md` for the full Emilia development history and `docs/rc-hardware-checklist.md` / `docs/REAL_HARDWARE_VALIDATION.md` for validation details.
+          "@ | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          $tag = 'v0.5.0'
+          $title = 'PS2 DriveForge 0.5.0 "Emilia"'
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+
+          if ($releaseExists) {
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --title $title --notes-file $notesPath --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to update the existing v0.5.0 GitHub Release.' }
+            gh release upload $tag $portable $setup --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to upload final v0.5.0 release assets.' }
+          } else {
+            gh release create $tag $portable $setup `
+              --repo $env:GITHUB_REPOSITORY `
+              --target $env:GITHUB_SHA `
+              --title $title `
+              --notes-file $notesPath `
+              --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to create GitHub Release v0.5.0.' }
+          }
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY
