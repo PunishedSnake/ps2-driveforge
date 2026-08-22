@@ -131,6 +131,34 @@ void terminate_handler() noexcept
     write_line("std::terminate invoked");
     std::abort();
 }
+
+void signal_launcher_ready() noexcept
+{
+    try {
+        wchar_t event_name[512]{};
+        const DWORD length = GetEnvironmentVariableW(
+            L"PS2DF_WINUI_READY_EVENT", event_name, static_cast<DWORD>(_countof(event_name)));
+        if (length == 0 || length >= _countof(event_name)) {
+            write_line("launcher readiness event not present (direct WinUI launch)");
+            return;
+        }
+
+        const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, event_name);
+        if (!event) {
+            write_line("launcher readiness event could not be opened");
+            return;
+        }
+
+        if (SetEvent(event)) {
+            write_line("launcher readiness event signaled");
+        } else {
+            write_line("launcher readiness event signaling failed");
+        }
+        CloseHandle(event);
+    } catch (...) {
+        write_line("launcher readiness signaling threw unexpectedly");
+    }
+}
 } // namespace
 
 void initialize() noexcept
@@ -256,6 +284,7 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&)
         ps2df::winui::diag::log("App::OnLaunched MainWindow created");
         window_.Activate();
         ps2df::winui::diag::log("App::OnLaunched MainWindow activated");
+        ps2df::winui::diag::signal_launcher_ready();
     } catch (winrt::hresult_error const& error) {
         const auto message = error.message();
         ps2df::winui::diag::log_hresult(
