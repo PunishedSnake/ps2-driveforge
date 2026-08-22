@@ -8,8 +8,54 @@
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
+                    <CornerRadius x:Key="OverlayCornerRadius">12</CornerRadius>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
+
+            <Style x:Key="DriveForgeCardStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="12"/>
+                <Setter Property="Padding" Value="16"/>
+            </Style>
+
+            <Style x:Key="DriveForgeCompactCardStyle" TargetType="Border" BasedOn="{StaticResource DriveForgeCardStyle}">
+                <Setter Property="Padding" Value="14,12"/>
+            </Style>
+
+            <Style x:Key="DriveForgeMetricLabelStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Style>
+
+            <Style x:Key="DriveForgeMetricValueStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="25"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+            </Style>
+
+            <Style x:Key="DriveForgeSectionTitleStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="14"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+            </Style>
+
+            <Style x:Key="DriveForgeCaptionStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11"/>
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Style>
+
+            <Style x:Key="DriveForgeToolbarButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="32"/>
+                <Setter Property="Padding" Value="12,5"/>
+                <Setter Property="CornerRadius" Value="8"/>
+            </Style>
+
+            <Style x:Key="DriveForgeIconButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="36"/>
+                <Setter Property="Height" Value="36"/>
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="CornerRadius" Value="8"/>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>
