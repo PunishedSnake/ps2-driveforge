@@ -47,7 +47,8 @@ Reference validation disk historically reports APA v2, 190 headers, 43 main part
 ## D. Read-only Explorer mount
 
 - [ ] Use the GUI `Mount read-only` action.
-- [ ] Confirm `P:` is selected when available; otherwise confirm another free data letter is selected automatically.
+- [ ] Confirm DriveForge selects the **lowest currently unused drive letter from C: through Z:**.
+- [ ] Confirm A: and B: are never selected automatically, even when they are unused.
 - [ ] Use `Open mounted volume in Explorer`.
 - [ ] Browse the mounted root.
 - [ ] Browse `Partitions`.
@@ -106,18 +107,21 @@ After the attempts, re-read/browse the affected source area and confirm no sourc
 - [ ] Confirm raw physical-drive access is unavailable/limited as expected.
 - [ ] Use `Restart as Administrator` and confirm raw-disk discovery/access is restored.
 
-## J. Occupied mount-letter fallback
+## J. Mount-letter fallback
 
-- [ ] Occupy `P:` with another valid drive/mapping before mounting DriveForge.
-- [ ] Confirm DriveForge chooses another unused data letter rather than failing or stealing `P:`.
-- [ ] Confirm letters below `D:` are never selected automatically.
+- [ ] Record the letters already occupied in Windows before mounting.
+- [ ] Predict the first free letter in the C: through Z: range and confirm DriveForge takes exactly that letter.
+- [ ] If practical, temporarily occupy that expected letter with another valid drive/mapping and mount again; confirm DriveForge advances to the next free letter instead of failing or stealing an existing mount.
+- [ ] Confirm A: and B: remain excluded from automatic selection.
+- [ ] If every letter C: through Z: is occupied, confirm mounting fails cleanly instead of reusing an occupied letter.
 
 ## K. WinUI candidate smoke
 
 The WinUI frontend remains a preview until feature/hardware parity. It must nevertheless start from the candidate package.
 
 - [ ] Launch `WinUI\PS2-DriveForge-WinUI.exe` on the target Windows machine.
-- [ ] Confirm there is no missing Windows App SDK/runtime DLL error.
+- [ ] Confirm there is no missing Windows App SDK/runtime DLL error or immediate process exit.
+- [ ] Confirm `Microsoft.UI.Xaml.dll` and the Windows App Runtime payload are present beside/in the packaged WinUI deployment.
 - [ ] Confirm XAML resources render and the window opens normally.
 - [ ] Exercise only the functionality actually wired in this candidate; do not mark legacy parity as passed if controls are still presentation-only.
 
