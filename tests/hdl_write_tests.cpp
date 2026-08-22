@@ -1,14 +1,19 @@
 #include "ps2hdd/hdl.hpp"
+#include "ps2hdd/writable_file_block_device.hpp"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -81,6 +86,16 @@ private:
     std::vector<std::byte> bytes_;
 };
 
+struct TempFileGuard {
+    std::filesystem::path path;
+
+    ~TempFileGuard()
+    {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+    }
+};
+
 ps2hdd::apa::Partition make_partition()
 {
     ps2hdd::apa::Partition partition;
@@ -137,6 +152,43 @@ capture_metadata(const MemoryWritableDevice& device,
                                                out.size());
     std::copy(source.begin(), source.end(), out.begin());
     return out;
+}
+
+void test_writable_file_backend_is_existing_and_fixed_size()
+{
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("ps2-driveforge-frieren-write-" + std::to_string(unique) + ".img");
+    TempFileGuard guard{path};
+
+    std::array<char, 4096> zeros{};
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        check(output.good(), "could not create temporary writable-image fixture");
+        output.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+        check(output.good(), "could not populate temporary writable-image fixture");
+    }
+
+    ps2hdd::WritableFileBlockDevice device(path);
+    check(device.is_open(), "existing writable image should open");
+    check(device.size_bytes() == zeros.size(), "writable image size is incorrect");
+
+    const std::array<std::byte, 4> payload{
+        std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+    check(device.write(128, payload), "bounded writable-image write failed");
+    check(device.flush(), "writable-image flush failed");
+
+    std::array<std::byte, 4> readback{};
+    check(device.read(128, readback), "writable-image readback failed");
+    check(readback == payload, "writable-image bytes did not round-trip");
+    check(!device.write(4094, payload), "writable image must reject extending writes");
+    check(device.size_bytes() == zeros.size(), "rejected write changed logical image size");
+    check(std::filesystem::file_size(path) == zeros.size(), "rejected write extended image file");
+
+    const auto missing = path.string() + ".missing";
+    ps2hdd::WritableFileBlockDevice missing_device(missing);
+    check(!missing_device.is_open(), "writable image backend must not create missing images");
+    check(!std::filesystem::exists(missing), "writable image backend created a missing path");
 }
 
 void test_patch_round_trips_selected_fields()
@@ -230,6 +282,7 @@ void test_patch_refuses_invalid_hdl_header()
 int main()
 {
     try {
+        test_writable_file_backend_is_existing_and_fixed_size();
         test_patch_round_trips_selected_fields();
         test_patch_rejects_oversized_title_without_write();
         test_patch_rolls_back_failed_readback();
