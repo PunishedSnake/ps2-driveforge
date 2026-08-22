@@ -39,11 +39,11 @@ std::string utf8(std::wstring_view text)
 std::wstring make_log_path()
 {
     wchar_t local_app_data[32768]{};
-    const auto length = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", local_app_data, static_cast<DWORD>(std::size(local_app_data)));
+    const auto capacity = static_cast<DWORD>(_countof(local_app_data));
+    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local_app_data, capacity);
 
     std::wstring root;
-    if (length > 0 && length < std::size(local_app_data)) {
+    if (length > 0 && length < capacity) {
         root.assign(local_app_data, length);
     } else {
         root = L".";
@@ -141,6 +141,18 @@ void initialize() noexcept
             (void)SetUnhandledExceptionFilter(unhandled_exception_filter);
             std::set_terminate(terminate_handler);
             write_line("WinUI diagnostics initialized");
+
+            try {
+                wchar_t module_path[32768]{};
+                const auto length = GetModuleFileNameW(
+                    nullptr, module_path, static_cast<DWORD>(_countof(module_path)));
+                if (length > 0 && length < _countof(module_path)) {
+                    write_line(std::string("executable=") + utf8(std::wstring_view(module_path, length)));
+                }
+                write_line(std::string("log_path=") + utf8(g_log_path));
+            } catch (...) {
+                write_line("failed to format bootstrap path diagnostics");
+            }
         });
     } catch (...) {
         // Best-effort only. Startup must continue even if logging cannot initialize.
@@ -208,10 +220,11 @@ App::App()
         InitializeComponent();
         ps2df::winui::diag::log("App::InitializeComponent complete");
     } catch (winrt::hresult_error const& error) {
+        const auto message = error.message();
         ps2df::winui::diag::log_hresult(
             "App::InitializeComponent failed",
             error.code().value,
-            std::wstring_view(error.message().c_str(), error.message().size()));
+            std::wstring_view(message.c_str(), message.size()));
         throw;
     } catch (std::exception const& error) {
         ps2df::winui::diag::log(std::string("App::InitializeComponent std::exception: ") + error.what());
@@ -244,10 +257,11 @@ void App::OnLaunched(Microsoft::UI::Xaml::LaunchActivatedEventArgs const&)
         window_.Activate();
         ps2df::winui::diag::log("App::OnLaunched MainWindow activated");
     } catch (winrt::hresult_error const& error) {
+        const auto message = error.message();
         ps2df::winui::diag::log_hresult(
             "App::OnLaunched failed",
             error.code().value,
-            std::wstring_view(error.message().c_str(), error.message().size()));
+            std::wstring_view(message.c_str(), message.size()));
         throw;
     } catch (std::exception const& error) {
         ps2df::winui::diag::log(std::string("App::OnLaunched std::exception: ") + error.what());
