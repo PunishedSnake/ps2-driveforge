@@ -10,6 +10,7 @@ on:
       - 'src/platform/windows/**'
       - 'include/ps2hdd/**'
       - 'CMakeLists.txt'
+      - 'build-windows.ps1'
       - '.github/workflows/winui-build.yml'
 
 permissions:
@@ -62,17 +63,23 @@ jobs:
       - name: Verify self-contained frontend output
         shell: pwsh
         run: |
-          $output = Join-Path $PWD 'src\winui\x64\Release'
-          $exe = Join-Path $output 'PS2-DriveForge-WinUI.exe'
-          if (-not (Test-Path $exe)) {
+          $outputRoot = Join-Path $PWD 'src\winui\x64\Release'
+          $candidates = @(
+            Get-ChildItem $outputRoot -Recurse -File -Filter 'PS2-DriveForge-WinUI.exe' |
+              Sort-Object FullName
+          )
+          if ($candidates.Count -ne 1) {
             Get-ChildItem .\src\winui -Recurse -File | ForEach-Object { Write-Host $_.FullName }
-            throw 'Expected PS2-DriveForge-WinUI.exe was not produced.'
+            throw "Expected exactly one PS2-DriveForge-WinUI.exe below $outputRoot, found $($candidates.Count)."
           }
-          $files = @(Get-ChildItem $output -File)
+          $exe = $candidates[0]
+          $payload = Split-Path -Parent $exe.FullName
+          $files = @(Get-ChildItem $payload -Recurse -File)
           if ($files.Count -lt 2) {
             throw 'Self-contained WinUI output did not contain runtime payload files.'
           }
-          Write-Host "WinUI frontend: $exe"
+          Write-Host "WinUI frontend: $($exe.FullName)"
+          Write-Host "WinUI payload: $payload"
           Write-Host "Runtime payload files: $($files.Count)"
 
       - name: Upload WinUI development artifact
