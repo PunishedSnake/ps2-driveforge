@@ -152,7 +152,7 @@ See [`BUILDING.md`](BUILDING.md) for Visual Studio, Windows App SDK, Dokany, Inn
 Explorer <-> Dokany read-only provider <-> shared host/core
 ```
 
-Format parsing stays below platform/UI code. Frontends do not reimplement APA, PFS or HDLoader parsing. See [`docs/architecture.md`](docs/architecture.md).
+Format parsing stays below platform/UI code. Frontends do not reimplement APA, PFS or HDLoader parsing. See [`docs/architecture.md`](docs/architecture.md) and [`docs/windows-frontends.md`](docs/windows-frontends.md).
 
 ## Safety and real-hardware testing
 
@@ -176,7 +176,7 @@ The exact checklist is [`docs/rc-hardware-checklist.md`](docs/rc-hardware-checkl
 - The final least-privilege architecture still calls for a narrow elevated raw-disk broker rather than keeping a full GUI elevated.
 - Wider HDD/SSD/USB-bridge samples are needed before changing conservative unknown-media I/O defaults.
 - HDL virtual ISO browsing/import/export is outside the current 0.5 scope.
-- Public distribution of the current self-contained Windows App SDK 2.3.x WinUI payload is being reviewed against Microsoft's package licensing; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Test candidates remain useful for hardware/UI validation, but this is a release-signoff item rather than something to ignore.
+- The private RC5 WinUI build still resolves Windows App SDK 2.3.1 / WinUI 2.3.0. Microsoft identifies that WinUI package as affected by an incorrect non-redistributable license and instructs affected publishers to update to **Windows App SDK 2.4.0**, which resolves WinUI 2.3.6. Therefore the public 0.5 candidate must perform that dependency bump and repeat WinUI/package/hardware startup validation; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Documentation
 
@@ -185,6 +185,7 @@ Start with [`docs/README.md`](docs/README.md) for the documentation index. Impor
 - [`BUILDING.md`](BUILDING.md) — reproducible builds and packaging;
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development and safety rules;
 - [`docs/architecture.md`](docs/architecture.md) — layer ownership and dependencies;
+- [`docs/windows-frontends.md`](docs/windows-frontends.md) — launcher, WinUI, Win32 fallback and package layout;
 - [`docs/testing.md`](docs/testing.md) — regression/CI test matrix;
 - [`docs/release-process.md`](docs/release-process.md) — release gates;
 - [`docs/rc-hardware-checklist.md`](docs/rc-hardware-checklist.md) — real-HDD RC validation;
