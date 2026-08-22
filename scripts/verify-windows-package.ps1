@@ -18,7 +18,15 @@ $required = @(
     'ps2-driveforge-inspect.exe',
     'ps2-driveforge-benchmark.exe',
     'README.md',
-    'CHANGELOG.md'
+    'CHANGELOG.md',
+    'BUILDING.md',
+    'CONTRIBUTING.md',
+    'docs\architecture.md',
+    'docs\testing.md',
+    'docs\release-process.md',
+    'docs\rc-hardware-checklist.md',
+    'docs\REAL_HARDWARE_VALIDATION.md',
+    'docs\emilia-benchmark-2026-08-22.md'
 )
 if (-not $WithoutDokany) {
     $required += 'PS2-DriveForge-Mount.exe'
@@ -96,9 +104,15 @@ if ($packagedTests.Count -ne $expectedTests.Count) {
     throw "Expected exactly $($expectedTests.Count) packaged regression executables, found $($packagedTests.Count)."
 }
 
+$packagedDocs = @(Get-ChildItem -LiteralPath (Join-Path $Root 'docs') -File -Filter '*.md')
+if ($packagedDocs.Count -lt 10) {
+    throw "Expected the complete release documentation set, found only $($packagedDocs.Count) Markdown files in staging."
+}
+
 Write-Host "Canonical Windows package staging verified: $Root" -ForegroundColor Green
 Write-Host "Required release files: $($required.Count)"
 Write-Host "Regression executables: $($packagedTests.Count)"
+Write-Host "Packaged Markdown docs: $($packagedDocs.Count)"
 if (-not $WithoutWinUI) {
     Write-Host "WinUI payload files: $(@(Get-ChildItem -LiteralPath (Join-Path $Root 'WinUI') -Recurse -File).Count)"
 }
