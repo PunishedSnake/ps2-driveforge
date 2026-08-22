@@ -28,6 +28,8 @@ add_library(ps2driveforge_core
     src/core/apa.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
+    src/core/hdl.cpp
+    src/core/partition_catalog.cpp
 )
 
 target_include_directories(ps2driveforge_core
@@ -59,6 +61,7 @@ add_library(ps2driveforge_host
     src/host/drive_session.cpp
     src/host/mount_view.cpp
     src/host/hdl_enrichment.cpp
+    src/host/management_model.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -198,7 +201,7 @@ if(PS2DF_BUILD_TESTS)
     add_test(NAME ps2-driveforge-read-ahead-tests COMMAND ps2-driveforge-read-ahead-tests)
 
     add_executable(ps2-driveforge-partition-catalog-tests tests/partition_catalog_tests.cpp)
-    target_link_libraries(ps2-driveforge-partition-catalog-tests PRIVATE ps2driveforge_core)
+    target_link_libraries(ps2-driveforge-partition-catalog-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-partition-catalog-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-partition-catalog-tests COMMAND ps2-driveforge-partition-catalog-tests)
 
