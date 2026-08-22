@@ -5,7 +5,7 @@
   #error OutputDir must be supplied with /DOutputDir=...
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.5.0-rc5"
+  #define AppVersion "0.5.0-rc6"
 #endif
 
 #define AppName "PS2 DriveForge"
