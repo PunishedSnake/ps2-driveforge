@@ -12,6 +12,28 @@
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 
+            <!--
+                Keep DriveForge's semantic accents app-owned instead of assuming
+                optional Fluent brush keys exist in every WinUI/Windows App SDK
+                resource dictionary. SystemAccentColor is a stable WinUI color
+                resource; the brushes below are deliberately defined by the app.
+
+                The compatibility key names are kept for the current Emilia XAML
+                and can be renamed to DriveForge* during the post-RC UI cleanup.
+            -->
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush"
+                             Color="{ThemeResource SystemAccentColor}"/>
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush"
+                             Color="{ThemeResource SystemAccentColor}"
+                             Opacity="0.20"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBackgroundBrush"
+                             Color="#FFFFB900"
+                             Opacity="0.16"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBrush"
+                             Color="#FFFFB900"/>
+            <SolidColorBrush x:Key="SystemFillColorSuccessBrush"
+                             Color="#FF0F7B0F"/>
+
             <Style x:Key="DriveForgeCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
                 <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
