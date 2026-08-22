@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2hdd/block_device.hpp"
+#include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/management_model.hpp"
 #include "ps2hdd/physical_discovery.hpp"
 
