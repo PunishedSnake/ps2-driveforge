@@ -126,31 +126,31 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host 'Mount helper drive-argument regression passed.'
 
-      - name: Build clean RC11 portable and installer packages
+      - name: Build clean RC12 portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.5.0-rc11' `
+            -Version '0.5.0-rc12' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
 
-      - name: Verify RC11 release artifacts
+      - name: Verify RC12 release artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.5.0-rc11-Emilia-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.5.0-rc11-Emilia-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.5.0-rc12-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-rc12-Emilia-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Expected RC11 artifact was not produced: $path"
+              throw "Expected RC12 artifact was not produced: $path"
             }
             Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
           }
 
-      - name: Upload RC11 user release
+      - name: Upload RC12 user release
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-rc11-Emilia-windows-x64
+          name: PS2-DriveForge-0.5.0-rc12-Emilia-windows-x64
           path: |
-            dist/PS2-DriveForge-0.5.0-rc11-Emilia-Portable-x64.zip
-            dist/PS2-DriveForge-0.5.0-rc11-Emilia-Setup-x64.exe
+            dist/PS2-DriveForge-0.5.0-rc12-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-rc12-Emilia-Setup-x64.exe
           if-no-files-found: error
