@@ -37,12 +37,39 @@ function Require-Command {
     return $command.Source
 }
 
+function Resolve-WinUIOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$SearchRoot,
+        [Parameter(Mandatory = $true)][string]$ExecutableName
+    )
+
+    if (-not (Test-Path $SearchRoot)) {
+        throw "WinUI output root was not produced: $SearchRoot"
+    }
+
+    $candidates = @(
+        Get-ChildItem -Path $SearchRoot -Recurse -File -Filter $ExecutableName |
+            Sort-Object FullName
+    )
+
+    if ($candidates.Count -eq 0) {
+        throw "Expected self-contained WinUI executable was not produced below: $SearchRoot"
+    }
+    if ($candidates.Count -gt 1) {
+        $paths = $candidates.FullName -join [Environment]::NewLine
+        throw "Multiple WinUI executable candidates were produced; staging would be ambiguous:`n$paths"
+    }
+
+    return $candidates[0]
+}
+
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BuildDir = Join-Path $Root 'build\windows-x64'
 $DistDir = Join-Path $Root 'dist\windows-x64'
 $WinUIRoot = Join-Path $Root 'src\winui'
 $WinUIConfiguration = if ($Configuration -eq 'Debug') { 'Debug' } else { 'Release' }
-$WinUIOutputDir = Join-Path $WinUIRoot "x64\$WinUIConfiguration"
+$WinUIOutputRoot = Join-Path $WinUIRoot "x64\$WinUIConfiguration"
+$WinUIPayloadDir = $null
 
 $CMake = Require-Command 'cmake'
 $CTest = Require-Command 'ctest'
@@ -135,10 +162,12 @@ if (-not $SkipWinUI) {
         '/p:Platform=x64'
     )
 
-    $WinUIExe = Join-Path $WinUIOutputDir 'PS2-DriveForge-WinUI.exe'
-    if (-not (Test-Path $WinUIExe)) {
-        throw "Expected self-contained WinUI executable was not produced: $WinUIExe"
-    }
+    # Windows App SDK/MSBuild may introduce a project-name subdirectory below
+    # x64\<Configuration>. Discover the actual payload directory instead of
+    # coupling release staging to one Visual Studio output layout.
+    $WinUIExe = Resolve-WinUIOutput -SearchRoot $WinUIOutputRoot -ExecutableName 'PS2-DriveForge-WinUI.exe'
+    $WinUIPayloadDir = Split-Path -Parent $WinUIExe.FullName
+    Write-Host "WinUI payload: $WinUIPayloadDir"
 } else {
     Write-Host "`n[4/6] WinUI package restore skipped." -ForegroundColor DarkYellow
     Write-Host "`n[5/6] WinUI build skipped." -ForegroundColor DarkYellow
@@ -168,9 +197,12 @@ foreach ($Required in $RequiredExecutables) {
 # Win32 frontend. Once parity is signed off the package entrypoint can be swapped
 # without changing the native core/host build or the release pipeline again.
 if (-not $SkipWinUI) {
+    if (-not $WinUIPayloadDir -or -not (Test-Path $WinUIPayloadDir)) {
+        throw 'Resolved WinUI payload directory disappeared before packaging.'
+    }
     $WinUIDist = Join-Path $DistDir 'WinUI'
     New-Item -ItemType Directory -Force -Path $WinUIDist | Out-Null
-    Copy-Item (Join-Path $WinUIOutputDir '*') $WinUIDist -Recurse -Force
+    Copy-Item (Join-Path $WinUIPayloadDir '*') $WinUIDist -Recurse -Force
 }
 
 $PdbNames = @('ps2-driveforge-inspect.pdb', 'ps2-driveforge-benchmark.pdb', 'PS2-DriveForge.pdb')
@@ -237,19 +269,3 @@ if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
 }
 Compress-Archive -Path (Join-Path $DistDir '*') -DestinationPath $ZipPath -CompressionLevel Optimal
-
-Write-Host "`nBuild completed successfully." -ForegroundColor Green
-Write-Host "Legacy GUI: $GuiExe"
-if (-not $SkipWinUI) {
-    Write-Host "WinUI:      $(Join-Path $WinUIOutputDir 'PS2-DriveForge-WinUI.exe')"
-}
-Write-Host "Inspector:  $InspectorExe"
-Write-Host "Benchmark:  $BenchmarkExe"
-if ($WithDokany) {
-    Write-Host "Mount:      $MountExe"
-}
-Write-Host "Package:    $ZipPath"
-Write-Host "`nPhysical-drive access remains read-only in this development version." -ForegroundColor Green
-if ($WithDokany) {
-    Write-Host "Dokany 2.x runtime/driver must be installed on systems using the mount frontend." -ForegroundColor Green
-}
