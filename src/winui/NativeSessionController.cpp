@@ -48,6 +48,10 @@ bool NativeSessionController::open_source(std::unique_ptr<ps2hdd::BlockDevice> s
         error = session->last_error();
         return false;
     }
+    if (!session->scan_result().mbr_valid) {
+        error = "The selected source does not contain a valid PS2 APA MBR.";
+        return false;
+    }
 
     const auto catalog_started = Clock::now();
     auto catalog = session->partition_catalog(true);
