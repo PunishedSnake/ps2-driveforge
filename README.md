@@ -4,7 +4,7 @@
 
 PS2 DriveForge lets you inspect a PS2 HDD, browse PFS filesystems, inspect HDLoader game metadata and expose supported content to Windows Explorer without turning a decades-old disk format into a shell-script exercise.
 
-The current development train is **0.5.x — Emilia**. The active release candidate keeps the proven Win32 interface as a supported fallback while the new WinUI frontend is validated on real Windows systems.
+The current public release is **0.5.0 — Emilia**. WinUI 3 is the default frontend and the proven Win32 interface remains a supported fallback.
 
 > [!IMPORTANT]
 > DriveForge is deliberately **read-only**. Physical disks are opened with `GENERIC_READ`; the public block-device API has no write operation; Dokany mounts are write-protected and mutation callbacks are rejected. A damaged PS2 HDD should be imaged before any recovery work.
@@ -31,7 +31,7 @@ Emilia focuses on three things:
 - zero-I/O `PartitionCatalog` after the validated APA scan;
 - frontend-neutral `ManagementModel` and native HDL enrichment;
 - bounded small-read cache, read-ahead and backing-I/O instrumentation;
-- WinUI 3 frontend with startup diagnostics;
+- self-contained WinUI 3 frontend on Windows App SDK 2.4.0 with startup diagnostics;
 - supported Win32 fallback with System/Light/Dark themes;
 - inspection and benchmark CLIs;
 - 14 deterministic regression executables plus Linux ASan/UBSan CI;
@@ -73,7 +73,7 @@ The Win32 frontend is **supported fallback software**, not a deprecated copy. Bo
 
 ## WinUI diagnostics
 
-During the 0.5 release-candidate cycle WinUI writes an early startup log to:
+WinUI writes an early startup log to:
 
 ```text
 %LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log
@@ -156,7 +156,7 @@ Format parsing stays below platform/UI code. Frontends do not reimplement APA, P
 
 ## Safety and real-hardware testing
 
-A green CI build is not enough to call a storage tool safe. Release candidates are additionally tested against a real PS2 HDD for:
+A green CI build is not enough to call a storage tool safe. Emilia was additionally tested against a real PS2 HDD for:
 
 - automatic discovery and read-only open;
 - known APA/PFS/HDL catalog contents;
@@ -172,11 +172,10 @@ The exact checklist is [`docs/rc-hardware-checklist.md`](docs/rc-hardware-checkl
 ## Current limitations
 
 - DriveForge intentionally does not modify source HDDs or disk images.
-- WinUI is still undergoing real-machine release-candidate validation; Win32 remains the supported fallback.
-- The final least-privilege architecture still calls for a narrow elevated raw-disk broker rather than keeping a full GUI elevated.
+- The least-privilege architecture still calls for a narrow elevated raw-disk broker rather than keeping a full GUI elevated.
 - Wider HDD/SSD/USB-bridge samples are needed before changing conservative unknown-media I/O defaults.
-- HDL virtual ISO browsing/import/export is outside the current 0.5 scope.
-- The private RC5 WinUI build still resolves Windows App SDK 2.3.1 / WinUI 2.3.0. Microsoft identifies that WinUI package as affected by an incorrect non-redistributable license and instructs affected publishers to update to **Windows App SDK 2.4.0**, which resolves WinUI 2.3.6. Therefore the public 0.5 candidate must perform that dependency bump and repeat WinUI/package/hardware startup validation; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+- HDL virtual ISO browsing/import/export and write-capable HDD management are outside the 0.5 scope.
+- Very wide windows still leave some intentionally capped page content centered rather than filling every available pixel; this is cosmetic and does not affect responsive behavior at narrow sizes.
 
 ## Documentation
 
