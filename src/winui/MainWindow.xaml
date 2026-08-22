@@ -94,7 +94,9 @@
                               HorizontalScrollBarVisibility="Disabled"
                               HorizontalScrollMode="Disabled"
                               HorizontalContentAlignment="Stretch">
-                    <Grid x:Name="HddContent" Padding="24,20,24,28" MaxWidth="1560" HorizontalAlignment="Stretch">
+                    <Grid x:Name="HddContent" Padding="24,20,24,28"
+                          Width="{Binding ActualWidth, ElementName=HddPage}"
+                          MaxWidth="1560" HorizontalAlignment="Center">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
