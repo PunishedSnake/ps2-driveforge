@@ -56,16 +56,49 @@ if (-not $WithoutWinUI) {
     }
 }
 
-$testExecutables = @(
-    Get-ChildItem -LiteralPath $Root -File -Filter 'ps2-driveforge-*-tests.exe'
+$expectedTests = @(
+    'ps2-driveforge-tests.exe',
+    'ps2-driveforge-pfs-file-tests.exe',
+    'ps2-driveforge-pfs-segi-tests.exe',
+    'ps2-driveforge-host-tests.exe',
+    'ps2-driveforge-e2e-image-tests.exe',
+    'ps2-driveforge-corruption-tests.exe',
+    'ps2-driveforge-session-tests.exe',
+    'ps2-driveforge-read-cache-tests.exe',
+    'ps2-driveforge-read-ahead-tests.exe',
+    'ps2-driveforge-partition-catalog-tests.exe',
+    'ps2-driveforge-hdl-enrichment-tests.exe',
+    'ps2-driveforge-storage-profile-tests.exe',
+    'ps2-driveforge-dokany-open-policy-tests.exe',
+    'ps2-driveforge-darkness-policy-tests.exe'
 )
-if ($testExecutables.Count -ne 14) {
-    throw "Expected 14 packaged regression executables, found $($testExecutables.Count)."
+
+$missingTests = @(
+    $expectedTests | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf)
+    }
+)
+if ($missingTests.Count -ne 0) {
+    throw "Canonical Windows package is missing regression executables: $($missingTests -join ', ')"
+}
+
+$packagedTests = @(
+    Get-ChildItem -LiteralPath $Root -File |
+        Where-Object { $_.Name -like 'ps2-driveforge*-tests.exe' }
+)
+$unexpectedTests = @(
+    $packagedTests.Name | Where-Object { $_ -notin $expectedTests }
+)
+if ($unexpectedTests.Count -ne 0) {
+    throw "Canonical Windows package contains unexpected regression executables: $($unexpectedTests -join ', ')"
+}
+if ($packagedTests.Count -ne $expectedTests.Count) {
+    throw "Expected exactly $($expectedTests.Count) packaged regression executables, found $($packagedTests.Count)."
 }
 
 Write-Host "Canonical Windows package staging verified: $Root" -ForegroundColor Green
 Write-Host "Required release files: $($required.Count)"
-Write-Host "Regression executables: $($testExecutables.Count)"
+Write-Host "Regression executables: $($packagedTests.Count)"
 if (-not $WithoutWinUI) {
     Write-Host "WinUI payload files: $(@(Get-ChildItem -LiteralPath (Join-Path $Root 'WinUI') -Recurse -File).Count)"
 }
