@@ -17,6 +17,7 @@ $required = @(
     'PS2-DriveForge.exe',
     'ps2-driveforge-inspect.exe',
     'ps2-driveforge-benchmark.exe',
+    'ps2-driveforge-hdl-tools.exe',
     'README.md',
     'CHANGELOG.md',
     'BUILDING.md',
@@ -26,6 +27,7 @@ $required = @(
     'docs\release-process.md',
     'docs\rc-hardware-checklist.md',
     'docs\REAL_HARDWARE_VALIDATION.md',
+    'docs\frieren-plan.md',
     'docs\emilia-benchmark-2026-08-22.md'
 )
 if (-not $WithoutDokany) {
@@ -60,9 +62,6 @@ if (-not $WithoutWinUI) {
         throw "Expected exactly one WinUI executable in canonical staging, found $($duplicateExecutables.Count)."
     }
 
-    # A handful of XBF/WINMD/PDB files is not a self-contained WinUI deployment.
-    # Microsoft.UI.Xaml.dll is the minimum unmistakable runtime payload marker;
-    # the Windows App SDK runtime must also contribute at least one native DLL.
     $xamlRuntime = @(
         Get-ChildItem -LiteralPath $winuiRoot -Recurse -File -Filter 'Microsoft.UI.Xaml.dll'
     )
@@ -95,6 +94,10 @@ $expectedTests = @(
     'ps2-driveforge-read-ahead-tests.exe',
     'ps2-driveforge-partition-catalog-tests.exe',
     'ps2-driveforge-hdl-enrichment-tests.exe',
+    'ps2-driveforge-hdl-write-tests.exe',
+    'ps2-driveforge-write-transaction-tests.exe',
+    'ps2-driveforge-apa-allocation-tests.exe',
+    'ps2-driveforge-apa-hdl-header-tests.exe',
     'ps2-driveforge-storage-profile-tests.exe',
     'ps2-driveforge-dokany-open-policy-tests.exe',
     'ps2-driveforge-darkness-policy-tests.exe'
@@ -124,11 +127,11 @@ if ($packagedTests.Count -ne $expectedTests.Count) {
 }
 
 $packagedDocs = @(Get-ChildItem -LiteralPath (Join-Path $Root 'docs') -File -Filter '*.md')
-if ($packagedDocs.Count -lt 10) {
+if ($packagedDocs.Count -lt 11) {
     throw "Expected the complete release documentation set, found only $($packagedDocs.Count) Markdown files in staging."
 }
 
-Write-Host "Canonical Windows package staging verified: $Root" -ForegroundColor Green
+Write-Host "Canonical Frieren Windows package staging verified: $Root" -ForegroundColor Green
 Write-Host "Required release files: $($required.Count)"
 Write-Host "Regression executables: $($packagedTests.Count)"
 Write-Host "Packaged Markdown docs: $($packagedDocs.Count)"
