@@ -1,170 +1,168 @@
 # Development and documentation guidelines
 
-DriveForge should remain understandable to a contributor who did not participate in the original reverse-engineering work. Documentation is therefore part of the implementation, not cleanup to be done before 1.0.
+DriveForge should remain understandable to a contributor who did not participate in the original reverse-engineering work. Documentation, tests and evidence are part of the implementation rather than cleanup postponed until 1.0.
 
-## Definition of done for a meaningful change
+## Definition of done
 
-A feature or refactor is not complete until the relevant items below are handled:
+For meaningful storage/parser/performance/frontend changes, handle the applicable parts of:
 
-1. implementation;
-2. focused unit/synthetic tests where practical;
-3. generated-image end-to-end coverage when several storage/filesystem layers interact;
-4. Windows/MSVC CI and Clang sanitizer CI;
-5. hardware validation when the change depends on physical layout, Windows storage, UAC, Dokany, or Explorer behavior;
-6. README update for user-visible behavior;
-7. changelog update for the current release train;
-8. architecture/format/performance/testing docs when an invariant or design decision changed;
-9. comments next to non-obvious code;
-10. known limitations recorded instead of hidden in chat/commit history.
+1. implementation in the correct layer;
+2. focused deterministic regression coverage;
+3. generated-image E2E when several layers interact;
+4. corruption coverage when malformed metadata is involved;
+5. Windows/MSVC CI;
+6. Linux Clang ASan+UBSan+warnings-as-errors CI;
+7. canonical package verification for Windows staging changes;
+8. real-hardware validation for UAC/SetupAPI/raw storage/Dokany/Explorer/device-specific behavior;
+9. README/changelog/design/testing docs when visible behavior or an invariant changed;
+10. comments next to non-obvious units, safety rules and format/API traps.
 
-Not every typo needs all ten steps. Anything that changes APA/PFS interpretation, I/O semantics, safety, performance strategy, discovery/mount behavior, or frontend contracts probably does.
+The current normal Emilia suite contains **14 regression executables**. See [`testing.md`](testing.md).
 
-## What deserves a code comment
+## Comment policy
 
-Comments should explain **why**, units, invariants, and traps. Do not narrate obvious C++.
+Comments should explain **why**, units, invariants, evidence and traps. Avoid narrating obvious C++.
 
 Good candidates:
 
-- conversion between zones, metadata blocks, sectors, LBAs, and bytes;
-- checks that look redundant but protect damaged metadata;
-- SEGD/SEGI index rules;
+- conversion among bytes, 512-byte sectors, PFS metadata blocks and zones;
+- APA main/sub extent translation;
+- checksum/bounds checks that look redundant but reject damaged metadata;
+- SEGD/SEGI traversal rules;
 - PFS directory 512-byte boundary behavior;
-- APA main/sub-partition mapping;
-- why a read is deliberately serialized or batched;
-- Windows-specific safety constraints;
-- NT Dokany `FILE_*` create dispositions vs Win32 `CreateFileW` constants;
-- SetupAPI identifying the actual Windows disk while the APA parser, not Windows metadata, decides whether it is a PS2 HDD;
-- future Emilia cache code memoizing **validated** metadata rather than bypassing parser validation.
+- HDLoader allocation-table length units;
+- why cache entries are validated/immutable;
+- why rotational/unknown scheduling is physical-LBA ordered/conservative;
+- Windows raw-disk `GENERIC_READ` and explicit-offset OVERLAPPED rules;
+- NT Dokany `FILE_*` create dispositions versus Win32 `CreateFileW` constants.
 
-Bad comment:
+Bad:
 
 ```cpp
 // Increment offset.
 offset += take;
 ```
 
-Useful comment:
+Useful:
 
 ```cpp
-// PFS BlockInfo.number is a zone number, not a sector number. Convert through
-// zone_size here; ApaVolume will apply the selected APA extent's physical LBA.
+// BlockInfo.number is a PFS zone number here, not a physical sector.
+// ApaVolume applies the selected APA extent's LBA translation.
 ```
 
-## Comment style
-
-Prefer comments that survive refactoring:
-
-- state the invariant, not the current variable name;
-- include units when incompatible units coexist;
-- say whether a number is a format constant or a tuning value;
-- mention the regression that protects a strange rule when useful;
-- avoid sarcasm inside parser/storage code even if the format deserves it.
+Prefer comments that survive refactors: describe the invariant rather than a temporary variable name.
 
 ## README responsibilities
 
-README should always answer:
+README should answer:
 
 - what DriveForge is;
 - current version/codename;
 - what works now;
 - what is explicitly not implemented;
-- current safety status;
-- how to build/run it;
-- where deeper documentation lives;
-- current roadmap state and the remaining merge gate.
+- source-safety status;
+- how to build/run or where to find exact build instructions;
+- where deeper architecture/testing/release docs live;
+- current WinUI/legacy frontend status without claiming parity that has not been tested.
 
-Do not turn README into the full PFS specification.
+Do not turn README into a complete APA/PFS specification.
 
 ## Architecture responsibilities
 
-`architecture.md` owns dependency direction and major boundaries.
+[`architecture.md`](architecture.md) owns dependency direction and component boundaries.
 
-Current examples:
+Current invariants include:
 
-- core parser must not depend on GUI, SetupAPI, UAC, or Dokany;
-- PFS must not know Windows host paths;
-- host export may know host filesystem policy but cannot mutate source PFS;
-- `DriveSession` orchestrates explicit operations but must not become process-global current-directory state;
-- SetupAPI/UAC/theme code belongs at the Windows host/frontend boundary;
-- Dokany belongs above `ReadOnlyMountView`/`DriveSession` and must not become another parser;
-- GUI and standalone mount CLI share `DokanyMountController` rather than maintaining separate callback implementations.
+- `ps2driveforge_core` does not depend on GUI/XAML/SetupAPI/UAC/Dokany;
+- format parsing lives in core translation units (`apa`, `pfs`, `hdl`, catalog), not frontend headers;
+- PFS physical mapping goes through `ApaVolume`;
+- `ps2driveforge_host` owns orchestration/export/management/enrichment policy rather than format interpretation;
+- SetupAPI only discovers actual Windows devices; APA validation classifies PS2 HDDs;
+- WinUI consumes native session/catalog snapshots instead of reimplementing parsing;
+- Dokany sits above `ReadOnlyMountView`/`DriveSession` and does not become another parser.
 
-If a new component changes a dependency edge, update the diagram and explain why.
+If a change adds a dependency edge, document why.
 
 ## Format-note responsibilities
 
-`pfs-format-notes.md` and `apa-format-notes.md` should document only behavior we have evidence for. Link upstream references and tests where practical.
+[`apa-format-notes.md`](apa-format-notes.md) and [`pfs-format-notes.md`](pfs-format-notes.md) should document behavior we have evidence for.
 
-When a real disk disproves an assumption:
+When real hardware disproves an assumption:
 
-1. preserve the failure/log/sample where possible;
+1. preserve the failure/sample/log where practical;
 2. write a deterministic regression;
-3. extend the generated-image fixture if the bug crosses layers;
-4. correct the implementation;
-5. correct format/testing/hardware notes in the same change.
+3. extend generated-image coverage if the bug crosses layers;
+4. correct implementation;
+5. correct format/testing/hardware docs in the same change.
 
 ## Testing responsibilities
 
-[`testing.md`](testing.md) owns the concrete regression workflow.
+Use the smallest appropriate layer:
 
-Use the smallest appropriate level:
-
-- focused in-memory test for one invariant;
+- in-memory test for one invariant;
 - corruption corpus for malformed metadata;
-- generated `.img` E2E for cross-layer behavior and export integrity;
+- generated `.img` E2E for cross-layer behavior/integrity;
 - portable policy test for frontend contracts that do not need live Windows state;
-- optional fuzzing to discover parser cases;
-- real HDD/Windows Explorer only after deterministic CI gates are green.
+- fuzzing to discover parser cases;
+- real Windows/HDD only after deterministic gates are green.
 
-The Darkness suite currently has nine normal test executables. The final integrated GUI hardware workflow remains a deliberate real-machine gate because SetupAPI/UAC/Dokany/Explorer behavior cannot be proven by a runner-only unit test.
-
-## pfsshell comparison responsibilities
-
-`pfsshell-comparison.md` is not marketing copy. It must distinguish:
-
-- observed pfsshell architecture;
-- implemented DriveForge behavior;
-- design targets;
-- measured benchmark results.
-
-No performance adjective should quietly migrate from "target" to "fact".
+CI cannot prove UAC, a user's storage bridge, Dokany driver state or Explorer behavior. RC hardware validation therefore remains a separate gate: [`rc-hardware-checklist.md`](rc-hardware-checklist.md).
 
 ## Performance responsibilities
 
-Preserve a repeatable baseline before changing caches, batching, read-ahead, request coalescing, or Windows I/O primitives. Darkness' final integrated Explorer navigation/copy sequence is the baseline handoff to 0.5 Emilia.
+Preserve repeatable baselines before changing caches, read-ahead, request ordering, Windows I/O primitives or enrichment concurrency.
 
-A cache may memoize data that was validated under the normal parser rules; it must not create a faster, weaker parse path.
+A cache may memoize data that was validated under normal parser rules; it must not create a faster/weaker parse path.
 
-Correctness gates remain checksums/bounds, main/sub translation, SEGI, generated-image SHA-256, corruption corpus, mounted read-only behavior, CI, and hardware regressions.
+Keep these timings separate:
+
+```text
+APA scan
+zero-I/O catalog/list availability
+optional HDL enrichment
+PFS cold metadata workload
+PFS warm metadata workload
+large sequential payload workload
+```
+
+Never choose queue depth solely because the largest value won one completion benchmark. Consider read service latency, first-result latency, UI responsiveness and storage classification. `unknown` is a normal supported profile.
+
+[`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md) is a reference measurement, not a universal tuning table.
+
+## Package responsibilities
+
+A successful compiler/linker run is not enough for Windows releases. `build-windows.ps1` creates canonical staging and [`../scripts/verify-windows-package.ps1`](../scripts/verify-windows-package.ps1) verifies required binaries/docs/tests plus the WinUI payload.
+
+Packaging logic should discover real MSBuild output rather than encode an incidental subdirectory layout.
 
 ## Hardware-validation responsibilities
 
-Keep synthetic and real-hardware evidence separate. For physical validation record version/commit, device/APA/PFS characteristics when relevant, exact action, diagnostics, stats/debug output when useful, read-only status, and important coverage gaps.
+Preserve exact commit/artifact SHA, Windows/Dokany versions, device/capacity/connection, relevant APA/PFS facts, action performed, diagnostics/counters, expected/actual result and hashes where practical.
 
-Do not publish private or irrelevant user data merely because it appeared in a disk log.
+Do not publish unrelated/private disk contents just because a diagnostic listed them.
+
+Never treat a historical `PhysicalDriveN` index as permanent device identity.
 
 ## Release-train hygiene
 
-The repository should normally contain:
+The repository should normally contain `main` plus the active feature/release-prep branches. Once validated work is merged, delete obsolete branches; Git history and merged PRs preserve the work.
 
-```text
-main
-current feature/release branch
-```
+For 0.5, the merged Emilia functionality baseline is intentionally separate from release-prep refactoring. This preserves a known-green comparison point if cleanup introduces a regression.
 
-After a milestone is validated and merged, delete its feature branch. Git history and merged PRs preserve the work; stale branches only obscure the active state.
+See [`release-process.md`](release-process.md) for RC/final gates.
 
-## Commit/PR descriptions
+## PR/commit descriptions
 
 A useful PR records:
 
 - problem being solved;
-- architectural choice;
-- safety implications;
-- tests added/run;
+- layer/architectural choice;
+- source-safety implications;
+- tests/CI;
 - real-hardware status;
+- benchmark evidence if relevant;
 - known limitations;
-- exact remaining merge gate;
+- exact remaining merge/release gate;
 - next logical milestone.
 
-This preserves the missing "why" that source diffs cannot provide alone.
+Preserve the missing **why** that a source diff cannot reconstruct later.
