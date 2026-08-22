@@ -35,6 +35,7 @@ add_library(ps2driveforge_core
     src/core/hdl.cpp
     src/core/ps2_iso.cpp
     src/core/hdl_install_plan.cpp
+    src/core/hdl_metadata_builder.cpp
     src/core/partition_catalog.cpp
 )
 
@@ -267,6 +268,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-hdl-install-plan-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-hdl-install-plan-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-hdl-install-plan-tests COMMAND ps2-driveforge-hdl-install-plan-tests)
+
+    add_executable(ps2-driveforge-hdl-metadata-builder-tests tests/hdl_metadata_builder_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-metadata-builder-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-hdl-metadata-builder-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-metadata-builder-tests COMMAND ps2-driveforge-hdl-metadata-builder-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
