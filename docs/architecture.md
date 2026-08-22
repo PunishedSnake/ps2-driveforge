@@ -2,52 +2,111 @@
 
 ## Goal
 
-Build a Windows-first PS2 HDD management stack that can expose an APA disk to Windows Explorer while keeping parsing, host operations, discovery, mounting, and presentation independent.
+DriveForge is a Windows-first PS2 HDD management stack with a portable read-only APA/PFS/HDL core. Format parsing, source I/O, host/session orchestration, Windows device integration, mounting, and presentation are deliberately separate so one frontend cannot quietly become a second filesystem implementation.
 
-The architecture is intentionally different from wrapping pfsshell's interactive device/mount/current-directory model. See [`pfsshell-comparison.md`](pfsshell-comparison.md).
+The design is intentionally different from wrapping `pfsshell`'s selected-device/current-mount/current-directory shell state. See [`pfsshell-comparison.md`](pfsshell-comparison.md).
 
-## Current layers
+## Current Emilia layers
 
 ```text
- Native Win32 GUI          CLI / mount CLI       Dokany callbacks
-        |                         |                      |
-        +------------- host/session/mount --------------+
+                 Windows presentation
+
+  legacy Win32 GUI              WinUI 3 C++/WinRT
+        |                              |
+        |                    NativeSessionController
+        |                              |
+        +------------- ps2driveforge_host -------------+
+                              |          |              |
+                         DriveSession    |       ManagementModel
+                              |    PartitionCatalog      |
+                              |          |        HDL enrichment
+                              +----------+--------------+
+                                         |
+                              ps2driveforge_core
+                              /      |       \
+                            APA     PFS      HDL
+                              \      |       /
+                               ApaVolume
                                   |
-                            DriveSession
+                        read-only I/O pipeline
+             cache -> read-ahead -> instrumentation
                                   |
-                         ps2driveforge_core
-                                  |
-                      +-----------+-----------+
-                      |                       |
-                     APA                     PFS
-                      |                       |
-                      +-----------+-----------+
-                                  |
-                      InstrumentedBlockDevice
-                                  |
-                            BlockDevice
-                          /             \
-                    disk image      PhysicalDriveN
+                    FileBlockDevice / PhysicalDrive
+
+  CLI / benchmark --------------^                ^------ Dokany adapter
 ```
 
-`DriveSession` is frontend orchestration, not filesystem-global state. `InstrumentedBlockDevice` is a transparent diagnostic wrapper, not another on-disk abstraction.
+Windows discovery, UAC, theme resources, XAML and Dokany are above these portable layers.
 
-### BlockDevice
+## Dependency rules
 
-`BlockDevice` is byte-addressed so format code owns sector/alignment semantics rather than leaking Windows handles or iomanX conventions upward.
+1. `ps2driveforge_core` must not depend on Win32 GUI, XAML, SetupAPI, UAC, Explorer or Dokany.
+2. PFS accesses physical APA extents through `ApaVolume`; it must not pre-add physical partition starts itself.
+3. `ps2driveforge_host` may orchestrate sessions/export/management state but must not reimplement format parsing.
+4. Frontends consume host/core services and snapshots; they do not parse APA/PFS/HDL independently.
+5. Windows filename conversion is host-export policy and must not alter PFS-visible names.
+6. `DriveSession` keeps paths explicit and must not become process-global shell/current-directory state.
+7. Caches may memoize already validated read-only data; they must not create a weaker parser path.
+8. Dokany translates Windows filesystem semantics but does not parse the source filesystem.
+9. SetupAPI identifies actual Windows disk devices; only the APA parser decides whether a disk is a PS2 HDD.
+10. Future source mutation requires a separate explicit writable capability with backup/recovery semantics.
 
-Current backends are read-only:
+## Core: BlockDevice and source I/O
 
-- `FileBlockDevice`;
+`BlockDevice` is byte-addressed. Format code owns sectors/zones/metadata-block conversions rather than leaking Windows handles or iomanX conventions upward.
+
+Current source backends are read-only:
+
+- `FileBlockDevice` for images;
 - Windows `PhysicalDrive` opened with `GENERIC_READ` only.
 
-The absence of `write()` is a safety boundary. Future mutation must introduce a separate explicit writable capability.
+The absence of a source `write()` member is an architectural safety boundary, not merely a UI policy.
 
-### APA / ApaVolume
+### Emilia offset-based I/O
 
-APA owns physical partition-table interpretation: 1024-byte header parsing/checksum, linked-list traversal, main/sub metadata, diagnostics, and extent bounds.
+Darkness' old shared seek-pointer model is no longer current architecture.
 
-`ApaVolume` is the only layer translating PFS logical subpart indices into physical APA extents:
+Windows physical disks and image files use explicit request offsets. `PhysicalDrive` uses `FILE_FLAG_OVERLAPPED`/per-request offsets rather than `SetFilePointerEx` plus one shared file-position mutex. Windows image I/O follows the same offset model; POSIX image I/O uses `pread()`.
+
+This allows measured concurrency without making correctness depend on mutable file-position state.
+
+## Core: read cache, read-ahead and instrumentation
+
+The source pipeline is conceptually:
+
+```text
+format/session reads
+     |
+small-read window cache
+     |
+adaptive sequential read-ahead
+     |
+InstrumentedBlockDevice
+     |
+actual image / PhysicalDrive
+```
+
+Backing counters sit below the cache layers. A cache hit therefore disappears from physical/image read-call and byte totals rather than being counted as an I/O that merely completed quickly.
+
+The instrumentation records backing calls/bytes, service time, small reads, largest read, failed reads and max in-flight requests. Cache/read-ahead layers expose their own usefulness counters.
+
+Storage characteristics (`rotational`, `solid-state`, `unknown`, seek penalty, TRIM, bus, optional ATA rotation rate) are hints. `unknown` is a normal state and must not be coerced into one tuning preset based on a single validation disk.
+
+## Core: APA
+
+APA owns physical partition-table interpretation:
+
+- 1024-byte header parsing/checksum;
+- linked-list traversal/cycle detection;
+- main/sub metadata;
+- diagnostics and device bounds;
+- raw type/flags/start/length relationships.
+
+APA does not know PFS directory semantics, Windows device discovery or presentation.
+
+## Core: ApaVolume
+
+`ApaVolume` is the only layer translating PFS logical subpart indices into APA physical extents:
 
 ```text
 PFS subpart 0 -> APA main extent
@@ -56,9 +115,9 @@ PFS subpart 2 -> APA sub extent 1
 ...
 ```
 
-PFS code must not pre-add physical APA LBAs itself.
+This boundary prevents unit/addressing bugs from being duplicated in PFS callers.
 
-### PFS
+## Core: PFS
 
 The PFS reader owns:
 
@@ -71,143 +130,156 @@ superblock
  -> path resolution
 ```
 
-It does not own Windows filename rules, SetupAPI, UAC, Explorer, or Dokany.
+It validates checksums/magic/ranges before caching results. PFS does not know Windows filename policy, SetupAPI, UAC, Explorer or Dokany.
 
-### DriveSession / host layer
+`DriveSession` retains immutable validated probe/node/directory/stat results for the lifetime of one source session. `clear_caches()` creates a deliberate cold boundary for benchmarks/source changes; warm repeated metadata walks can otherwise become zero-backing-I/O operations.
 
-`DriveSession` owns one opened source plus reusable frontend operations:
+## Core: native HDL metadata
+
+HDLoader game metadata is parsed natively from the main APA partition at `+0x101000` using the `0xDEADFEED` header. DriveForge does not launch `HDL.EXE` per game.
+
+The parser is in `src/core/hdl.cpp`; its public types/constants remain in `include/ps2hdd/hdl.hpp`. A single game enrichment performs one bounded metadata read after validating partition/device ranges.
+
+Baseline catalog ordering is ascending physical LBA, which avoids arbitrary head movement on rotational/unknown storage and remains harmless on SSDs.
+
+## Zero-I/O PartitionCatalog
+
+`PartitionCatalog` is a pure transformation of an already validated `apa::ScanResult`:
+
+```text
+one APA scan
+ -> build_partition_catalog()
+ -> complete rows/counts/sizes/relationships
+ -> zero additional source I/O
+```
+
+It records all management-relevant APA facts without probing PFS or HDL payloads. Showing/hiding subpartitions, sorting, filtering and selecting catalog rows must remain memory-only frontend operations.
+
+Implementation lives in `src/core/partition_catalog.cpp`; the public header carries only the data contract/declarations.
+
+## Host: DriveSession
+
+`DriveSession` owns one opened source and the reusable operations required by CLI/GUI/mount/benchmark code:
 
 ```text
 scan
+partition_catalog
 find partition
 browse(partition, path)
 stat(partition, path)
 read_file(partition, path, offset, span)
 export_to_host(...)
-statistics
+statistics / cache reset
 ```
 
-Paths remain explicit. GUI navigation state stays in the GUI. Dokany resolves independent callback paths through the same session model.
+Navigation state stays in the frontend. `DriveSession` is orchestration, not shell-global state.
 
-The host layer additionally owns recursive export, host filename conversion, collision/cycle/depth policy, Windows discovery, and portable `ReadOnlyMountView` path mapping.
+## Host: ManagementModel and enrichment
 
-## Windows disk discovery boundary
+`ManagementModel` consumes `PartitionCatalog` without touching the disk. Base rows exist immediately. Main HDL rows begin as `pending`; progressive enrichment applies native `GameResult` objects one row at a time and tracks pending/ready/failed counts.
 
-Darkness no longer guesses a visible `PhysicalDrive0..31` range.
+The model implementation belongs in `src/host/management_model.cpp` because it is frontend-neutral orchestration, not on-disk format parsing.
+
+The production HDL enrichment scheduler is also host policy. Current policy is conservative for rotational/unknown media; positively identified storage can use bounded concurrency where measurements justify it. The benchmark `--hdl-qd N` switch is a developer override, not frontend policy.
+
+## Windows discovery boundary
+
+DriveForge does not scan an arbitrary visible `PhysicalDrive0..31` range.
 
 ```text
 SetupAPI GUID_DEVINTERFACE_DISK
- -> real disk interface
+ -> actual disk interface
  -> IOCTL_STORAGE_GET_DEVICE_NUMBER
  -> PhysicalDriveN
  -> GENERIC_READ
- -> APA parser
+ -> normal APA parser
 ```
 
-The interface handle used for device-number lookup requests no disk data access. Device model/capacity are presentation metadata only. **APA validation is the authority for identifying a PS2 HDD.**
+Device model/capacity/bus are presentation/tuning metadata only. **APA validation is the authority for PS2 HDD identity.**
 
-Discovery must never evolve into an implicit writable-target selector.
+The physical-drive number is transient Windows enumeration state and may change after reboot/reconnection.
 
 ## Elevation boundary
 
-Raw-disk access commonly needs Administrator privileges, but image browsing does not. Therefore DriveForge does not use a global `requireAdministrator` manifest.
+Disk-image browsing does not need administrator rights. Raw Windows disk access often does.
 
-The Win32 GUI owns controlled `ShellExecuteExW("runas")` relaunch, loop prevention, cancellation fallback, and the manual `Restart as Administrator` action. Core/host format logic does not know about process tokens or UAC.
+The validated Win32 frontend uses controlled `ShellExecuteExW("runas")` relaunch, loop prevention, UAC-cancel fallback to image-capable mode and explicit `Restart as Administrator`.
 
-## Darkness mount boundary
-
-`DokanyMountController` is the single runtime owner of Dokany callbacks and mount lifecycle.
+The long-term WinUI design narrows this further:
 
 ```text
-Native GUI                 mount CLI
-    |                         |
-    +--- DokanyMountController+
-                 |
-          ReadOnlyMountView
-                 |
-            DriveSession
+WinUI shell (normal user)
+      |
+read-only IPC
+      |
+elevated raw-disk broker
+      |
+GENERIC_READ PhysicalDrive
 ```
 
-The standalone console frontend remains useful for scripts and callback logging, but it does not own a second filesystem implementation and the GUI does not spawn it as a helper process.
+The broker is a target architecture, not something the current WinUI preview is allowed to pretend already exists.
 
-The provider has four independent read-only barriers:
+## Dokany mount boundary
+
+`DokanyMountController` is the runtime owner of Dokany callbacks/lifecycle.
 
 ```text
-no BlockDevice::write()
+Win32 GUI / mount CLI
+          |
+DokanyMountController
+          |
+ReadOnlyMountView
+          |
+DriveSession
+```
+
+The standalone `PS2-DriveForge-Mount.exe` remains a thin diagnostics/script frontend over the same controller.
+
+Read-only protection is layered:
+
+```text
+no source BlockDevice::write()
         +
 PhysicalDrive GENERIC_READ
         +
 DOKAN_OPTION_WRITE_PROTECT
         +
-mutation/create/overwrite rejection
+create/mutation/overwrite/delete rejection
 ```
 
-### NT create disposition rule
+### NT create-disposition trap
 
-Dokany's `ZwCreateFile` receives NT kernel `FILE_*` dispositions, not Win32 `CreateFileW` constants. The original real mount exposed the overlap (`FILE_OPEN == 1` vs Win32 `CREATE_NEW == 1`) as Explorer's **"The file exists."** root failure.
+Dokany's `ZwCreateFile` receives NT `FILE_*` disposition values, not Win32 `CreateFileW` constants. Numeric overlap originally produced Explorer's historical `The file exists` root-open failure.
 
-That contract is isolated in `src/mount/dokany_open_policy.hpp` and protected by a portable regression test.
+The policy is isolated in `src/mount/dokany_open_policy.hpp` and covered by a portable regression test. Do not "simplify" these values into Win32 constants.
 
-### Darkness GUI/mount selection policy
+## Frontends
 
-`include/ps2hdd/darkness_policy.hpp` records two small rules that are easy to regress during UI refactors:
+### Legacy Win32
 
-- startup discovery may auto-open only when exactly one PS2 candidate exists and no source is already open;
-- automatic mount letters prefer `P:`, then other free data letters, and never select below `D:`.
+The Win32 frontend is the currently validated normal Windows entrypoint. It owns Windows presentation, theme, UAC orchestration, source selection/navigation, export actions and mount controls. It consumes shared storage/host services.
 
-A deterministic portable regression tests these policies without requiring SetupAPI, Dokany, or a specific runner drive layout.
+Large legacy frontend files are a cleanup target, but source splitting must preserve behavior and should be done only with MSVC + real-Windows regression coverage rather than as cosmetic churn immediately before an RC.
 
-## Theme boundary
+### WinUI 3
 
-System/Light/Dark behavior remains entirely in the native GUI layer. DWM/UxTheme/registry behavior does not enter DriveSession, mount namespace logic, or APA/PFS code.
+The unpackaged/self-contained WinUI 3 C++/WinRT project uses Windows App SDK 2.3.1. `NativeSessionController` bridges the native source/session/catalog/enrichment model into immutable frontend snapshots.
 
-## Release-train map
+Current status is **preview/parity work**, not production-default parity. The visual shell and native session/catalog bridge build/package successfully; complete disk-image/PFS/export/mount workflows and the least-privilege raw-disk broker remain work.
 
-### 0.1 Ayanami
+Until parity is proven, the canonical package carries WinUI under `WinUI\` beside the validated Win32 fallback.
 
-APA read-only core — implemented and hardware validated.
+## Build/release boundary
 
-### 0.2 Bocchi
+CMake owns portable/native libraries, CLI, Win32 and Dokany targets. The WinUI project remains MSBuild/C++WinRT because XAML/Windows App SDK build tooling is MSBuild-oriented.
 
-PFS read path — implemented and hardware validated; real PFS SEGI remains an explicit coverage gap protected by generated-image E2E.
+`build-windows.ps1` composes the full release payload. `scripts/verify-windows-package.ps1` validates canonical staging independently of whatever MSBuild subdirectory happens to contain the WinUI EXE.
 
-### 0.3 Chisato
-
-Native Windows browser, shared host/session/export layer, instrumentation and parser hardening — implemented and hardware validated.
-
-### 0.4 Darkness
-
-Read-only Explorer filesystem and integrated Windows device workflow:
-
-- portable mount namespace;
-- random-offset/thread-safe session operations;
-- Dokany 2.3.1 provider;
-- layered write protection;
-- native System/Light/Dark GUI;
-- SetupAPI device discovery;
-- controlled UAC elevation;
-- shared GUI/CLI mount controller;
-- direct GUI mount/open/unmount;
-- nine-test regression suite;
-- standalone CLI-driven real-HDD mount hardware validated;
-- final integrated-GUI hardware gate pending.
-
-## Dependency rules
-
-1. `ps2driveforge_core` must not include Win32 GUI/Dokany/host-path policy.
-2. PFS accesses physical data through `ApaVolume`.
-3. Frontends must not reimplement APA/PFS parsing.
-4. Windows filename conversion must not alter PFS-visible names.
-5. Read-only parsing must remain usable without GUI/Dokany.
-6. `DriveSession` must not become shell-global current-directory state.
-7. Instrumentation/caches must remain transparent to parser correctness.
-8. Dokany policy may translate NT semantics but not parse the filesystem.
-9. SetupAPI/UAC/theme behavior stays above storage format logic.
-10. Future write support must be a separate capability with backup/recovery semantics.
+See [`../BUILDING.md`](../BUILDING.md) and [`release-process.md`](release-process.md).
 
 ## Address-unit warning
 
-When debugging PFS, write down the unit at each step:
+When debugging PFS, write the unit at every boundary:
 
 ```text
 host bytes
@@ -218,55 +290,39 @@ host bytes
  <-> physical LBA
 ```
 
-Common mistakes include treating `BlockInfo.number` as the same unit everywhere, using payload-zone arithmetic for metadata, pre-adding APA starts before `ApaVolume`, or assuming sub-partitions are physically contiguous.
+Common mistakes include treating `BlockInfo.number` as the same unit everywhere, applying payload-zone arithmetic to metadata, pre-adding APA starts before `ApaVolume`, or assuming subpartitions are physically contiguous.
 
-See [`apa-format-notes.md`](apa-format-notes.md) and [`pfs-format-notes.md`](pfs-format-notes.md).
+## Current real-HDD performance evidence
 
-## Current performance reality
+The preserved 2026-08-22 validation sweep records, on one 149.05 GiB APA v2 disk:
 
-Correctness is ahead of throughput:
+- cold APA scan median 1555.022 ms for 190 headers/reads;
+- zero-I/O catalog median 0.006 ms for 190 rows;
+- cold `+OPL /` browse+stat: 10 reads / 16 KiB / 41.493 ms median;
+- immediate warm repeat: 0 backing reads / 0.001 ms median;
+- 35/35 native HDL metadata rows readable;
+- unknown-media automatic policy remains QD1 despite QD8 winning the narrow total-completion benchmark, because QD8 multiplied per-read latency and base rows are already usable before enrichment.
 
-```text
-DriveSession
- -> InstrumentedBlockDevice
- -> PhysicalDrive::read
- -> per-device mutex
- -> SetFilePointerEx
- -> synchronous ReadFile
-```
-
-Explorer also performs repeated open/stat/enumeration operations. Darkness preserves this behavior as the baseline. 0.5 Emilia owns inode/directory/block caches, read-ahead, request coalescing, and overlapped physical I/O. See [`performance.md`](performance.md).
-
-## Explorer namespace
-
-```text
-P:\
-  Partitions\
-    __system\
-    __common\
-    +OPL\
-  Games\                # later
-  System\               # later
-```
-
-Only `Partitions` is active in Darkness.
+These measurements support the architecture but do not define universal tuning for other HDDs, SSDs or bridges. See [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md).
 
 ## Debugging starting points
 
 | Symptom | First layer |
 | --- | --- |
-| APA not detected / chain stops | `apa.cpp` |
+| APA not detected / chain stops | `src/core/apa.cpp` |
 | extent outside device | APA bounds diagnostics |
-| PFS superblock invalid | `pfs::probe()` |
-| inode checksum/magic failure | PFS metadata addressing |
-| wrong payload with valid inode | zone arithmetic / SEGD-SEGI traversal |
-| only one sub-part fails | `ApaVolume` |
-| export-name/path failure | host exporter |
+| PFS superblock/inode/dentry invalid | `src/core/pfs.cpp` |
+| wrong main/sub physical data | `ApaVolume` |
+| HDL title/startup corrupt | `src/core/hdl.cpp` |
+| list creation causes payload I/O | `partition_catalog.cpp` / caller |
+| progressive game row wrong | `ManagementModel` / `hdl_enrichment.cpp` |
+| export-name/path failure | `pfs_export.cpp` |
 | GUI/CLI browse disagreement | `DriveSession` inputs/results |
-| Explorer says `The file exists` on normal open | NT Dokany create disposition policy |
-| direct browse works but mount path fails | `ReadOnlyMountView` / Dokany adapter |
-| PS2 HDD missing from GUI | SetupAPI discovery / UAC / raw-open error |
-| mount chooses wrong/occupied letter | Darkness mount-letter policy |
-| slow Explorer workload | instrumentation + `performance.md` |
+| Explorer says `The file exists` | NT Dokany open policy |
+| direct browse works but mount fails | `ReadOnlyMountView` / Dokany adapter |
+| PS2 HDD missing from GUI | SetupAPI / UAC / raw-open diagnostics |
+| wrong mount letter | Darkness mount-letter policy |
+| unexpected physical I/O | session cache + read cache/read-ahead + instrumentation |
+| WinUI build packages wrong path | build script / canonical package verifier |
 
 Identify the wrong abstraction before adding compatibility hacks above it.
