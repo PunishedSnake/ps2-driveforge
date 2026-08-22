@@ -5,32 +5,24 @@
   </PropertyGroup>
 
   <!--
-    This project uses packages-folder restore rather than PackageReference, so
-    transitive Windows App SDK build assets are not imported automatically.
-    Keep these component imports aligned with the versions resolved by
-    Microsoft.WindowsAppSDK 2.3.1. They are required both for C++/WinRT metadata
-    and for the unpackaged self-contained deployment targets that copy/register
-    the WinUI/Windows App Runtime payload beside the executable.
+    Native NuGet packages are restored into a packages folder instead of through
+    PackageReference, so the WinUI/Windows App SDK build assets must be imported
+    explicitly. Keep these versions aligned with Microsoft.WindowsAppSDK 2.4.0
+    restored with NuGet's Lowest dependency strategy.
   -->
   <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props')" />
-  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.props')" />
-  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.props')" />
-  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.props')" />
-  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.props')" />
-  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.3.0.260715.1\build\native\Microsoft.Windows.CppWinRT.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.3.0.260715.1\build\native\Microsoft.Windows.CppWinRT.props')" />
 
   <ItemGroup Label="ProjectConfigurations">
-    <ProjectConfiguration Include="Debug|x64">
-      <Configuration>Debug</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
-    <ProjectConfiguration Include="Release|x64">
-      <Configuration>Release</Configuration>
-      <Platform>x64</Platform>
-    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
   </ItemGroup>
 
   <PropertyGroup Label="Globals">
@@ -59,7 +51,6 @@
   </PropertyGroup>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-
   <PropertyGroup Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <PlatformToolset>v143</PlatformToolset>
@@ -75,7 +66,6 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <LinkIncremental>false</LinkIncremental>
   </PropertyGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
 
   <ItemDefinitionGroup>
@@ -91,7 +81,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(MSBuildThisFileDirectory)..\..\build\windows-x64\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>ps2driveforge_host.lib;ps2driveforge_core.lib;setupapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ps2driveforge_host.lib;ps2driveforge_core.lib;setupapi.lib;shell32.lib;comdlg32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -99,17 +89,12 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile><PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
-    <Link>
-      <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <OptimizeReferences>true</OptimizeReferences>
-    </Link>
+    <Link><EnableCOMDATFolding>true</EnableCOMDATFolding><OptimizeReferences>true</OptimizeReferences></Link>
   </ItemDefinitionGroup>
 
   <ItemGroup>
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="MainWindow.xaml" />
-  </ItemGroup>
-  <ItemGroup>
     <Midl Include="Project.idl" />
   </ItemGroup>
   <ItemGroup>
@@ -117,6 +102,7 @@
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="MainWindow.xaml.h"><DependentUpon>MainWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="NativeSessionController.hpp" />
+    <ClInclude Include="StartupLog.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
@@ -125,45 +111,18 @@
     <ClCompile Include="NativeSessionController.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <Manifest Include="app.manifest" />
-  </ItemGroup>
+  <ItemGroup><Manifest Include="app.manifest" /></ItemGroup>
 
-  <!--
-    Microsoft.WindowsAppSDK 2.3 is split across native dependency packages. The
-    WinUI package contributes Microsoft.UI.Xaml/Text metadata but references types
-    from Foundation, InteractiveExperiences and the WebView2 WinRT projection.
-    Manual packages-folder restore does not automatically put every dependency
-    WinMD in C++/WinRT's ReferencePath, so inject those metadata inputs immediately
-    before direct-reference projection. InteractiveExperiences ships more than one
-    OS-contract projection; use the 10.0.18362.0 set, compatible with DriveForge's
-    Windows 10 19041 minimum, to avoid duplicate WinRT definitions.
-  -->
+  <!-- Manual C++/WinRT metadata injection for the packages-folder restore. -->
   <PropertyGroup>
     <GetCppWinRTDirectWinMDReferencesDependsOn>PS2DFAddWindowsAppSDKDependencyWinMDs;$(GetCppWinRTDirectWinMDReferencesDependsOn)</GetCppWinRTDirectWinMDReferencesDependsOn>
   </PropertyGroup>
   <Target Name="PS2DFAddWindowsAppSDKDependencyWinMDs">
     <ItemGroup>
-      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.*\**\*.winmd">
-        <WinMDFile>true</WinMDFile>
-        <IsSystemReference>false</IsSystemReference>
-        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
-      </ReferencePath>
-      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.*\**\*.winmd">
-        <WinMDFile>true</WinMDFile>
-        <IsSystemReference>false</IsSystemReference>
-        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
-      </ReferencePath>
-      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.*\metadata\10.0.18362.0\*.winmd">
-        <WinMDFile>true</WinMDFile>
-        <IsSystemReference>false</IsSystemReference>
-        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
-      </ReferencePath>
-      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.Web.WebView2.*\lib\Microsoft.Web.WebView2.Core.winmd">
-        <WinMDFile>true</WinMDFile>
-        <IsSystemReference>false</IsSystemReference>
-        <ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget>
-      </ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.*\**\*.winmd"><WinMDFile>true</WinMDFile><IsSystemReference>false</IsSystemReference><ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget></ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.*\**\*.winmd"><WinMDFile>true</WinMDFile><IsSystemReference>false</IsSystemReference><ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget></ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.*\metadata\10.0.18362.0\*.winmd"><WinMDFile>true</WinMDFile><IsSystemReference>false</IsSystemReference><ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget></ReferencePath>
+      <ReferencePath Include="$(NugetPackageDirectory)\Microsoft.Web.WebView2.*\lib\Microsoft.Web.WebView2.Core.winmd"><WinMDFile>true</WinMDFile><IsSystemReference>false</IsSystemReference><ReferenceSourceTarget>ResolveAssemblyReference</ReferenceSourceTarget></ReferencePath>
     </ItemGroup>
   </Target>
 
@@ -172,28 +131,27 @@
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.3.0.260715.1\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.3.0.260715.1\build\native\Microsoft.Windows.CppWinRT.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets')" />
-    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" />
-    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" />
-    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" />
-    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" />
-    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets')" />
   </ImportGroup>
+
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
-    <PropertyGroup>
-      <ErrorText>Missing build dependency: {0}</ErrorText>
-    </PropertyGroup>
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK 2.3.1 props'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.3.1\build\native\Microsoft.WindowsAppSDK.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK 2.3.1 targets'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.WinUI 2.3.0 props'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.0\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.WinUI 2.3.0 targets'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Runtime 2.3.1 props'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.3.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Runtime 2.3.1 targets'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Foundation 2.3.5 props'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.5\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Foundation 2.3.5 targets'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.3 props'))" />
-    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.3\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.3 targets'))" />
+    <PropertyGroup><ErrorText>Missing build dependency: {0}</ErrorText></PropertyGroup>
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK 2.4.0 props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.2.4.0\build\native\Microsoft.WindowsAppSDK.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK 2.4.0 targets'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.WinUI 2.3.6 props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.2.3.6\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.WinUI 2.3.6 targets'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Runtime 2.4.0 props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.2.4.0\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Runtime 2.4.0 targets'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Foundation 2.3.9 props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.2.3.9\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Foundation 2.3.9 targets'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.6 props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.InteractiveExperiences 2.1.6 targets'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Base 2.0.4 props'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.Base 2.0.4 targets'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.Web.WebView2 1.0.3719.77 targets'))" />
