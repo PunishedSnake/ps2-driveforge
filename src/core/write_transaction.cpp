@@ -106,7 +106,7 @@ WriteTransactionResult WriteTransaction::commit(Verifier verifier)
         return result;
     }
 
-    const auto fail = [&](std::string error) mutable {
+    auto fail = [&](std::string error) {
         result.error = std::move(error);
         result.rollback_attempted = true;
         result.rollback_ok = rollback();
