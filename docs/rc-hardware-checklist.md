@@ -11,6 +11,7 @@ DriveForge version / RC:
 Commit SHA:
 Setup/Portable SHA-256:
 Windows version/build:
+Windows App SDK / resolved WinUI version:
 Dokany version:
 PS2 HDD model/capacity:
 Connection/bus/bridge:
@@ -134,11 +135,13 @@ Re-read the affected source area and confirm no source metadata/content changed.
 
 ## M. Release/legal package check
 
-For a **public** build (not merely a private RC test):
+For a **public** build (not merely the private RC5 test):
 
 - [ ] `LICENSE`, `CREDITS.md` and `THIRD_PARTY_NOTICES.md` are included.
 - [ ] Dokany notices/source information match the bundled/runtime version.
-- [ ] Windows App SDK deployment has passed the package-license review in `THIRD_PARTY_NOTICES.md`.
+- [ ] The build no longer resolves the affected Windows App SDK 2.3.1 / WinUI 2.3.0 combination.
+- [ ] Windows App SDK has been upgraded to **2.4.0 or later** and the resolved WinUI package is not one of the affected versions identified by Microsoft.
+- [ ] WinUI/package/startup tests were repeated after that dependency bump.
 - [ ] No dependency is presented as being covered by DriveForge's MIT license when its own terms apply.
 
 ## Result
