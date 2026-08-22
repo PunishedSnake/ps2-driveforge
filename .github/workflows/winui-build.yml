@@ -2,6 +2,17 @@ name: Windows x64 — Emilia WinUI
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ 'release/**' ]
+    paths:
+      - 'src/winui/**'
+      - 'src/core/**'
+      - 'src/host/**'
+      - 'src/platform/windows/**'
+      - 'include/ps2hdd/**'
+      - 'CMakeLists.txt'
+      - 'build-windows.ps1'
+      - '.github/workflows/winui-build.yml'
   pull_request:
     paths:
       - 'src/winui/**'
@@ -43,12 +54,24 @@ jobs:
         run: |
           $packages = Join-Path $PWD 'src\winui\packages'
           New-Item -ItemType Directory -Force -Path $packages | Out-Null
-          nuget install Microsoft.WindowsAppSDK -Version 2.3.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
+          nuget install Microsoft.WindowsAppSDK -Version 2.4.0 -DependencyVersion Lowest -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw "Windows App SDK restore failed with exit code $LASTEXITCODE" }
           nuget install Microsoft.Windows.CppWinRT -Version 3.0.260715.1 -OutputDirectory $packages -NonInteractive -Source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw "C++/WinRT restore failed with exit code $LASTEXITCODE" }
-          if (-not (Test-Path (Join-Path $packages 'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654'))) {
-            throw 'Expected Microsoft.Windows.SDK.BuildTools 10.0.26100.4654 dependency was not restored.'
+
+          foreach ($required in @(
+            'Microsoft.WindowsAppSDK.2.4.0',
+            'Microsoft.WindowsAppSDK.Runtime.2.4.0',
+            'Microsoft.WindowsAppSDK.WinUI.2.3.6',
+            'Microsoft.WindowsAppSDK.Foundation.2.3.9',
+            'Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.6',
+            'Microsoft.WindowsAppSDK.Base.2.0.4',
+            'Microsoft.Windows.SDK.BuildTools.10.0.26100.4654',
+            'Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100'
+          )) {
+            if (-not (Test-Path (Join-Path $packages $required))) {
+              throw "Expected Windows App SDK dependency was not restored: $required"
+            }
           }
 
       - name: Build WinUI frontend
@@ -72,15 +95,33 @@ jobs:
             Get-ChildItem .\src\winui -Recurse -File | ForEach-Object { Write-Host $_.FullName }
             throw "Expected exactly one PS2-DriveForge-WinUI.exe below $outputRoot, found $($candidates.Count)."
           }
+
           $exe = $candidates[0]
           $payload = Split-Path -Parent $exe.FullName
           $files = @(Get-ChildItem $payload -Recurse -File)
-          if ($files.Count -lt 2) {
-            throw 'Self-contained WinUI output did not contain runtime payload files.'
+          $xaml = @(Get-ChildItem $payload -Recurse -File -Filter 'Microsoft.UI.Xaml.dll')
+          $runtime = @(
+            Get-ChildItem $payload -Recurse -File |
+              Where-Object { $_.Name -like 'Microsoft.WindowsAppRuntime*.dll' }
+          )
+
+          if ($xaml.Count -ne 1) {
+            Get-ChildItem $payload -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw "Self-contained WinUI output is missing Microsoft.UI.Xaml.dll (found $($xaml.Count))."
           }
+          if ($runtime.Count -eq 0) {
+            Get-ChildItem $payload -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+            throw 'Self-contained WinUI output is missing Microsoft.WindowsAppRuntime*.dll.'
+          }
+          if ($files.Count -lt 10) {
+            throw "Self-contained WinUI payload is implausibly small: only $($files.Count) files."
+          }
+
           Write-Host "WinUI frontend: $($exe.FullName)"
           Write-Host "WinUI payload: $payload"
-          Write-Host "Runtime payload files: $($files.Count)"
+          Write-Host "Payload files: $($files.Count)"
+          Write-Host "XAML runtime: $($xaml[0].FullName)"
+          Write-Host "Windows App Runtime DLLs: $($runtime.Count)"
 
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4

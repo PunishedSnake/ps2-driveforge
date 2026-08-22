@@ -3,7 +3,7 @@ name: Windows x64 — Emilia
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, 'release/**' ]
   pull_request:
 
 permissions:
@@ -20,6 +20,44 @@ jobs:
 
       - name: Set up MSBuild for WinUI
         uses: microsoft/setup-msbuild@v2
+
+      - name: Install verified Inno Setup 6.7.3 compiler
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest $url -OutFile $installer
+          $expected = '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732'
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            throw "Inno Setup SHA-256 mismatch: expected $expected, got $actual"
+          }
+          $process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            '/SP-'
+          )
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installation failed with exit code $($process.ExitCode)"
+          }
+
+      - name: Locate Inno Setup compiler
+        id: inno
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+            $candidate = foreach ($root in $roots) {
+              Get-ChildItem -LiteralPath $root -Recurse -File -Filter ISCC.exe -ErrorAction SilentlyContinue
+            }
+            $compiler = $candidate | Select-Object -First 1
+          }
+          if (-not $compiler) { throw 'ISCC.exe was not found after installing Inno Setup.' }
+          $path = if ($compiler.Source) { $compiler.Source } else { $compiler.FullName }
+          Write-Host "Inno Setup compiler: $path"
+          "compiler=$path" >> $env:GITHUB_OUTPUT
 
       - name: Install Dokany 2.3.1 SDK/runtime
         shell: pwsh
@@ -72,9 +110,47 @@ jobs:
         shell: pwsh
         run: .\scripts\verify-windows-package.ps1
 
-      - name: Upload Windows package
+      - name: Verify mount helper accepts RC6 quoted drive argument
+        shell: pwsh
+        run: |
+          $helper = '.\dist\windows-x64\PS2-DriveForge-Mount.exe'
+          $missingImage = Join-Path $env:RUNNER_TEMP 'driveforge-missing-test-image.img'
+          & $helper --image $missingImage --mount 'C:"'
+          $code = $LASTEXITCODE
+          if ($code -eq 2) {
+            throw 'Mount helper still rejects the RC6 C:" argv artifact as invalid syntax.'
+          }
+          if ($code -ne 1) {
+            throw "Expected accepted arguments followed by missing-image exit code 1, got $code."
+          }
+          $global:LASTEXITCODE = 0
+          Write-Host 'Mount helper drive-argument regression passed.'
+
+      - name: Build final 0.5.0 portable and installer packages
+        shell: pwsh
+        run: |
+          .\scripts\make-user-release.ps1 `
+            -Version '0.5.0' `
+            -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
+            -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
+
+      - name: Verify final 0.5.0 release artifacts
+        shell: pwsh
+        run: |
+          $portable = '.\dist\PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe'
+          foreach ($path in @($portable, $setup)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Expected final 0.5.0 artifact was not produced: $path"
+            }
+            Write-Host "$path SHA-256: $((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
+          }
+
+      - name: Upload final 0.5.0 user release
         uses: actions/upload-artifact@v4
         with:
           name: PS2-DriveForge-0.5.0-Emilia-windows-x64
-          path: dist/PS2-DriveForge-0.5.0-Emilia-Release-windows-x64.zip
+          path: |
+            dist/PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip
+            dist/PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe
           if-no-files-found: error

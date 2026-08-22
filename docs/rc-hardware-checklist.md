@@ -1,133 +1,154 @@
 # Emilia 0.5 RC real-hardware checklist
 
-Use this checklist on the **exact Windows candidate artifact** after all deterministic CI gates are green. Record the candidate commit and ZIP SHA-256 before starting.
+Use this checklist against the **exact Windows candidate artifact** after deterministic CI is green. Record the candidate commit and artifact SHA-256 before starting.
 
-This is a read-only validation. A failure to reject source mutation is release-blocking.
+This is a read-only validation. Any successful source mutation is release-blocking.
 
 ## Candidate identity
 
-Record:
-
 ```text
-DriveForge commit:
-Candidate ZIP SHA-256:
-Windows version:
+DriveForge version / RC:
+Commit SHA:
+Setup/Portable SHA-256:
+Windows version/build:
+Windows App SDK / resolved WinUI version:
 Dokany version:
 PS2 HDD model/capacity:
 Connection/bus/bridge:
 PhysicalDrive index observed this run:
 ```
 
-Do not treat the current `PhysicalDriveN` number as stable across reboot/reconnection.
+`PhysicalDriveN` is session-specific and may change after reboot/reconnection.
 
-## A. Normal-user startup and elevation
+## A. Package and launcher
 
-- [ ] Launch `PS2-DriveForge.exe` as a normal, non-elevated user.
-- [ ] Confirm exactly one UAC elevation request for raw-disk access; there must be no relaunch loop.
-- [ ] Accept UAC and confirm the elevated instance starts normally.
-- [ ] Confirm the UI clearly remains read-only.
+- [ ] Install the Setup build or unpack the Portable build to a clean directory.
+- [ ] Confirm the package root is clean (`PS2-DriveForge.exe`, docs/legal files, `app`, `legacy`, `tools`, `docs`) rather than exposing WinUI runtime files at root.
+- [ ] Launch root `PS2-DriveForge.exe`.
+- [ ] Confirm there is no Windows loader/ordinal/missing-DLL error before the launcher runs.
+- [ ] Run `PS2-DriveForge.exe --legacy` and confirm the Win32 frontend starts directly.
+- [ ] Confirm `legacy\PS2-DriveForge-Win32.exe` also starts when launched directly.
 
-## B. SetupAPI discovery and APA identification
+## B. WinUI startup and recovery
 
-- [ ] Confirm startup discovers actual Windows disk interfaces rather than presenting a fixed `PhysicalDrive0..31` list.
-- [ ] Confirm the PS2 HDD is identified by a successful APA scan, not merely by Windows model/capacity metadata.
-- [ ] If exactly one PS2 HDD candidate exists and no image/source is already open, confirm it opens automatically.
-- [ ] Record APA version, total header count, main/sub counts and capacity.
-- [ ] Confirm unrelated disks are not exposed as PS2 HDD candidates.
+- [ ] Start root `PS2-DriveForge.exe` normally and confirm WinUI creates/activates its window.
+- [ ] Confirm the process does not die during `MainWindow::InitializeComponent()`.
+- [ ] Confirm Fluent control resources render normally (NavigationView/buttons/etc.).
+- [ ] Confirm `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log` contains the expected startup sequence.
+- [ ] If WinUI fails, confirm the launcher offers a Win32 recovery path instead of silently exiting.
+- [ ] Confirm the recovery path can open the startup log.
 
-Reference validation disk historically reports APA v2, 190 headers, 43 main partitions and 147 sub-partitions; those numbers are **not** universal requirements for other disks.
+Known fixed RC regressions that must not return:
 
-## C. Partition/catalog behavior
+- incomplete self-contained WinUI runtime;
+- missing `AccentFillColorDefaultBrush`;
+- missing `TabViewButtonBackground` because `XamlControlsResources` was not merged;
+- root launcher `COMCTL32` ordinal 345 loader failure.
 
-- [ ] Confirm the usable APA partition list appears immediately after the one APA scan.
-- [ ] Confirm sorting/filtering/selection does not trigger a new disk scan or modal per-game initialization.
-- [ ] Confirm HDL titles/details may enrich progressively without blocking base-list use.
-- [ ] Change source/rescan during optional enrichment if practical and confirm stale enrichment does not corrupt the new model.
+## C. Win32 theme/readability
 
-## D. Read-only Explorer mount
+- [ ] Select **System** theme and verify normal controls/status text remain readable.
+- [ ] Select **Light** theme and verify tree/list/status text contrast.
+- [ ] Select **Dark** theme and verify tree/list/status text contrast.
+- [ ] Specifically confirm the bottom status bar uses light text on the dark background.
+- [ ] If High Contrast is available, confirm DriveForge does not override it with hard-coded dark colors.
 
-- [ ] Use the GUI `Mount read-only` action.
-- [ ] Confirm `P:` is selected when available; otherwise confirm another free data letter is selected automatically.
-- [ ] Use `Open mounted volume in Explorer`.
-- [ ] Browse the mounted root.
-- [ ] Browse `Partitions`.
-- [ ] Browse a known PFS partition such as `+OPL`.
-- [ ] Browse `__common\OPL` when present.
+## D. Normal-user startup and elevation
+
+- [ ] Launch the frontend as a normal user.
+- [ ] Confirm UAC behavior does not loop.
+- [ ] Accept elevation for raw physical-disk access and confirm the UI remains explicitly read-only.
+- [ ] Cancel elevation once and confirm image-only/non-admin behavior remains usable where supported.
+
+## E. SetupAPI discovery and APA identification
+
+- [ ] Confirm Windows disk interfaces are enumerated dynamically instead of presenting a fixed `PhysicalDrive0..31` list.
+- [ ] Confirm PS2 HDD identification requires a valid APA scan, not model/capacity heuristics.
+- [ ] If exactly one PS2 HDD candidate exists and no source is open, confirm the intended auto-open behavior.
+- [ ] Record APA version, header count, main/sub counts and capacity.
+- [ ] Confirm unrelated disks are not shown as PS2 HDD candidates.
+
+Historical reference disk: APA v2, 190 headers, 43 main partitions, 147 sub-partitions. These values are evidence for that disk, not universal requirements.
+
+## F. Partition/catalog behavior
+
+- [ ] Confirm the base APA partition list becomes usable after one validated scan.
+- [ ] Confirm sorting/filtering/selection does not rescan the source.
+- [ ] Confirm optional HDL metadata enrichment does not block base-list use.
+- [ ] If practical, rescan/change source during enrichment and confirm stale work does not mutate the new model.
+
+## G. Read-only Explorer mount
+
+- [ ] Use `Mount read-only`.
+- [ ] Confirm DriveForge selects the **lowest unused letter from C: through Z:**.
+- [ ] Confirm A: and B: are never selected automatically.
+- [ ] Open the mount in Explorer.
+- [ ] Browse the root and `Partitions`.
+- [ ] Browse a known PFS partition such as `+OPL` and `__common\OPL` when present.
 - [ ] Confirm normal directory opens do not produce the historical `The file exists` error.
 
-## E. Known-file integrity
+## H. Known-file integrity
 
-On the project's historical validation disk, copy:
+Historical validation file:
 
 ```text
 __common:/OPL/conf_hdd.cfg
-```
-
-Expected historical result:
-
-```text
 size:   20 bytes
 SHA256: E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
 ```
 
-- [ ] If that exact file exists on this disk, copy it through the mounted Explorer path and verify the hash.
-- [ ] If using another disk, copy a known file and compare against an independently known source hash/content instead of forcing the historical hash.
+- [ ] On the historical disk, copy through the Explorer mount and verify the hash.
+- [ ] On another disk, use a file with independently known contents/hash rather than forcing the historical value.
 
-## F. Write rejection
+## I. Write rejection
 
-Attempt only harmless operations whose expected result is rejection:
+Attempt operations whose only acceptable outcome is rejection:
 
-- [ ] create a new file in the mounted volume — rejected;
-- [ ] create a directory — rejected;
-- [ ] rename an existing item — rejected;
-- [ ] delete an existing item — rejected;
-- [ ] overwrite/truncate an existing file — rejected.
+- [ ] create file;
+- [ ] create directory;
+- [ ] rename item;
+- [ ] delete item;
+- [ ] overwrite/truncate file.
 
-After the attempts, re-read/browse the affected source area and confirm no source metadata/content changed.
+Re-read the affected source area and confirm no source metadata/content changed.
 
-## G. Clean unmount and remount
+## J. Clean unmount/remount
 
-- [ ] Use the **GUI** `Unmount` action.
-- [ ] Confirm the drive letter disappears cleanly.
-- [ ] Confirm there is no orphaned Dokany mount/process state preventing another mount.
-- [ ] Mount again and browse at least one known partition/file.
-- [ ] Unmount again cleanly.
+- [ ] Use the GUI unmount action.
+- [ ] Confirm the drive letter disappears.
+- [ ] Confirm no orphaned Dokany state blocks a second mount.
+- [ ] Mount again, browse a known file, and unmount again cleanly.
 
-## H. Rescan/source preservation
+## K. Drive-letter fallback
 
-- [ ] With a source open, run `Rescan PS2 HDDs`.
-- [ ] Confirm rescan does not silently replace the currently open image/HDD.
-- [ ] If multiple PS2 candidates exist, confirm the UI requires an explicit choice rather than arbitrary auto-open.
+- [ ] Record occupied drive letters before mounting.
+- [ ] Predict the first free C:–Z: letter and confirm DriveForge selects it.
+- [ ] If practical, occupy that letter and confirm DriveForge advances to the next free letter.
+- [ ] Confirm A:/B: remain excluded.
+- [ ] If all C:–Z: are occupied, confirm mount fails cleanly without stealing/reusing a letter.
 
-## I. UAC cancellation and image-only mode
+## L. Rescan/source preservation
 
-- [ ] Start again as a normal user and cancel the initial UAC prompt once.
-- [ ] Confirm the program remains usable for disk-image workflows instead of exiting or looping.
-- [ ] Confirm raw physical-drive access is unavailable/limited as expected.
-- [ ] Use `Restart as Administrator` and confirm raw-disk discovery/access is restored.
+- [ ] With a source open, run rescan.
+- [ ] Confirm the active source is not silently replaced.
+- [ ] With multiple PS2 candidates, confirm selection is explicit rather than arbitrary.
 
-## J. Occupied mount-letter fallback
+## M. Release/legal package check
 
-- [ ] Occupy `P:` with another valid drive/mapping before mounting DriveForge.
-- [ ] Confirm DriveForge chooses another unused data letter rather than failing or stealing `P:`.
-- [ ] Confirm letters below `D:` are never selected automatically.
+For a **public** build (not merely the private RC5 test):
 
-## K. WinUI candidate smoke
-
-The WinUI frontend remains a preview until feature/hardware parity. It must nevertheless start from the candidate package.
-
-- [ ] Launch `WinUI\PS2-DriveForge-WinUI.exe` on the target Windows machine.
-- [ ] Confirm there is no missing Windows App SDK/runtime DLL error.
-- [ ] Confirm XAML resources render and the window opens normally.
-- [ ] Exercise only the functionality actually wired in this candidate; do not mark legacy parity as passed if controls are still presentation-only.
+- [ ] `LICENSE`, `CREDITS.md` and `THIRD_PARTY_NOTICES.md` are included.
+- [ ] Dokany notices/source information match the bundled/runtime version.
+- [ ] The build no longer resolves the affected Windows App SDK 2.3.1 / WinUI 2.3.0 combination.
+- [ ] Windows App SDK has been upgraded to **2.4.0 or later** and the resolved WinUI package is not one of the affected versions identified by Microsoft.
+- [ ] WinUI/package/startup tests were repeated after that dependency bump.
+- [ ] No dependency is presented as being covered by DriveForge's MIT license when its own terms apply.
 
 ## Result
-
-Mark one:
 
 ```text
 [ ] PASS — candidate may proceed toward 0.5.0 release decision
 [ ] FAIL — release blocked
 ```
 
-If failed, record exact step, error text/code, relevant logs/screenshots, candidate SHA, hardware/connection and whether the failure reproduces after a clean unmount/restart. Do not modify the source HDD to investigate a read-only release failure.
+For a failure, record the exact step, error text/code, relevant logs/screenshots, candidate SHA, hardware/connection and whether it reproduces after a clean restart/unmount. Do not modify the source HDD merely to debug a read-only candidate.

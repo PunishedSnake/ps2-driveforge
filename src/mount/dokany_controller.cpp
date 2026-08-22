@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/darkness_policy.hpp"
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/mount_view.hpp"
 #include "dokany_open_policy.hpp"
@@ -595,32 +596,13 @@ std::wstring DokanyMountController::normalize_mount_point(std::wstring value)
     return {};
 }
 
-std::wstring DokanyMountController::suggest_mount_point(wchar_t preferred)
+std::wstring DokanyMountController::suggest_mount_point(wchar_t)
 {
-    const DWORD mask = GetLogicalDrives();
-    auto available = [mask](wchar_t letter) {
-        if (letter < L'D' || letter > L'Z') {
-            return false;
-        }
-        const DWORD bit = 1UL << static_cast<unsigned>(letter - L'A');
-        return (mask & bit) == 0;
-    };
-
-    preferred = static_cast<wchar_t>(towupper(preferred));
-    if (available(preferred)) {
-        return std::wstring{preferred, L':', L'\\'};
+    const auto letter = darkness_policy::choose_mount_letter(GetLogicalDrives());
+    if (!letter) {
+        return {};
     }
-    for (wchar_t letter = L'P'; letter <= L'Z'; ++letter) {
-        if (letter != preferred && available(letter)) {
-            return std::wstring{letter, L':', L'\\'};
-        }
-    }
-    for (wchar_t letter = L'O'; letter >= L'D'; --letter) {
-        if (letter != preferred && available(letter)) {
-            return std::wstring{letter, L':', L'\\'};
-        }
-    }
-    return {};
+    return std::wstring{*letter, L':', L'\\'};
 }
 
 bool remove_dokany_mount_point(std::wstring mount_point)

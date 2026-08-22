@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0-dev "Emilia" - 2026-08-22
+## 0.5.0 "Emilia" - 2026-08-23
 
 - Started the performance/frontend-modernization release above the hardware-validated Darkness read-only Explorer stack.
 - Added backing service-time, small-read and maximum-in-flight instrumentation so performance work can separate request count from actual device latency/concurrency.
@@ -15,8 +15,8 @@
 - Added `ps2-driveforge-benchmark` support for cold APA/catalog, PFS browse+stat cold/warm behavior, native HDL enrichment and storage/I/O counters.
 - Recorded the first full real-HDD Emilia sweep: 190-header cold APA median 1555.022 ms, zero-I/O 190-row catalog median 0.006 ms, cold `+OPL` browse+stat 10 reads/16 KiB with a zero-backing-read warm repeat, and 35/35 native HDL rows readable.
 - Preserved the automatic `unknown`-media QD1 policy despite QD8 completing the narrow 35-title workload ~9.6% faster on the validation HDD because QD8 multiplied average read service latency and management rows are already usable before enrichment finishes.
-- Added native WinUI 3 / C++/WinRT source using Windows App SDK 2.3.1 and the shared DriveSession/PartitionCatalog/ManagementModel backend rather than a second parser stack.
-- Added a self-contained unpackaged WinUI build to canonical Windows CI/package staging while retaining the hardware-validated Win32 frontend as the normal fallback until parity is demonstrated.
+- Added native WinUI 3 / C++/WinRT source using the shared DriveSession/PartitionCatalog/ManagementModel backend rather than a second parser stack.
+- Added a self-contained unpackaged WinUI build to canonical Windows CI/package staging while retaining the hardware-validated Win32 frontend as the supported fallback.
 - Fixed WinUI release staging so build/CI discover the actual MSBuild output directory instead of assuming `src\winui\x64\Release\PS2-DriveForge-WinUI.exe` is flat; current MSBuild emits a project-name subdirectory.
 - Expanded the normal regression suite to **14 executables** covering read cache, read-ahead, partition catalog/management model, HDL enrichment, storage policy and existing APA/PFS/session/Dokany/Darkness contracts.
 - Merged the stable Emilia functionality baseline to `main` as commit `210d598442641291f12ecb03323d8a91586b6dfd` after Windows + Dokany + WinUI and Linux sanitizer CI were green and the canonical artifact was smoke-checked.
@@ -24,7 +24,21 @@
 - Moved native HDL parsing and zero-I/O partition-catalog implementation out of public headers into owned `src/core` translation units, and moved ManagementModel mutation/construction code into `src/host` without changing behavior.
 - Added deterministic `scripts/verify-windows-package.ps1` validation of required release binaries/docs, the exact 14 packaged regression executables and the WinUI payload.
 - Added reproducible Windows/Linux build documentation, refreshed architecture/testing/contributing/development docs for Emilia, and added explicit RC/release gates plus a real-Windows/real-PS2-HDD checklist.
-- Final 0.5.0 remains gated on the exact RC artifact passing the documented UAC/SetupAPI/Dokany/Explorer/write-rejection/remount and WinUI-startup hardware smoke sequence; a green CI ZIP alone is not treated as final-release validation.
+- Changed automatic Explorer mount-letter policy from a hard/preferred `P:` scheme to the **lowest currently free letter from C: through Z:** while always excluding A: and B:, with deterministic regression coverage.
+- Fixed the unpackaged WinUI self-contained deployment so the release payload includes the actual Windows App SDK/WinUI runtime rather than a misleading seven-file frontend-only directory; release verification now requires `Microsoft.UI.Xaml.dll` and Windows App Runtime components.
+- Added very-early WinUI startup diagnostics under `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log`, including XAML/WinRT `HRESULT`, native unhandled-exception and activation stage markers.
+- Fixed real-machine WinUI XAML startup failures first exposed as missing `AccentFillColorDefaultBrush`, then as missing `TabViewButtonBackground`; DriveForge now owns its application semantic brushes and merges `Microsoft.UI.Xaml.Controls.XamlControlsResources` for control-internal Fluent resources.
+- Added a clean user-facing release layout with a small root `PS2-DriveForge.exe` launcher, WinUI/runtime under `app\winui`, the supported Win32 fallback under `legacy`, tools under `tools`, and regression executables kept out of normal user packages.
+- Added a post-`Window.Activate()` WinUI readiness handshake and `PS2-DriveForge.exe --legacy` direct fallback path so a modern-frontend startup failure does not strand the user without the validated Win32 interface.
+- Fixed RC4's root-launcher loader crash caused by a `TaskDialogIndirect`/COMCTL32 ordinal import that could abort the process before `wWinMain()` and therefore before `--legacy` argument handling.
+- Added `PS2-DriveForge.exe --self-test` and made release staging execute the **exact staged launcher** before building Portable/Setup artifacts, turning loader/import failures into CI packaging failures.
+- Fixed Win32 dark-theme status-bar readability by custom-painting the status client with the active DriveForge dark palette while preserving normal Light/System/High-Contrast behavior.
+- Added Inno Setup installer generation alongside the clean Portable ZIP, including explicit Start Menu access to the supported Legacy Win32 fallback and optional verified Dokany prerequisite installation.
+- Added an MIT license for original DriveForge code, public credits/acknowledgements and third-party notices; user packages now require these files and the installer displays the project license.
+- Updated the public WinUI dependency from the affected Windows App SDK 2.3.1 / WinUI 2.3.0 combination to Windows App SDK 2.4.0 and repeated self-contained package/startup validation.
+- Completed the functional WinUI pass on real hardware: launcher and custom title bar, UAC restart, automatic PS2 HDD discovery, APA/HDL/PFS browsing, Files, Performance, Settings, read-only Dokany Explorer mount and Win32 fallback all use the shared native backend.
+- Unified HDD Manager, Files, Mount, Performance and Settings behind one viewport-aware responsive page host; narrow windows scale correctly and the remaining wide-window density is cosmetic rather than a release blocker.
+- Finalized the Windows pipeline to produce and hash `PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip` and `PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe` as the public Emilia artifacts.
 
 ## 0.4.0-dev "Darkness" - 2026-08-21
 

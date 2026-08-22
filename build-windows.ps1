@@ -140,7 +140,8 @@ if (-not $SkipWinUI) {
     New-Item -ItemType Directory -Force -Path $WinUIPackages | Out-Null
     Invoke-Native -FilePath $NuGet -Arguments @(
         'install', 'Microsoft.WindowsAppSDK',
-        '-Version', '2.3.1',
+        '-Version', '2.4.0',
+        '-DependencyVersion', 'Lowest',
         '-OutputDirectory', $WinUIPackages,
         '-NonInteractive',
         '-Source', 'https://api.nuget.org/v3/index.json'
@@ -240,27 +241,31 @@ if (-not $SkipTests) {
     }
 }
 
-foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
+# Root-facing documentation should remain usable when the release ZIP is
+# downloaded without a Git checkout.
+foreach ($Doc in @('README.md', 'CHANGELOG.md', 'BUILDING.md', 'CONTRIBUTING.md')) {
     $Source = Join-Path $Root $Doc
-    if (Test-Path $Source) {
-        Copy-Item $Source $DistDir -Force
+    if (-not (Test-Path $Source -PathType Leaf)) {
+        throw "Required release documentation is missing: $Source"
     }
+    Copy-Item $Source $DistDir -Force
 }
 
+# Package the complete Markdown documentation set instead of maintaining a
+# second hand-written allowlist that inevitably goes stale when release gates or
+# format notes are added. This also keeps README links useful inside the ZIP.
+$DocsSource = Join-Path $Root 'docs'
 $ValidationDir = Join-Path $DistDir 'docs'
+if (-not (Test-Path $DocsSource -PathType Container)) {
+    throw "Documentation directory is missing: $DocsSource"
+}
 New-Item -ItemType Directory -Force -Path $ValidationDir | Out-Null
-foreach ($Doc in @(
-    'docs\testing.md',
-    'docs\REAL_HARDWARE_VALIDATION.md',
-    'docs\darkness-plan.md',
-    'docs\emilia-plan.md',
-    'docs\performance.md',
-    'docs\EMILIA_REAL_HDD_BENCHMARK_2026-08-22.md'
-)) {
-    $Source = Join-Path $Root $Doc
-    if (Test-Path $Source) {
-        Copy-Item $Source $ValidationDir -Force
-    }
+$MarkdownDocs = @(Get-ChildItem -LiteralPath $DocsSource -File -Filter '*.md')
+if ($MarkdownDocs.Count -eq 0) {
+    throw "No Markdown documentation files were found in: $DocsSource"
+}
+foreach ($Doc in $MarkdownDocs) {
+    Copy-Item $Doc.FullName $ValidationDir -Force
 }
 
 $ZipName = "PS2-DriveForge-0.5.0-Emilia-$Configuration-windows-x64.zip"

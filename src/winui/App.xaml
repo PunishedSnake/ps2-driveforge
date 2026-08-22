@@ -5,12 +5,60 @@
     xmlns:local="using:PS2DriveForge.WinUI">
     <Application.Resources>
         <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!--
+                    WinUI control templates reference shared Fluent resources
+                    such as TabViewButtonBackground. Those keys live in
+                    XamlControlsResources and must be merged explicitly for an
+                    unpackaged/self-contained C++ WinUI app.
+                -->
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/>
+            </ResourceDictionary.MergedDictionaries>
+
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Default">
                     <CornerRadius x:Key="ControlCornerRadius">8</CornerRadius>
                     <CornerRadius x:Key="OverlayCornerRadius">12</CornerRadius>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
+
+            <!--
+                DriveForge owns these semantic brushes instead of assuming
+                optional Fluent brush keys exist in every WinUI/Windows App SDK
+                resource dictionary. SystemAccentColor is the stable platform
+                color contract; caution/success remain explicit app semantics.
+            -->
+            <SolidColorBrush x:Key="DriveForgeAccentBrush"
+                             Color="{ThemeResource SystemAccentColor}"/>
+            <SolidColorBrush x:Key="DriveForgeAccentSubtleBrush"
+                             Color="{ThemeResource SystemAccentColor}"
+                             Opacity="0.20"/>
+            <SolidColorBrush x:Key="DriveForgeCautionBackgroundBrush"
+                             Color="#FFFFB900"
+                             Opacity="0.16"/>
+            <SolidColorBrush x:Key="DriveForgeCautionBrush"
+                             Color="#FFFFB900"/>
+            <SolidColorBrush x:Key="DriveForgeSuccessBrush"
+                             Color="#FF0F7B0F"/>
+
+            <!--
+                RC compatibility aliases. MainWindow.xaml still carries the
+                original Emilia names; defining them here makes resolution
+                deterministic on every supported Windows App SDK runtime. A
+                later UI-only cleanup can switch the markup to DriveForge* keys.
+            -->
+            <SolidColorBrush x:Key="AccentFillColorDefaultBrush"
+                             Color="{ThemeResource SystemAccentColor}"/>
+            <SolidColorBrush x:Key="AccentFillColorTertiaryBrush"
+                             Color="{ThemeResource SystemAccentColor}"
+                             Opacity="0.20"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBackgroundBrush"
+                             Color="#FFFFB900"
+                             Opacity="0.16"/>
+            <SolidColorBrush x:Key="SystemFillColorCautionBrush"
+                             Color="#FFFFB900"/>
+            <SolidColorBrush x:Key="SystemFillColorSuccessBrush"
+                             Color="#FF0F7B0F"/>
 
             <Style x:Key="DriveForgeCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
@@ -42,6 +90,40 @@
             <Style x:Key="DriveForgeCaptionStyle" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="11"/>
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </Style>
+
+            <!--
+                Canonical page viewport for every NavigationView page. The host
+                owns vertical scrolling and constrains its presenter to the real
+                ScrollViewer viewport width. Individual pages may still cap the
+                width of their inner content, but they no longer implement their
+                own scrolling/measurement contract.
+            -->
+            <Style x:Key="DriveForgeResponsivePageHostStyle" TargetType="ContentControl">
+                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                <Setter Property="VerticalAlignment" Value="Stretch"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ContentControl">
+                            <ScrollViewer x:Name="PageViewport"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          HorizontalScrollMode="Disabled"
+                                          HorizontalContentAlignment="Stretch">
+                                <Grid Width="{Binding ViewportWidth, ElementName=PageViewport}"
+                                      MaxWidth="1560"
+                                      HorizontalAlignment="Center">
+                                    <ContentPresenter Content="{TemplateBinding Content}"
+                                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                                      HorizontalContentAlignment="Stretch"
+                                                      VerticalContentAlignment="Stretch"/>
+                                </Grid>
+                            </ScrollViewer>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
             </Style>
 
             <Style x:Key="DriveForgeToolbarButtonStyle" TargetType="Button">
