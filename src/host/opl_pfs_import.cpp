@@ -1,9 +1,13 @@
 #include "ps2hdd/opl_pfs_import.hpp"
 
+#include "ps2hdd/apa_volume.hpp"
+#include "ps2hdd/pfs.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -87,13 +91,25 @@ std::size_t depth(std::string_view path) noexcept
     return static_cast<std::size_t>(std::count(path.begin(), path.end(), '/')) + 1U;
 }
 
+bool missing_path_error(std::string_view error) noexcept
+{
+    return error.rfind("PFS path component not found:", 0) == 0;
+}
+
+struct BuiltTar {
+    const PreparedTarArchive* plan{};
+    tar::UpdateResult update;
+};
+
 } // namespace
 
 PreparedPfsImport prepare_pfs_import(std::span<const FetchedAsset> assets,
                                      const PfsImportOptions& options)
 {
     PreparedPfsImport result;
-    std::set<std::string> destinations;
+    std::set<std::string> direct_destinations;
+    std::map<std::string, std::size_t, std::less<>> archive_indices;
+    std::set<std::pair<std::string, std::string>> archive_members;
     std::set<std::string> directories;
     bool fatal = false;
 
@@ -114,22 +130,12 @@ PreparedPfsImport prepare_pfs_import(std::span<const FetchedAsset> assets,
             result.issues.push_back({asset.kind, asset.target_path, true, std::move(message)});
         };
 
-        if (!asset.archive_member.empty()) {
-            fail("TAR-layout asset requires a TAR container updater; classic-file importer refused it");
-            continue;
-        }
-
         std::string path_error;
         auto target_path = normalize_target_path(asset.target_path, path_error);
         if (!path_error.empty()) {
             fail(std::move(path_error));
             continue;
         }
-        if (!destinations.insert(target_path).second) {
-            fail("Two staged assets resolve to the same PFS destination");
-            continue;
-        }
-        add_parent_directories(target_path, directories);
 
         std::error_code ec;
         const auto host_size = std::filesystem::file_size(asset.staged_path, ec);
@@ -148,19 +154,65 @@ PreparedPfsImport prepare_pfs_import(std::span<const FetchedAsset> assets,
             fail(std::move(read_error));
             continue;
         }
-
         if (result.total_bytes > std::numeric_limits<std::uint64_t>::max() - bytes.size()) {
             fail("PFS import byte accounting overflow");
             continue;
         }
         result.total_bytes += bytes.size();
+        add_parent_directories(target_path, directories);
 
-        pfs::BatchFile file;
-        file.path = std::move(target_path);
-        file.bytes = std::move(bytes);
-        file.options = options.file_options;
-        file.required = true;
-        result.files.emplace_back(std::move(file));
+        if (asset.archive_member.empty()) {
+            if (archive_indices.contains(target_path)) {
+                fail("Classic file collides with a TAR container at the same PFS destination");
+                continue;
+            }
+            if (!direct_destinations.insert(target_path).second) {
+                fail("Two staged assets resolve to the same classic PFS destination");
+                continue;
+            }
+
+            pfs::BatchFile file;
+            file.path = std::move(target_path);
+            file.bytes = std::move(bytes);
+            file.options = options.file_options;
+            file.required = true;
+            result.files.emplace_back(std::move(file));
+            continue;
+        }
+
+        if (direct_destinations.contains(target_path)) {
+            fail("TAR container collides with a classic file at the same PFS destination");
+            continue;
+        }
+        if (!archive_members.emplace(target_path, asset.archive_member).second) {
+            fail("Two staged assets resolve to the same TAR member");
+            continue;
+        }
+
+        std::size_t archive_index = 0;
+        const auto found = archive_indices.find(target_path);
+        if (found == archive_indices.end()) {
+            archive_index = result.archives.size();
+            archive_indices.emplace(target_path, archive_index);
+            PreparedTarArchive archive;
+            archive.path = target_path;
+            archive.representative_kind = asset.kind;
+            result.archives.emplace_back(std::move(archive));
+        } else {
+            archive_index = found->second;
+        }
+        result.archives[archive_index].members.push_back({asset.archive_member, std::move(bytes)});
+    }
+
+    tar::UpdateOptions tar_options;
+    tar_options.max_archive_bytes = options.max_archive_bytes;
+    for (const auto& archive : result.archives) {
+        const auto validation = tar::update_archive({}, archive.members, tar_options);
+        if (!validation.ok) {
+            fatal = true;
+            result.issues.push_back({archive.representative_kind, archive.path, true,
+                                     "TAR preflight failed: " + validation.error});
+        }
     }
 
     result.directories.assign(directories.begin(), directories.end());
@@ -193,6 +245,54 @@ PfsImportResult import_fetched_assets(WritableBlockDevice& device,
         return result;
     }
 
+    // Freeze and validate every existing TAR before the first filesystem write.
+    // This avoids committing classic assets only to discover afterwards that an
+    // existing ART/cfg/cht container was malformed or over the configured limit.
+    ApaVolume read_volume(device, partition);
+    pfs::Reader reader(read_volume);
+    if (!reader.valid()) {
+        result.error = reader.last_error().empty() ? "PFS reader rejected OPL import partition"
+                                                   : reader.last_error();
+        return result;
+    }
+
+    tar::UpdateOptions tar_options;
+    tar_options.max_archive_bytes = options.max_archive_bytes;
+    std::vector<BuiltTar> built_archives;
+    built_archives.reserve(result.prepared.archives.size());
+    for (const auto& archive : result.prepared.archives) {
+        std::vector<std::byte> existing;
+        const auto node = reader.resolve(archive.path);
+        if (node) {
+            if ((node->inode.mode & pfs::kModeMask) != pfs::kModeRegular) {
+                result.error = "OPL TAR destination already exists but is not a regular file: " + archive.path;
+                return result;
+            }
+            if (node->inode.size > options.max_archive_bytes ||
+                node->inode.size > std::numeric_limits<std::size_t>::max()) {
+                result.error = "Existing OPL TAR exceeds configured archive byte limit: " + archive.path;
+                return result;
+            }
+            existing.resize(static_cast<std::size_t>(node->inode.size));
+            if (!existing.empty() && !reader.read(*node, 0, existing)) {
+                result.error = "Could not read existing OPL TAR " + archive.path + ": " +
+                               reader.last_error();
+                return result;
+            }
+        } else if (!missing_path_error(reader.last_error())) {
+            result.error = "Could not resolve OPL TAR destination " + archive.path + ": " +
+                           reader.last_error();
+            return result;
+        }
+
+        auto update = tar::update_archive(existing, archive.members, tar_options);
+        if (!update.ok) {
+            result.error = "Could not rebuild OPL TAR " + archive.path + ": " + update.error;
+            return result;
+        }
+        built_archives.push_back({&archive, std::move(update)});
+    }
+
     pfs::ImageWriter writer(device, partition);
     if (!writer.valid()) {
         result.error = writer.error().empty() ? "PFS image writer rejected OPL import partition"
@@ -200,24 +300,52 @@ PfsImportResult import_fetched_assets(WritableBlockDevice& device,
         return result;
     }
 
+    bool mutated = false;
     result.directories.reserve(result.prepared.directories.size());
     for (const auto& directory : result.prepared.directories) {
         auto ensured = writer.ensure_directory_full(directory, options.directory_options);
         const bool ok = ensured.ok;
+        mutated = mutated || ensured.created_components != 0;
         if (!ok && result.error.empty()) {
             result.error = "Could not prepare OPL PFS directory " + directory + ": " + ensured.error;
         }
         result.directories.emplace_back(std::move(ensured));
         if (!ok) {
+            result.partial = mutated;
             return result;
         }
     }
 
     result.batch = pfs::write_batch(writer, result.prepared.files);
+    mutated = mutated || result.batch.succeeded != 0;
     if (!result.batch.ok) {
         result.error = result.batch.error.empty() ? "OPL PFS batch import failed"
                                                   : result.batch.error;
+        result.partial = mutated;
         return result;
+    }
+
+    result.archives.reserve(built_archives.size());
+    for (auto& built : built_archives) {
+        TarImportResult archive_result;
+        archive_result.path = built.plan->path;
+        archive_result.replaced_members = built.update.replaced_members;
+        archive_result.added_members = built.update.added_members;
+        archive_result.write = writer.write_file_complete(
+            built.plan->path, built.update.archive, options.file_options);
+        if (!archive_result.write.ok) {
+            archive_result.error = archive_result.write.error.empty()
+                                       ? "PFS writer failed while publishing rebuilt TAR"
+                                       : archive_result.write.error;
+            result.error = "Could not publish OPL TAR " + built.plan->path + ": " +
+                           archive_result.error;
+            result.archives.emplace_back(std::move(archive_result));
+            result.partial = mutated;
+            return result;
+        }
+        archive_result.ok = true;
+        mutated = true;
+        result.archives.emplace_back(std::move(archive_result));
     }
 
     result.ok = true;
