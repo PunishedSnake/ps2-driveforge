@@ -20,11 +20,7 @@
 
 namespace ps2df::winui {
 
-enum class SourceKind {
-    none,
-    image,
-    physical,
-};
+enum class SourceKind { none, image, physical };
 
 struct PartitionRowSnapshot {
     std::string partition_id;
@@ -114,10 +110,16 @@ struct PhysicalPreflightSnapshot {
     std::string fingerprint_hex;
 };
 
-// Frontend-facing owner for one native DriveSession + ManagementModel pair.
-// WinUI receives snapshots and commands only. Read paths stay on DriveSession;
-// Frieren mutation methods reopen the selected image/PhysicalDrive through the
-// guarded writer coordinators and then cold-reopen the ordinary read session.
+struct RecoveryActionSnapshot {
+    bool ok{};
+    bool partial{};
+    std::string error;
+    std::string summary;
+    std::filesystem::path artifact_path;
+    bool cold_master_verified{};
+    bool cold_payload_verified{};
+};
+
 class NativeSessionController final {
 public:
     using EnrichmentProgress = std::function<void(std::size_t completed, std::size_t total)>;
@@ -138,14 +140,19 @@ public:
 
     [[nodiscard]] HdlInstallPreviewSnapshot preview_hdl_install(const HdlInstallRequest& request);
     [[nodiscard]] HdlMutationResultSnapshot install_hdl(
-        const HdlInstallRequest& request,
-        bool physical_confirmation,
+        const HdlInstallRequest& request, bool physical_confirmation,
         InstallProgress progress = {});
     [[nodiscard]] HdlMutationResultSnapshot remove_hdl(
-        std::uint32_t main_lba,
-        const std::filesystem::path& artifact_directory,
+        std::uint32_t main_lba, const std::filesystem::path& artifact_directory,
         bool physical_confirmation);
     [[nodiscard]] PhysicalPreflightSnapshot physical_write_preflight() const;
+
+    [[nodiscard]] RecoveryActionSnapshot capture_rescue_capsule(
+        const std::filesystem::path& artifact_directory) const;
+    [[nodiscard]] RecoveryActionSnapshot restore_bootstrap(
+        const std::filesystem::path& artifact_directory,
+        const std::filesystem::path& safety_directory,
+        bool physical_confirmation);
 
     void reset_stats() noexcept;
     void reset_enrichment();
