@@ -354,6 +354,11 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-hdl-image-install-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-hdl-image-install-tests COMMAND ps2-driveforge-hdl-image-install-tests)
 
+    add_executable(ps2-driveforge-hdl-multipart-install-tests tests/hdl_multipart_install_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-multipart-install-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-hdl-multipart-install-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-multipart-install-tests COMMAND ps2-driveforge-hdl-multipart-install-tests)
+
     add_executable(ps2-driveforge-opl-assets-tests tests/opl_assets_tests.cpp)
     target_link_libraries(ps2-driveforge-opl-assets-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-opl-assets-tests PRIVATE cxx_std_20)
