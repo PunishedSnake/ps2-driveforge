@@ -1,79 +1,74 @@
 # Frieren OPL Asset Pipeline
 
-Frieren treats game installation as more than copying an ISO into HDL extents. After DriveForge identifies the PS2 startup ID from `SYSTEM.CNF`, the same identity can drive optional metadata, artwork, compatibility and cheat/fix lookups.
+Frieren treats game installation as more than copying an ISO into HDL extents. After DriveForge extracts the PS2 startup ID from `SYSTEM.CNF`, the same identity can drive optional title metadata, compatibility settings, widescreen CHT, mastercode verification, artwork and HDD-OSD lookup.
 
-The asset layer is intentionally split into **planning**, **host-side fetching/staging**, and a later **PFS import transaction**. Downloading a file must never be enough to mutate the PS2 disk.
+The pipeline is deliberately split into **planning**, **host fetching/staging** and **destination mutation**. Downloading bytes is not permission to write them to PFS. The Internet has plenty of confidence already.
 
 ## Identity
 
-All per-game providers use the canonical OPL serial form, for example:
+Per-game providers use canonical OPL serial form, for example:
 
 ```text
 SLUS_209.46
 ```
 
-`canonical_game_id()` accepts common spellings such as `SLUS-20946`, `SLUS20946`, and a `cdrom0:\\SLUS_209.46;1` path, but refuses input that cannot be normalized without guessing.
+`canonical_game_id()` accepts common spellings such as `SLUS-20946`, `SLUS20946` and `cdrom0:\\SLUS_209.46;1`, but refuses values that require guessing.
 
-The ISO parser remains authoritative for a new install. An online title database may improve the displayed title, but it does not replace `SYSTEM.CNF` as the game identity source.
+For new installs, ISO `SYSTEM.CNF` remains authoritative. An online title database may improve presentation, but it does not replace the startup identity read from the game.
 
 ## Providers
 
 | Data | Primary provider | Fallback / overlay | Destination intent |
 | --- | --- | --- | --- |
-| Game title catalog | `israpps/HDL-Batch-installer/Database/gamename.csv` | ISO filename/title remains usable | DriveForge cache |
+| Game title catalog | `israpps/HDL-Batch-installer/Database/gamename.csv` | ISO filename/title | DriveForge cache |
 | Redump catalog | `israpps/HDL-Batch-installer/Database/redump.csv` | none | DriveForge cache |
 | OPL CFG metadata | `israpps/PS2-OPL-CFG-Database/CFG_en/<ID>.cfg` | none | `CFG/<ID>.cfg` |
-| HDD compatibility CFG | `GDX-X/PS2-OPL-CFG-Compatibility-Database/HDD/<ID>.cfg` | merged over metadata CFG | `CFG/<ID>.cfg` |
+| HDD compatibility CFG | `GDX-X/PS2-OPL-CFG-Compatibility-Database/HDD/<ID>.cfg` | overlay | `CFG/<ID>.cfg` |
 | Widescreen CHT | `PS2-Widescreen/OPL-Widescreen-Cheats/CHT/<ID>.cht` | none | `CHT/<ID>.cht` |
-| Verified mastercode | embedded mastercode in widescreen CHT | `PS2-Widescreen/Bare-Mastercodes-bin/MASTERCODES/<ID>.cht` | merged into the same CHT |
-| OPL artwork | `Luden02/psx-ps2-opl-art-database/PS2/<ID>/...` PNG | OPL Manager `OPLM_ART_2023_07` Archive.org mirror | `ART/` |
-| HDD-OSD icon | `CosmicScale/HDD-OSD-Icon-Database/ico/<ID>.ico` | none | HDD-OSD metadata path, not `+OPL` |
+| Verified mastercode | embedded in primary CHT | `PS2-Widescreen/Bare-Mastercodes-bin/MASTERCODES/<ID>.cht` | same CHT |
+| OPL artwork | `Luden02/psx-ps2-opl-art-database/PS2/<ID>/...` | Archive.org OPLM artwork snapshot | `ART/` |
+| HDD-OSD icon | `CosmicScale/HDD-OSD-Icon-Database/ico/<ID>.ico` | none | HDD-OSD domain, not `+OPL` ART |
 
-Provider URLs are data, not architecture. The planner records the provider and target intent so a future provider can replace an old one without touching HDL/PFS code.
+Provider URLs are configuration/data, not filesystem architecture. The plan records provider, source and destination intent so replacing one provider does not require teaching PFS about GitHub.
 
 ## CFG merge policy
 
 DriveForge does not blindly replace a useful CFG with a smaller compatibility fragment.
 
-When both sources exist:
+Host-side provider merge uses:
 
-1. the normal CFG metadata file is the base;
-2. the HDD compatibility file is treated as an overlay;
-3. matching `key=value` entries from the compatibility file replace the base value;
-4. new overlay keys are appended;
-5. unrelated base metadata and comments remain intact.
+1. normal metadata CFG as base;
+2. HDD compatibility CFG as overlay;
+3. matching `key=value` entries replaced by the overlay;
+4. new overlay keys appended;
+5. unrelated base comments/metadata preserved.
 
-When PFS import is implemented, an already-existing user CFG must become a third input with an explicit preview. User-local settings are not disposable merely because an HTTP request succeeded.
+During PFS import, existing user-local CFG content is also treated as input where applicable. User DMA/VMC/compatibility choices are not disposable simply because a network database had a productive morning.
+
+The preview/import result distinguishes create, unchanged, merge and replacement behavior rather than hiding all four behind one green "installed" state.
 
 ## CHT and mastercodes
 
-The widescreen CHT is always the primary file. DriveForge parses it first.
+The widescreen CHT is primary.
 
-- If it already contains a `Mastercode` section, no fallback is fetched or appended.
-- If it does not contain a mastercode, DriveForge may fetch the matching file from `Bare-Mastercodes-bin`.
-- Only the fallback `Mastercode` section is appended. The fallback title/header is not duplicated.
-- If no verified mastercode is available, the widescreen file can still be staged, but the result carries a warning instead of inventing a code.
+- If it already contains a `Mastercode` section, no fallback is appended.
+- Otherwise DriveForge may fetch the matching bare mastercode.
+- Only the fallback `Mastercode` section is appended, not a duplicate title/header.
+- If no verified mastercode exists, the widescreen file may still be staged with an explicit warning/state.
 
-Future UI should expose this distinction as `widescreen found`, `mastercode verified`, or `mastercode unavailable` rather than one misleading green checkbox.
+The UI should preserve the distinction between widescreen data found and mastercode verified. Those are related facts, not one checkbox with excellent self-esteem.
 
 ## Artwork policy
 
-The current primary source is the static PNG-oriented OPL Manager artwork dump arranged by game ID. The older Archive.org OPLM ART snapshot is a fallback.
+Default game install requests cover, icon, first background and first screenshot. Logo/disc label are optional expanded-artwork requests.
 
-Default game install requests:
+Provider results preserve the actual source extension. A PNG does not become a JPEG by renaming it because one older tool expected a particular suffix.
 
-- cover;
-- icon;
-- first background;
-- first screenshot.
-
-Logo and disc label are optional `all artwork` extras. The provider plan preserves the actual extension of the selected source, so a PNG primary does not become a `.jpg` file merely because an older downloader expected one.
+Artwork is optional game presentation data. Missing artwork should not turn an otherwise valid HDL install into storage failure unless the caller explicitly marks it required.
 
 ## Classic and TAR layouts
 
-The planner supports two destination layouts without changing providers:
-
-### Classic OPL
+### Classic loose files
 
 ```text
 ART/<ID>_COV.png
@@ -92,27 +87,81 @@ CFG/cfg.tar :: <ID>.cfg
 CHT/cht.tar :: <ID>.cht
 ```
 
-The fetcher stages TAR members as individual verified files. Actual TAR mutation/packing belongs to the destination layer so an interrupted network request can never corrupt an existing on-disk archive.
+Fetching always stages logical assets first. TAR parse/update/serialization belongs to the destination layer. A failed HTTP request therefore cannot directly mutate an existing on-disk archive.
+
+Frieren now has a real TAR destination path. Members are merged into the archive container and the resulting archive is written through the same native PFS writer and normal-reader verification as other files.
 
 ## Network and cache boundary
 
-On Windows the native host layer uses WinHTTP with normal certificate validation, finite timeouts and an explicit per-download byte limit. There is no `--no-check-certificate` equivalent.
+Windows uses WinHTTP with normal TLS certificate validation, finite timeouts and an explicit maximum response size. There is no certificate-bypass mode.
 
-Portable regression tests inject a fake `HttpClient`, so Linux sanitizer CI does not depend on GitHub or Archive.org availability.
+Portable tests inject a fake `HttpClient`, so Linux CI does not depend on provider availability or the mood of Archive.org.
 
-Catalog files are cached and reused unless refresh is requested. Per-game assets are staged below a game-ID directory before any PS2 storage mutation. HTML error pages and empty successful responses are rejected instead of being written as fake `.cfg`, `.cht` or artwork files.
+Catalogs may be cached until refresh. Per-game assets are staged below controlled host paths. Empty successful responses, apparent HTML error bodies and unsafe/rooted/parent-traversing destination paths are rejected.
 
-## PFS write boundary
+Fetched results preserve provider/source provenance and whether data came from cache, merge or verified-mastercode fallback.
 
-As of the first Asset Pipeline slice, DriveForge can:
+## OPL PFS partition resolution
 
-- derive an asset plan from the ISO startup ID;
-- fetch and merge provider data;
-- stage the exact files and record their intended OPL destination;
-- describe classic and TAR destinations.
+DriveForge does not assume the target is always a partition literally named `+OPL`.
 
-It **cannot yet write those files into the OPL PFS partition**. The current PFS implementation is intentionally read-only.
+Resolution policy is:
 
-The next write milestone is an image-only PFS mutation layer with a pure plan/apply split, before-images for filesystem metadata, cold reopen verification through the existing PFS reader, and explicit OPL partition resolution rather than a hard-coded `+OPL` assumption.
+1. require a clean APA scan;
+2. if the user configured a partition, require that exact main partition to be PFS and valid;
+3. otherwise consider main PFS partitions only;
+4. probe candidates through normal PFS rules;
+5. score strong name/evidence such as `+OPL`, `ART`, `CFG`, `CHT`, `VMC` and secondary OPL directories;
+6. refuse a top-score tie rather than choosing the first partition returned by a vector.
 
-Only after that layer is proven on disposable images may downloaded assets be committed to real PS2 storage.
+Ambiguity is a UI state, not permission to improvise.
+
+## Native PFS import
+
+The Asset Pipeline now reaches the image-only PFS destination layer.
+
+Conceptually:
+
+```text
+staged provider assets
+ -> destination preparation
+ -> resolve OPL PFS partition
+ -> normalize and deduplicate paths
+ -> read existing destination state
+ -> merge local CFG where applicable
+ -> create required directories
+ -> loose-file or TAR update plan
+ -> native PFS batch write
+ -> flush/readback
+ -> normal PFS reader verification
+```
+
+Cache-only data is omitted from PFS. HDD-OSD icon placement stays a separate destination domain.
+
+The importer freezes host-side bytes before mutation so the file being written cannot change underneath the approved plan. The filesystem side then uses native PFS allocation/publication rules documented in [`frieren-pfs-write.md`](frieren-pfs-write.md).
+
+## Combined game deployment
+
+`image_game_deploy` coordinates HDL game installation and optional OPL asset import for writable images.
+
+Important ordering/state rules:
+
+- all available preflight work is performed before mutation;
+- the OPL PFS destination is resolved before HDL APA publication;
+- after structural HDL publication, APA is rescanned and the selected PFS partition is re-identified by expected start LBA, ID and type rather than reusing a stale object;
+- PFS asset import follows only after the HDL game is valid;
+- final APA and HDL verification runs again after PFS mutations.
+
+A failure during the asset phase can therefore yield a valid installed game with a partial asset result. The result reports that state explicitly instead of pretending multi-domain deployment is one atomic filesystem transaction.
+
+## Licensing and redistribution boundary
+
+Provider use does not imply DriveForge may bundle an entire upstream database. Runtime fetching is preferred where redistribution rights are unclear or content belongs to game/art owners.
+
+See [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for current provider/licensing notes.
+
+## Physical disk boundary
+
+All PFS asset mutation described here remains image-only in Frieren development. The Windows `PhysicalDrive` backend stays read-only.
+
+A future physical writer must separately prove source identity, Windows locking/cache behavior, flush/readback, interruption recovery and real PS2 consumption. A successful WinHTTP request is, perhaps unsurprisingly, not one of those gates.
