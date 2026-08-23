@@ -27,7 +27,7 @@ struct ImageInstallOptions {
     // Optional host-side PS2DFRC1 transaction journal for the small
     // DEADFEED/APA publication transaction. This is NOT an FHDB PS2HBRC Rescue
     // Capsule. Empty keeps pure in-memory/test devices free of filesystem side
-    // effects. Real image-file frontends should provide a sidecar path.
+    // effects. Physical frontends should always provide a host-side path.
     std::filesystem::path mutation_journal_path;
 };
 
@@ -54,28 +54,40 @@ struct ImageInstallResult {
     bool mutation_recovery_pending{};
 };
 
-// Frieren F4 experimental installer for writable *images*. The API accepts a
-// WritableBlockDevice deliberately, so callers cannot hand it the read-only
-// PhysicalDrive type used by normal DriveForge sessions.
-//
-// Ordering is safety-critical:
+// Historical API name retained for source compatibility. The implementation is
+// actually WritableBlockDevice-neutral and is now shared by writable images and
+// the separately admitted WritablePhysicalDrive backend.
+[[nodiscard]] ImageInstallResult install_to_image(
+    WritableBlockDevice& disk,
+    BlockDevice& game_iso,
+    const ImageInstallOptions& options,
+    ImageInstallProgressCallback progress = {});
+
+using InstallOptions = ImageInstallOptions;
+using InstallProgress = ImageInstallProgress;
+using InstallProgressCallback = ImageInstallProgressCallback;
+using InstallResult = ImageInstallResult;
+
+// Storage-neutral spelling for new code. Ordering is safety-critical:
 //   1. clean APA + ISO preflight and zero-write allocation plan;
 //   2. stream and byte-verify ISO payload into currently free extents;
 //   3. flush payload;
 //   4. stage DEADFEED metadata + new APA headers + old-neighbour link updates;
 //   5. when configured, durably persist exact before/after ranges in PS2DFRC1;
 //   6. publish them in one WriteTransaction and verify through normal parsers;
-//   7. durably mark the mutation journal COMMITTED after parser verification.
+//   7. durably mark the Mutation Journal COMMITTED after parser verification.
 //
-// A failure before publication can leave bytes in free space, but no APA
-// partition is published. A returned publication failure rolls metadata/header
-// before-images back. A process/power interruption is recoverable when the
-// caller supplied mutation_journal_path; a PREPARED journal is never silently
-// overwritten by a later install.
-[[nodiscard]] ImageInstallResult install_to_image(
+// A failure before publication can leave bytes in free space but no APA
+// partition is published. The caller is responsible for obtaining the correct
+// writable capability and, for physical media, for FHDB-compatible safety
+// artifacts and device identity admission before arriving here.
+[[nodiscard]] inline InstallResult install_to_device(
     WritableBlockDevice& disk,
     BlockDevice& game_iso,
-    const ImageInstallOptions& options,
-    ImageInstallProgressCallback progress = {});
+    const InstallOptions& options,
+    InstallProgressCallback progress = {})
+{
+    return install_to_image(disk, game_iso, options, std::move(progress));
+}
 
 } // namespace ps2hdd::hdl
