@@ -127,6 +127,18 @@ void remove_main_and_sub_without_touching_payload()
     check(plan.freed_bytes == 2ULL * extent * ps2hdd::apa::kSectorSize,
           "freed byte accounting");
 
+    auto cached = before;
+    disk.reset_counters();
+    check(ps2hdd::apa::apply_remove_plan_to_scan(cached, plan),
+          "cached APA snapshot accepts validated removal plan");
+    check(disk.writes == 0 && disk.flushes == 0,
+          "cached APA snapshot update performs zero device I/O");
+    check(cached.partitions.size() == 2,
+          "cached APA snapshot drops main and sub immediately");
+    check(cached.partitions[0].next_lba == opl && cached.partitions[0].prev_lba == opl &&
+              cached.partitions[1].prev_lba == 0 && cached.partitions[1].next_lba == 0,
+          "cached APA snapshot gets the same canonical links as disk mutation");
+
     disk.reset_counters();
     const auto result = ps2hdd::apa::remove_main_partition_from_image(disk, game);
     check(result.ok, "transactional APA removal succeeds");
@@ -144,6 +156,11 @@ void remove_main_and_sub_without_touching_payload()
           "MBR links directly to surviving partition");
     check(after.partitions[1].prev_lba == 0 && after.partitions[1].next_lba == 0,
           "surviving +OPL links are canonical");
+    check(cached.partitions[0].prev_lba == after.partitions[0].prev_lba &&
+              cached.partitions[0].next_lba == after.partitions[0].next_lba &&
+              cached.partitions[1].prev_lba == after.partitions[1].prev_lba &&
+              cached.partitions[1].next_lba == after.partitions[1].next_lba,
+          "zero-I/O cached snapshot matches conservative disk rescan");
 
     ps2hdd::apa::Header stale_main{};
     ps2hdd::apa::Header stale_sub{};
