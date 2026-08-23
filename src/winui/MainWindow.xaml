@@ -137,7 +137,7 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <Grid Padding="24,20,24,28" MaxWidth="1280" HorizontalAlignment="Center" RowSpacing="12">
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install/remove HDL games and manage FHDB recovery through Frieren's guarded mutation pipeline. Read-only preflight and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
+                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install/remove HDL games and manage FHDB/APA recovery through Frieren's guarded mutation pipeline. Read-only analysis and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
                             <InfoBar x:Name="HdlToolsInfoBar" Grid.Row="1" IsOpen="False" IsClosable="True" Margin="0,4,0,0"/>
 
                             <Border Grid.Row="2" Style="{StaticResource DriveForgeCardStyle}">
@@ -170,12 +170,18 @@
                                     <Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False" HorizontalAlignment="Left"/>
                                     <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
                                         <StackPanel Spacing="8">
-                                            <TextBlock Text="FHDB recovery" FontWeight="SemiBold"/>
-                                            <TextBlock Text="Create Rescue Capsule is read-only. Restore follows FHDB Manager artifact precedence, writes payload first, publishes the pointer last, then cold-reopens the disk read-only." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <TextBlock Text="FHDB and APA recovery" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Rescue capture and forensic analysis are read-only. Destructive recovery requires exact PhysicalDriveN confirmation, preserved evidence, guarded write admission and cold verification." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
                                             <StackPanel Orientation="Horizontal" Spacing="8">
                                                 <Button x:Name="CaptureRescueButton" Content="Create Rescue Capsule" Click="on_capture_rescue"/>
-                                                <Button x:Name="RestoreRescueButton" Content="Restore Rescue Capsule / legacy backup" Click="on_restore_rescue"/>
+                                                <Button x:Name="RestoreRescueButton" Content="Restore Rescue / legacy backup" Click="on_restore_rescue"/>
+                                                <Button x:Name="ForensicAnalyzeButton" Content="Forensic APA analysis" Click="on_forensic_analyze"/>
                                             </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="RepairMasterButton" Content="Repair APA master" Click="on_repair_master"/>
+                                                <Button x:Name="RepairForensicButton" Content="Apply automatic-safe topology repair" Click="on_repair_forensic"/>
+                                            </StackPanel>
+                                            <TextBlock Text="Manual-only forensic maps are intentionally not writable from WinUI." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>
