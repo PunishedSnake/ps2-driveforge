@@ -35,10 +35,15 @@ void usage()
         << "      <host-file> <pfs-path> --apply\n"
         << "  ps2-driveforge-pfs-tools unlink <disk-image> <pfs-partition-id>\n"
         << "      <pfs-path> --apply\n"
+        << "  ps2-driveforge-pfs-tools rmdir <disk-image> <pfs-partition-id>\n"
+        << "      <empty-pfs-directory> --apply\n"
+        << "  ps2-driveforge-pfs-tools remove-tree <disk-image> <pfs-partition-id>\n"
+        << "      <pfs-directory> --apply\n"
         << "  ps2-driveforge-pfs-tools remove-partition <disk-image>\n"
         << "      <partition-id|lba> --apply\n\n"
-        << "mkdir/put use directory growth and fragmented direct extents when needed.\n"
-        << "unlink removes namespace visibility first and releases bitmap zones second.\n"
+        << "mkdir/put use directory growth, fragmented extents and SEGI when needed.\n"
+        << "unlink/rmdir remove namespace visibility before releasing bitmap zones.\n"
+        << "remove-tree is bounded, bottom-up and reports partial completion explicitly.\n"
         << "Protective/hybrid GPT layouts are refused before image mutation.\n"
         << "PhysicalDrive write access is intentionally unavailable in Frieren here.\n";
 }
@@ -331,7 +336,7 @@ int put_file(int argc, char** argv)
         }
     }
 
-    const auto result = writer.write_file_full(argv[5], *bytes);
+    const auto result = writer.write_file_complete(argv[5], *bytes);
     const double elapsed_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
@@ -403,7 +408,7 @@ int unlink_file(int argc, char** argv)
     }
 
     const auto started = std::chrono::steady_clock::now();
-    const auto result = writer.remove_file(argv[4]);
+    const auto result = writer.remove_file_full(argv[4]);
     const auto elapsed_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
@@ -416,6 +421,129 @@ int unlink_file(int argc, char** argv)
 
     std::cout << "PFS file unlinked and allocation released\n"
               << "  path:                  " << result.path << '\n'
+              << "  allocation freed:      " << result.bytes_freed << " bytes\n"
+              << "  metadata transactions: " << result.metadata_transactions << '\n'
+              << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n'
+              << "  mutation + verify:      " << std::fixed << std::setprecision(3)
+              << elapsed_ms << " ms\n";
+    if (!result.warning.empty()) {
+        std::cerr << "WARNING: " << result.warning << '\n';
+    }
+    return 0;
+}
+
+int rmdir_path(int argc, char** argv)
+{
+    if (argc != 6 || std::string_view(argv[5]) != "--apply") {
+        std::cerr << "rmdir requires: <image> <PFS partition> <empty PFS directory> --apply\n";
+        return 2;
+    }
+
+    ps2hdd::WritableFileBlockDevice image(argv[2]);
+    if (!image.is_open()) {
+        std::cerr << "Could not open existing disk image for read/write access: " << argv[2] << '\n';
+        return 1;
+    }
+    if (!mutation_layout_allowed(image)) {
+        return 1;
+    }
+    ps2hdd::apa::Reader reader(image);
+    const auto scan = reader.scan();
+    if (!scan.ok()) {
+        std::cerr << "Refusing PFS rmdir because APA scan is not clean.\n";
+        return 1;
+    }
+    const auto* partition = find_main_partition(scan, argv[3], ps2hdd::apa::kTypePfs);
+    if (partition == nullptr) {
+        std::cerr << "Unique PFS main partition not found: " << argv[3] << '\n';
+        return 1;
+    }
+
+    ps2hdd::pfs::ImageWriter writer(image, *partition);
+    if (!writer.valid()) {
+        std::cerr << "PFS writer refused partition: " << writer.error() << '\n';
+        return 1;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = writer.remove_empty_directory(argv[4]);
+    const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (!result.ok) {
+        std::cerr << "PFS rmdir failed: " << result.error << '\n';
+        if (!result.warning.empty()) {
+            std::cerr << "WARNING: " << result.warning << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "Empty PFS directory removed\n"
+              << "  path:                  " << result.path << '\n'
+              << "  allocation freed:      " << result.bytes_freed << " bytes\n"
+              << "  metadata transactions: " << result.metadata_transactions << '\n'
+              << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n'
+              << "  mutation + verify:      " << std::fixed << std::setprecision(3)
+              << elapsed_ms << " ms\n";
+    if (!result.warning.empty()) {
+        std::cerr << "WARNING: " << result.warning << '\n';
+    }
+    return 0;
+}
+
+int remove_tree_path(int argc, char** argv)
+{
+    if (argc != 6 || std::string_view(argv[5]) != "--apply") {
+        std::cerr << "remove-tree requires: <image> <PFS partition> <PFS directory> --apply\n";
+        return 2;
+    }
+
+    ps2hdd::WritableFileBlockDevice image(argv[2]);
+    if (!image.is_open()) {
+        std::cerr << "Could not open existing disk image for read/write access: " << argv[2] << '\n';
+        return 1;
+    }
+    if (!mutation_layout_allowed(image)) {
+        return 1;
+    }
+    ps2hdd::apa::Reader reader(image);
+    const auto scan = reader.scan();
+    if (!scan.ok()) {
+        std::cerr << "Refusing PFS tree removal because APA scan is not clean.\n";
+        return 1;
+    }
+    const auto* partition = find_main_partition(scan, argv[3], ps2hdd::apa::kTypePfs);
+    if (partition == nullptr) {
+        std::cerr << "Unique PFS main partition not found: " << argv[3] << '\n';
+        return 1;
+    }
+
+    ps2hdd::pfs::ImageWriter writer(image, *partition);
+    if (!writer.valid()) {
+        std::cerr << "PFS writer refused partition: " << writer.error() << '\n';
+        return 1;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = writer.remove_tree(argv[4]);
+    const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (!result.ok) {
+        std::cerr << (result.partial ? "PFS tree removal stopped after partial completion: "
+                                    : "PFS tree removal failed before completing: ")
+                  << result.error << '\n';
+        std::cerr << "  files removed:       " << result.files_removed << '\n'
+                  << "  directories removed: " << result.directories_removed << '\n'
+                  << "  allocation freed:    " << result.bytes_freed << " bytes\n";
+        if (!result.warning.empty()) {
+            std::cerr << "WARNING: " << result.warning << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "PFS tree removed bottom-up\n"
+              << "  path:                  " << result.path << '\n'
+              << "  files removed:         " << result.files_removed << '\n'
+              << "  directories removed:   " << result.directories_removed << '\n'
               << "  allocation freed:      " << result.bytes_freed << " bytes\n"
               << "  metadata transactions: " << result.metadata_transactions << '\n'
               << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n'
@@ -455,6 +583,12 @@ int main(int argc, char** argv)
     }
     if (command == "unlink") {
         return unlink_file(argc, argv);
+    }
+    if (command == "rmdir") {
+        return rmdir_path(argc, argv);
+    }
+    if (command == "remove-tree") {
+        return remove_tree_path(argc, argv);
     }
     usage();
     return 2;
