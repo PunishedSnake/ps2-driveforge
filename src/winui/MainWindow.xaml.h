@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,6 +41,17 @@ private:
     void refresh_performance();
     void start_enrichment(bool reset);
 
+    void refresh_hdl_tools();
+    void choose_hdl_iso();
+    void choose_hdl_artifact_directory();
+    void preview_hdl_install();
+    void start_hdl_install(bool physical_confirmed);
+    void start_hdl_remove(bool physical_confirmed);
+    void run_physical_preflight();
+    void confirm_physical_action(std::wstring_view action,
+                                 std::function<void()> continuation);
+    [[nodiscard]] ps2df::winui::HdlInstallRequest current_hdl_request() const;
+
     void browse_current_pfs();
     void refresh_files_list();
     void export_selected_entry();
@@ -73,6 +85,15 @@ private:
     void on_show_subs_toggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_refresh_metadata(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_cancel_enrichment(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
+    void on_hdl_choose_iso(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_choose_artifacts(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_preview(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_install(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_game_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
+    void on_hdl_delete(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_physical_preflight(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
     void on_pfs_partition_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_selection_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_double_tapped(IInspectable const&, Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const&);
@@ -94,6 +115,7 @@ private:
     ps2df::winui::SessionSnapshot snapshot_;
     std::vector<ps2hdd::PhysicalDriveProbe> detected_drives_;
     std::vector<ps2df::winui::PartitionRowSnapshot> visible_partition_rows_;
+    std::vector<ps2df::winui::PartitionRowSnapshot> hdl_game_rows_;
     std::vector<std::string> pfs_partitions_;
     std::vector<ps2df::winui::BrowseEntrySnapshot> visible_file_entries_;
 
@@ -102,11 +124,17 @@ private:
     std::string current_pfs_partition_;
     std::string current_pfs_path_;
 
+    std::filesystem::path hdl_iso_path_;
+    std::filesystem::path hdl_artifact_directory_;
+    ps2df::winui::HdlInstallPreviewSnapshot hdl_preview_;
+
     std::jthread discovery_thread_;
     std::jthread source_thread_;
     std::jthread enrichment_thread_;
     std::jthread export_thread_;
+    std::jthread mutation_thread_;
     std::atomic_bool source_busy_{false};
+    std::atomic_bool mutation_busy_{false};
     bool suppress_theme_event_{false};
 
     Microsoft::UI::Xaml::DispatcherTimer telemetry_timer_;
