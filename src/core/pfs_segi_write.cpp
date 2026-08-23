@@ -144,16 +144,15 @@ FileWriteResult ImageWriter::create_file_segi(Node parent,
 
     std::vector<ZoneRun> data_runs;
     std::vector<ZoneRun> segi_runs;
+    std::vector<ZoneRun> reserved_runs{inode_run};
     const auto cleanup = [&]() {
         const auto saved_error = result.error;
-        std::vector<ZoneRun> all;
-        all.push_back(inode_run);
-        all.insert(all.end(), data_runs.begin(), data_runs.end());
-        all.insert(all.end(), segi_runs.begin(), segi_runs.end());
-        FileWriteResult release;
-        if (!release_runs(all, release, "release abandoned PFS SEGI file allocation")) {
-            result.warning = "SEGI create failed safely but reserved zones remain allocated: " +
-                             release.error;
+        if (!reserved_runs.empty()) {
+            FileWriteResult release;
+            if (!release_runs(reserved_runs, release, "release abandoned PFS SEGI file allocation")) {
+                result.warning = "SEGI create failed safely but committed reservations remain allocated: " +
+                                 release.error;
+            }
         }
         result.error = saved_error;
     };
@@ -168,9 +167,12 @@ FileWriteResult ImageWriter::create_file_segi(Node parent,
             return result;
         }
         if (!reserve_runs(data_runs, result, "reserve PFS SEGI file data zones")) {
+            // reserve_runs() is transactional. The planned data runs are not
+            // considered owned unless that transaction returned success.
             cleanup();
             return result;
         }
+        reserved_runs.insert(reserved_runs.end(), data_runs.begin(), data_runs.end());
     }
 
     const auto segi_count = required_segi_count(data_runs.size());
@@ -197,6 +199,7 @@ FileWriteResult ImageWriter::create_file_segi(Node parent,
             return result;
         }
         segi_runs.push_back(run);
+        reserved_runs.push_back(run);
     }
 
     const auto data_blocks = as_blocks(data_runs);
@@ -334,14 +337,13 @@ FileWriteResult ImageWriter::replace_file_segi(const Node& node,
 
     std::vector<ZoneRun> data_runs;
     std::vector<ZoneRun> segi_runs;
+    std::vector<ZoneRun> reserved_runs;
     const auto cleanup_new = [&]() {
         const auto saved_error = result.error;
-        std::vector<ZoneRun> all = data_runs;
-        all.insert(all.end(), segi_runs.begin(), segi_runs.end());
-        if (!all.empty()) {
+        if (!reserved_runs.empty()) {
             FileWriteResult release;
-            if (!release_runs(all, release, "release abandoned PFS SEGI replacement allocation")) {
-                result.warning = "SEGI replacement failed safely but new zones remain allocated: " +
+            if (!release_runs(reserved_runs, release, "release abandoned PFS SEGI replacement allocation")) {
+                result.warning = "SEGI replacement failed safely but committed new reservations remain allocated: " +
                                  release.error;
             }
         }
@@ -363,6 +365,7 @@ FileWriteResult ImageWriter::replace_file_segi(const Node& node,
         if (!reserve_runs(data_runs, result, "reserve PFS SEGI replacement data zones")) {
             return result;
         }
+        reserved_runs.insert(reserved_runs.end(), data_runs.begin(), data_runs.end());
     }
 
     const auto segi_count = required_segi_count(data_runs.size());
@@ -385,6 +388,7 @@ FileWriteResult ImageWriter::replace_file_segi(const Node& node,
             return result;
         }
         segi_runs.push_back(run);
+        reserved_runs.push_back(run);
     }
 
     const auto data_blocks = as_blocks(data_runs);
