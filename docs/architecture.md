@@ -2,77 +2,78 @@
 
 ## Goal
 
-DriveForge is a Windows-first PS2 HDD management stack with a portable read-only APA/PFS/HDL core. Format parsing, source I/O, host/session orchestration, Windows device integration, mounting, and presentation are deliberately separate so one frontend cannot quietly become a second filesystem implementation.
+DriveForge is a Windows-first PS2 HDD management stack with portable APA, PFS, HDL and recovery logic. Format parsing, source I/O, host orchestration, mutation planning, Windows device integration, mounting and presentation are deliberately separate. One frontend should not quietly become a second filesystem implementation just because somebody found a convenient pointer and had a productive afternoon.
 
-The design is intentionally different from wrapping `pfsshell`'s selected-device/current-mount/current-directory shell state. See [`pfsshell-comparison.md`](pfsshell-comparison.md).
+The design is intentionally different from wrapping `pfsshell` selected-device/current-mount/current-directory shell state. See [`pfsshell-comparison.md`](pfsshell-comparison.md).
 
-## Current Emilia layers
+DriveForge also shares a recovery contract with **FHDB Manager**, the PS2-side tool whose repository retains the historical `fhdb-bootstrap-manager` name. The recovery side is documented in [`fhdb-bootstrap-parity.md`](fhdb-bootstrap-parity.md).
+
+## Current Frieren layers
 
 ```text
-                 Windows presentation
+                    Windows presentation
 
-  legacy Win32 GUI              WinUI 3 C++/WinRT
-        |                              |
-        |                    NativeSessionController
-        |                              |
-        +------------- ps2driveforge_host -------------+
-                              |          |              |
-                         DriveSession    |       ManagementModel
-                              |    PartitionCatalog      |
-                              |          |        HDL enrichment
-                              +----------+--------------+
-                                         |
-                              ps2driveforge_core
-                              /      |       \
-                            APA     PFS      HDL
-                              \      |       /
-                               ApaVolume
-                                  |
-                        read-only I/O pipeline
-             cache -> read-ahead -> instrumentation
-                                  |
-                    FileBlockDevice / PhysicalDrive
-
-  CLI / benchmark --------------^                ^------ Dokany adapter
+          Win32 GUI                    WinUI 3
+              |                           |
+              +------ ps2driveforge_host -+
+                             |
+              DriveSession / ManagementModel
+              HDL enrichment / OPL orchestration
+                             |
+                  ps2driveforge_core
+      +-----------+------+------+-------------+
+      |           |      |      |             |
+     APA         PFS    HDL   recovery     utilities
+      |           |      |      |
+ ApaVolume  WritableApaVolume  |
+      |           |             |
+ read capability  |       explicit recovery plans
+      |           |             |
+ BlockDevice      +------ WritableBlockDevice
+      |                         |
+ FileBlockDevice         WritableFileBlockDevice
+ PhysicalDrive
+   read-only
 ```
 
-Windows discovery, UAC, theme resources, XAML and Dokany are above these portable layers.
+Windows discovery, UAC, XAML, theme code, SetupAPI and Dokany remain above the portable layers.
+
+## Capability boundaries
+
+There are three intentionally different storage capabilities:
+
+1. `BlockDevice` exposes byte-addressed reads only.
+2. `WritableBlockDevice` adds exact in-place writes and explicit `flush()`.
+3. `PhysicalDrive` remains a `BlockDevice` opened read-only on Windows.
+
+`WritableFileBlockDevice` is the current writable backend. It opens an existing image, does not create, truncate or extend it, and exists separately from `FileBlockDevice` so read-only callers do not accidentally inherit mutation power through a refactor.
+
+This distinction is more useful than a boolean named `read_only`. Booleans tend to become `false` eventually, usually five minutes before somebody discovers they selected the wrong disk.
 
 ## Dependency rules
 
 1. `ps2driveforge_core` must not depend on Win32 GUI, XAML, SetupAPI, UAC, Explorer or Dokany.
-2. PFS accesses physical APA extents through `ApaVolume`; it must not pre-add physical partition starts itself.
-3. `ps2driveforge_host` may orchestrate sessions/export/management state but must not reimplement format parsing.
+2. PFS accesses APA extents through `ApaVolume` or `WritableApaVolume`; it must not invent physical offsets itself.
+3. `ps2driveforge_host` orchestrates sessions, export, management and provider workflows but does not reinterpret on-disk formats.
 4. Frontends consume host/core services and snapshots; they do not parse APA/PFS/HDL independently.
-5. Windows filename conversion is host-export policy and must not alter PFS-visible names.
-6. `DriveSession` keeps paths explicit and must not become process-global shell/current-directory state.
-7. Caches may memoize already validated read-only data; they must not create a weaker parser path.
-8. Dokany translates Windows filesystem semantics but does not parse the source filesystem.
-9. SetupAPI identifies actual Windows disk devices; only the APA parser decides whether a disk is a PS2 HDD.
-10. Future source mutation requires a separate explicit writable capability with backup/recovery semantics.
+5. Windows filename conversion is export policy and must not alter PFS-visible names.
+6. `DriveSession` keeps paths explicit and must not become process-global shell state.
+7. Caches may memoize data already accepted by normal parser rules. They must not create a faster, weaker parser.
+8. Dokany translates Windows filesystem semantics but never becomes another PFS parser.
+9. SetupAPI discovers actual Windows disks. Only the APA parser classifies PS2 HDD structure.
+10. Normal mutation and exceptional recovery are different trust domains even when both eventually use `WritableBlockDevice`.
+11. FHDB Rescue Capsule means only `PS2HBRC\0` v1. `PS2DFRC1` is always a DriveForge Mutation Journal.
+12. A physical-disk writer, when it eventually exists, will be a separate capability. The existing `PhysicalDrive` does not grow a write method.
 
-## Core: BlockDevice and source I/O
+## Offset-based source I/O
 
-`BlockDevice` is byte-addressed. Format code owns sectors/zones/metadata-block conversions rather than leaking Windows handles or iomanX conventions upward.
+`BlockDevice` is byte-addressed. Format code owns conversions among bytes, 512-byte sectors, 1024-byte PFS metadata blocks and PFS zones.
 
-Current source backends are read-only:
+Windows image and physical-disk reads use explicit offsets. `PhysicalDrive` uses overlapped per-request offsets rather than one mutable file pointer. POSIX image reads use `pread()`. The point is correctness first and concurrency second. Shared seek pointers are a charming reminder that threads can turn a simple integer into community property.
 
-- `FileBlockDevice` for images;
-- Windows `PhysicalDrive` opened with `GENERIC_READ` only.
+## Read cache, read-ahead and instrumentation
 
-The absence of a source `write()` member is an architectural safety boundary, not merely a UI policy.
-
-### Emilia offset-based I/O
-
-Darkness' old shared seek-pointer model is no longer current architecture.
-
-Windows physical disks and image files use explicit request offsets. `PhysicalDrive` uses `FILE_FLAG_OVERLAPPED`/per-request offsets rather than `SetFilePointerEx` plus one shared file-position mutex. Windows image I/O follows the same offset model; POSIX image I/O uses `pread()`.
-
-This allows measured concurrency without making correctness depend on mutable file-position state.
-
-## Core: read cache, read-ahead and instrumentation
-
-The source pipeline is conceptually:
+The read pipeline is conceptually:
 
 ```text
 format/session reads
@@ -86,38 +87,50 @@ InstrumentedBlockDevice
 actual image / PhysicalDrive
 ```
 
-Backing counters sit below the cache layers. A cache hit therefore disappears from physical/image read-call and byte totals rather than being counted as an I/O that merely completed quickly.
+Backing counters live below caches so a cache hit removes actual backing I/O instead of merely reporting a suspiciously fast read. Instrumentation records calls, bytes, service time, small reads, failures, largest reads and max in-flight requests.
 
-The instrumentation records backing calls/bytes, service time, small reads, largest read, failed reads and max in-flight requests. Cache/read-ahead layers expose their own usefulness counters.
+Storage characteristics such as rotational, solid-state, unknown, seek penalty, TRIM, bus and optional ATA rotation rate are hints. `unknown` is a supported state, not an invitation to guess SSD because optimism is fashionable.
 
-Storage characteristics (`rotational`, `solid-state`, `unknown`, seek penalty, TRIM, bus, optional ATA rotation rate) are hints. `unknown` is a normal state and must not be coerced into one tuning preset based on a single validation disk.
-
-## Core: APA
+## APA ownership
 
 APA owns physical partition-table interpretation:
 
-- 1024-byte header parsing/checksum;
-- linked-list traversal/cycle detection;
-- main/sub metadata;
-- diagnostics and device bounds;
-- raw type/flags/start/length relationships.
+```text
+1024-byte headers
+checksum and Sony master validation
+linked-list traversal and cycle detection
+main/sub ownership
+bounds and extent validation
+allocation and removal planning
+forensic evidence acquisition
+```
 
 APA does not know PFS directory semantics, Windows device discovery or presentation.
 
-## Core: ApaVolume
+### Main/sub relationships
 
-`ApaVolume` is the only layer translating PFS logical subpart indices into APA physical extents:
+A sub-partition belongs to the main partition identified by its authoritative `main_lba` and `number`. Adjacency and child IDs are presentation clues at best. `group_partition_catalog()` uses the structural relationship and reports orphan subs instead of assigning them to the nearest convenient parent.
+
+The grouped main size is already represented by `Partition::total_sectors`, which includes declared subs. Child extents are summed separately for consistency checks and are not added a second time. Rendering a tree should not manufacture storage capacity.
+
+The same main LBA is the natural deletion identity. `plan_remove_main_partition()` removes a selected main and its owned sub headers as one APA operation.
+
+## ApaVolume and WritableApaVolume
+
+`ApaVolume` translates logical partition/subpart addresses into physical APA extents for read operations:
 
 ```text
-PFS subpart 0 -> APA main extent
-PFS subpart 1 -> APA sub extent 0
-PFS subpart 2 -> APA sub extent 1
+logical subpart 0 -> APA main extent
+logical subpart 1 -> APA child #0
+logical subpart 2 -> APA child #1
 ...
 ```
 
-This boundary prevents unit/addressing bugs from being duplicated in PFS callers.
+`WritableApaVolume` is the write-capable sibling used only after a caller has deliberately obtained `WritableBlockDevice`. It enforces exact sector counts, subpart validity, extent bounds, disk bounds and overflow before forwarding a write.
 
-## Core: PFS
+Keeping this translation in one place prevents every PFS caller from discovering its own exciting interpretation of `BlockInfo.subpart`.
+
+## PFS reader and writer
 
 The PFS reader owns:
 
@@ -125,41 +138,114 @@ The PFS reader owns:
 superblock
  -> SEGD inode
  -> optional SEGI chain
- -> logical byte stream
+ -> logical file stream
  -> directory entries
  -> path resolution
 ```
 
-It validates checksums/magic/ranges before caching results. PFS does not know Windows filename policy, SetupAPI, UAC, Explorer or Dokany.
+It validates magic, checksums, zone sizes, descriptors and bounds before exposing results.
 
-`DriveSession` retains immutable validated probe/node/directory/stat results for the lifetime of one source session. `clear_caches()` creates a deliberate cold boundary for benchmarks/source changes; warm repeated metadata walks can otherwise become zero-backing-I/O operations.
+Frieren also contains explicit image-only PFS mutation support. Writer modules handle allocation bitmaps, inode publication, directory entries, fragmented/SEGI cases, tree removal, batching and copy-on-write replacement. Mutations operate through `WritableApaVolume`, then cold-read through the normal reader for verification.
 
-## Core: native HDL metadata
+The writer does not weaken the reader. A file that can only be understood by a special post-write parser is not a successfully written PFS file. It is a bug with good self-esteem.
 
-HDLoader game metadata is parsed natively from the main APA partition at `+0x101000` using the `0xDEADFEED` header. DriveForge does not launch `HDL.EXE` per game.
+## HDL
 
-The parser is in `src/core/hdl.cpp`; its public types/constants remain in `include/ps2hdd/hdl.hpp`. A single game enrichment performs one bounded metadata read after validating partition/device ranges.
+HDLoader metadata is parsed natively from the main APA partition at `+0x101000` using the `0xDEADFEED` structure. DriveForge does not spawn `HDL.EXE` per game.
 
-Baseline catalog ordering is ascending physical LBA, which avoids arbitrary head movement on rotational/unknown storage and remains harmless on SSDs.
+Frieren adds:
 
-## Zero-I/O PartitionCatalog
+- bounded HDL metadata patching;
+- zero-write APA allocation plans;
+- ISO9660 and `SYSTEM.CNF` inspection;
+- native DEADFEED/allocation-table generation;
+- image-only payload streaming and readback;
+- APA publication only after payload verification;
+- image-only game removal through APA main/sub ownership.
 
-`PartitionCatalog` is a pure transformation of an already validated `apa::ScanResult`:
+Bulk ISO bytes are written while planned extents are still unpublished free space. Metadata and APA visibility are committed afterwards. Failure can therefore leave orphan payload bytes in free space, but it does not advertise a half-installed game as valid.
+
+## WriteTransaction
+
+`WriteTransaction` protects known, small, sector-aligned mutation ranges. It:
+
+1. captures exact before-images;
+2. rejects overlaps and out-of-bounds ranges;
+3. writes staged ranges in order;
+4. flushes;
+5. reads back exact bytes;
+6. runs an optional parser verifier;
+7. restores before-images on post-write failure and verifies rollback.
+
+The transaction primitive does not know APA, PFS or HDL rules. Format code decides what bytes are legitimate. A generic transaction layer that also understands every filesystem usually ends up understanding none of them particularly well.
+
+## Mutation Journal
+
+`mutation_journal` is DriveForge-private crash recovery for selected metadata transactions. Its wire magic is `PS2DFRC1` and it records exact before/after ranges plus target size. PREPARED journals can classify a target as all-before, all-after, mixed or foreign/corrupt and can restore exact before-images when appropriate.
+
+It is **not** an FHDB Rescue Capsule. See the shared vocabulary in [`fhdb-bootstrap-parity.md`](fhdb-bootstrap-parity.md).
+
+## FHDB Manager interoperability
+
+Portable bootstrap recovery belongs to the shared FHDB artifact layer:
 
 ```text
-one APA scan
- -> build_partition_catalog()
- -> complete rows/counts/sizes/relationships
- -> zero additional source I/O
+FHDB Rescue Capsule   PS2HBRC\0 v1
+HDDRESCUE*.BIN        master + optional active payload
+HDDMBR*.BIN           exact canonical master backup
+FHDBMBR*.BIN          accepted legacy master backup names
+HDDRAW*.BIN           exceptional raw master snapshot
+HDDMETA*.BIN          APAMETA1 touched-header snapshot
+FORENSIC.TXT          human forensic report
 ```
 
-It records all management-relevant APA facts without probing PFS or HDL payloads. Showing/hiding subpartitions, sorting, filtering and selecting catalog rows must remain memory-only frontend operations.
+DriveForge mirrors FHDB Manager's two-slot, do-not-overwrite-unrelated-evidence policy for binary recovery artifacts.
 
-Implementation lives in `src/core/partition_catalog.cpp`; the public header carries only the data contract/declarations.
+### Bootstrap restore
 
-## Host: DriveSession
+`fhdb_restore` implements image-only bootstrap restore with FHDB Manager semantics:
 
-`DriveSession` owns one opened source and the reusable operations required by CLI/GUI/mount/benchmark code:
+```text
+validate rescue / same disk / live __mbr bounds
+ -> freeze exact current master
+ -> immediate stale-plan check at apply
+ -> mandatory current HDDMBR backup
+ -> payload write + flush + exact readback
+ -> publish only current osdStart/osdSize + checksum
+ -> master write last + flush + exact readback
+ -> normal APA parse
+```
+
+A corrupt, wrong-disk or invalid full `HDDRESCUE*` blocks fallback to an older legacy header. A valid header-only capsule permits `HDDMBR*` / `FHDBMBR*` pointer fallback. This matches FHDB Manager rather than inventing a host-only recovery personality.
+
+The complete saved master inside a Rescue Capsule is used as identity evidence. It is not blindly copied over the current master during restore.
+
+## APA forensic recovery
+
+Normal APA admission and forensic discovery are intentionally separate. Forensics may inspect structures that the normal reader correctly refuses, but that does not make those structures writable.
+
+The recovery planner/executor preserves these rules:
+
+- incomplete/truncated evidence stays read-only;
+- ambiguous or conflicting maps do not auto-authorize repair;
+- automatic patches remain narrowly reconstructable;
+- stale source bytes refuse before write;
+- `HDDRAW` or `HDDMETA` evidence is durable before affected metadata moves;
+- interior headers are written before LBA 0;
+- every write is flushed and reread;
+- final touched-set and normal-parser verification follow the commit.
+
+APA's additive checksum is evidence, not absolution. It can support a narrow reconstruction but cannot magically tell us which field a human, bit flip or ancient tool damaged.
+
+## PartitionCatalog and ManagementModel
+
+`PartitionCatalog` is a pure transformation of one validated `apa::ScanResult`. It records management-relevant rows, sizes and ownership with zero additional device I/O.
+
+`ManagementModel` consumes that snapshot and tracks progressive HDL enrichment. Surviving enrichment is preserved when a known committed removal deletes one main/sub group from the in-memory model. A successful deletion therefore does not require re-reading every unrelated game just to reassure the UI that they still exist.
+
+## DriveSession
+
+`DriveSession` owns one opened read source and reusable frontend operations:
 
 ```text
 scan
@@ -172,114 +258,58 @@ export_to_host(...)
 statistics / cache reset
 ```
 
-Navigation state stays in the frontend. `DriveSession` is orchestration, not shell-global state.
+It remains a read session. Mutation coordinators may update its cached snapshot after a separately committed known plan, but they do not turn `DriveSession` into the write authority.
 
-## Host: ManagementModel and enrichment
+## OPL asset pipeline
 
-`ManagementModel` consumes `PartitionCatalog` without touching the disk. Base rows exist immediately. Main HDL rows begin as `pending`; progressive enrichment applies native `GameResult` objects one row at a time and tracks pending/ready/failed counts.
+OPL provider fetching and PFS destination mutation are separate stages. Provider code resolves title/Redump/CFG/compatibility/CHT/mastercode/artwork data into host staging with provenance. Destination code then plans and writes selected assets through PFS mutation.
 
-The model implementation belongs in `src/host/management_model.cpp` because it is frontend-neutral orchestration, not on-disk format parsing.
+Network data never receives a direct `WritableApaVolume`. The Internet is useful enough without giving arbitrary HTTP responses sector access.
 
-The production HDL enrichment scheduler is also host policy. Current policy is conservative for rotational/unknown media; positively identified storage can use bounded concurrency where measurements justify it. The benchmark `--hdl-qd N` switch is a developer override, not frontend policy.
+## Windows discovery and elevation
 
-## Windows discovery boundary
+DriveForge enumerates Windows disks through SetupAPI, resolves the actual `PhysicalDriveN`, opens it read-only and lets the APA parser determine whether it is a PS2 HDD.
 
-DriveForge does not scan an arbitrary visible `PhysicalDrive0..31` range.
+Disk images do not need administrator rights. Raw disk reads often do. Current Windows frontends handle UAC separately from format logic.
 
-```text
-SetupAPI GUID_DEVINTERFACE_DISK
- -> actual disk interface
- -> IOCTL_STORAGE_GET_DEVICE_NUMBER
- -> PhysicalDriveN
- -> GENERIC_READ
- -> normal APA parser
-```
+A future physical mutation backend must re-prove source identity immediately before commit and pass the physical-write gates. It will not modify the existing read-only `PhysicalDrive` contract.
 
-Device model/capacity/bus are presentation/tuning metadata only. **APA validation is the authority for PS2 HDD identity.**
+## Dokany boundary
 
-The physical-drive number is transient Windows enumeration state and may change after reboot/reconnection.
-
-## Elevation boundary
-
-Disk-image browsing does not need administrator rights. Raw Windows disk access often does.
-
-The validated Win32 frontend uses controlled `ShellExecuteExW("runas")` relaunch, loop prevention, UAC-cancel fallback to image-capable mode and explicit `Restart as Administrator`.
-
-The long-term WinUI design narrows this further:
-
-```text
-WinUI shell (normal user)
-      |
-read-only IPC
-      |
-elevated raw-disk broker
-      |
-GENERIC_READ PhysicalDrive
-```
-
-The broker is a target architecture, not something the current WinUI preview is allowed to pretend already exists.
-
-## Dokany mount boundary
-
-`DokanyMountController` is the runtime owner of Dokany callbacks/lifecycle.
-
-```text
-Win32 GUI / mount CLI
-          |
-DokanyMountController
-          |
-ReadOnlyMountView
-          |
-DriveSession
-```
-
-The standalone `PS2-DriveForge-Mount.exe` remains a thin diagnostics/script frontend over the same controller.
+Dokany sits above `ReadOnlyMountView` and `DriveSession`. It translates Windows filesystem behavior but cannot mutate the source.
 
 Read-only protection is layered:
 
 ```text
-no source BlockDevice::write()
-        +
-PhysicalDrive GENERIC_READ
-        +
+BlockDevice has no write()
+PhysicalDrive uses GENERIC_READ
 DOKAN_OPTION_WRITE_PROTECT
-        +
-create/mutation/overwrite/delete rejection
+mutation/create/delete paths are rejected
 ```
 
 ### NT create-disposition trap
 
-Dokany's `ZwCreateFile` receives NT `FILE_*` disposition values, not Win32 `CreateFileW` constants. Numeric overlap originally produced Explorer's historical `The file exists` root-open failure.
-
-The policy is isolated in `src/mount/dokany_open_policy.hpp` and covered by a portable regression test. Do not "simplify" these values into Win32 constants.
+Dokany `ZwCreateFile` receives NT `FILE_*` dispositions, not Win32 `CreateFileW` creation constants. Numeric overlap once produced Explorer's historical `The file exists` root-open failure. The policy is isolated and tested. Do not simplify the constants because two Microsoft APIs happened to use integers and optimism.
 
 ## Frontends
 
-### Legacy Win32
+The Win32 frontend is the validated normal Windows entrypoint and consumes shared services for browsing, management and mounting.
 
-The Win32 frontend is the currently validated normal Windows entrypoint. It owns Windows presentation, theme, UAC orchestration, source selection/navigation, export actions and mount controls. It consumes shared storage/host services.
+The WinUI frontend remains a parity path rather than an independent storage implementation. Partition presentation now groups main partitions with collapsible authoritative subpartitions, exposes logical total sizes and isolates orphan subs diagnostically.
 
-Large legacy frontend files are a cleanup target, but source splitting must preserve behavior and should be done only with MSVC + real-Windows regression coverage rather than as cosmetic churn immediately before an RC.
+Frontend code may decide how to explain a recovery plan. It may not decide which sectors belong in one.
 
-### WinUI 3
+## Build and release boundary
 
-The unpackaged/self-contained WinUI 3 C++/WinRT project uses Windows App SDK 2.3.1. `NativeSessionController` bridges the native source/session/catalog/enrichment model into immutable frontend snapshots.
+CMake owns portable/native libraries, CLI, Win32 and Dokany targets. WinUI remains MSBuild/C++WinRT because Windows App SDK tooling lives there.
 
-Current status is **preview/parity work**, not production-default parity. The visual shell and native session/catalog bridge build/package successfully; complete disk-image/PFS/export/mount workflows and the least-privilege raw-disk broker remain work.
+`scripts/frieren-regression-tests.ps1` is the canonical Windows regression executable manifest shared by staging and package verification. The number of tests should therefore be derived from the manifest rather than duplicated in documentation every time another safety case acquires opinions.
 
-Until parity is proven, the canonical package carries WinUI under `WinUI\` beside the validated Win32 fallback.
-
-## Build/release boundary
-
-CMake owns portable/native libraries, CLI, Win32 and Dokany targets. The WinUI project remains MSBuild/C++WinRT because XAML/Windows App SDK build tooling is MSBuild-oriented.
-
-`build-windows.ps1` composes the full release payload. `scripts/verify-windows-package.ps1` validates canonical staging independently of whatever MSBuild subdirectory happens to contain the WinUI EXE.
-
-See [`../BUILDING.md`](../BUILDING.md) and [`release-process.md`](release-process.md).
+See [`../BUILDING.md`](../BUILDING.md), [`testing.md`](testing.md) and [`release-process.md`](release-process.md).
 
 ## Address-unit warning
 
-When debugging PFS, write the unit at every boundary:
+When debugging storage, write the unit at every boundary:
 
 ```text
 host bytes
@@ -290,39 +320,34 @@ host bytes
  <-> physical LBA
 ```
 
-Common mistakes include treating `BlockInfo.number` as the same unit everywhere, applying payload-zone arithmetic to metadata, pre-adding APA starts before `ApaVolume`, or assuming subpartitions are physically contiguous.
+Typical mistakes include treating `BlockInfo.number` as one universal unit, applying payload-zone arithmetic to metadata, pre-adding APA starts before `ApaVolume`, assuming subpartitions are contiguous, or confusing `osdSize` sectors with payload bytes. Storage code is sufficiently unforgiving without unit ambiguity lending a hand.
 
-## Current real-HDD performance evidence
+## Historical real-HDD performance evidence
 
-The preserved 2026-08-22 validation sweep records, on one 149.05 GiB APA v2 disk:
-
-- cold APA scan median 1555.022 ms for 190 headers/reads;
-- zero-I/O catalog median 0.006 ms for 190 rows;
-- cold `+OPL /` browse+stat: 10 reads / 16 KiB / 41.493 ms median;
-- immediate warm repeat: 0 backing reads / 0.001 ms median;
-- 35/35 native HDL metadata rows readable;
-- unknown-media automatic policy remains QD1 despite QD8 winning the narrow total-completion benchmark, because QD8 multiplied per-read latency and base rows are already usable before enrichment.
-
-These measurements support the architecture but do not define universal tuning for other HDDs, SSDs or bridges. See [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md).
+The 2026-08-22 Emilia validation sweep remains a useful baseline for the read path. It records one specific 149.05 GiB APA v2 HDD and should not be mistaken for a law of nature. See [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md).
 
 ## Debugging starting points
 
 | Symptom | First layer |
 | --- | --- |
-| APA not detected / chain stops | `src/core/apa.cpp` |
+| APA not detected or chain stops | `src/core/apa.cpp` |
 | extent outside device | APA bounds diagnostics |
-| PFS superblock/inode/dentry invalid | `src/core/pfs.cpp` |
-| wrong main/sub physical data | `ApaVolume` |
+| PFS read parse failure | `src/core/pfs.cpp` |
+| PFS mutation failure | PFS writer / `WritableApaVolume` |
+| wrong main/sub physical data | `ApaVolume` / `WritableApaVolume` |
 | HDL title/startup corrupt | `src/core/hdl.cpp` |
-| list creation causes payload I/O | `partition_catalog.cpp` / caller |
-| progressive game row wrong | `ManagementModel` / `hdl_enrichment.cpp` |
+| game install publication failure | `hdl_image_install.cpp` / APA mutation |
+| main/sub UI ownership wrong | `partition_grouping` / catalog data |
+| Rescue Capsule rejected | `fhdb_rescue` / `fhdb_restore` |
+| legacy FHDBMBR not selected | `fhdb_restore` discovery policy |
+| Mutation Journal state unclear | `mutation_journal` |
+| forensic topology ambiguous | `apa_forensic` |
+| recovery write refused | recovery plan source-stability / artifact gate |
 | export-name/path failure | `pfs_export.cpp` |
 | GUI/CLI browse disagreement | `DriveSession` inputs/results |
 | Explorer says `The file exists` | NT Dokany open policy |
-| direct browse works but mount fails | `ReadOnlyMountView` / Dokany adapter |
 | PS2 HDD missing from GUI | SetupAPI / UAC / raw-open diagnostics |
-| wrong mount letter | Darkness mount-letter policy |
-| unexpected physical I/O | session cache + read cache/read-ahead + instrumentation |
-| WinUI build packages wrong path | build script / canonical package verifier |
+| unexpected backing I/O | cache/read-ahead/instrumentation |
+| Windows package misses a regression EXE | Frieren regression manifest / package verifier |
 
-Identify the wrong abstraction before adding compatibility hacks above it.
+Identify the wrong abstraction before adding compatibility hacks above it. Compatibility hacks are remarkably good at surviving the bug that created them.
