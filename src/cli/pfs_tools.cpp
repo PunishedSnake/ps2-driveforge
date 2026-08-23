@@ -5,10 +5,12 @@
 #include "ps2hdd/version.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -130,11 +132,11 @@ int plan_remove(int argc, char** argv)
     }
 
     std::cout << "Fast APA removal plan\n"
-              << "  partition:       " << plan.partition_id << '\n'
-              << "  main LBA:        " << plan.main_lba << '\n'
-              << "  detached headers:" << ' ' << plan.removed_lbas.size() << '\n'
-              << "  rewritten links: " << plan.link_rewrites.size() << '\n'
-              << "  freed bytes:      " << plan.freed_bytes << "\n\n";
+              << "  partition:        " << plan.partition_id << '\n'
+              << "  main LBA:         " << plan.main_lba << '\n'
+              << "  detached headers: " << plan.removed_lbas.size() << '\n'
+              << "  rewritten links:  " << plan.link_rewrites.size() << '\n'
+              << "  freed bytes:       " << plan.freed_bytes << "\n\n";
     for (const auto& rewrite : plan.link_rewrites) {
         std::cout << "  LBA " << rewrite.header_lba
                   << " prev " << rewrite.old_prev_lba << " -> " << rewrite.new_prev_lba
@@ -167,16 +169,21 @@ int remove_partition(int argc, char** argv)
         return 1;
     }
 
+    const auto started = std::chrono::steady_clock::now();
     const auto result = ps2hdd::apa::remove_main_partition_from_image(image, partition->start_lba);
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
         std::cerr << "Fast APA removal failed: " << result.error << '\n';
         return 1;
     }
     std::cout << "APA partition removed and chain reparsed successfully\n"
-              << "  partition:        " << result.partition_id << '\n'
-              << "  detached headers: " << result.removed_headers << '\n'
-              << "  rewritten headers:" << ' ' << result.rewritten_headers << '\n'
-              << "  freed bytes:       " << result.freed_bytes << '\n';
+              << "  partition:         " << result.partition_id << '\n'
+              << "  detached headers:  " << result.removed_headers << '\n'
+              << "  rewritten headers: " << result.rewritten_headers << '\n'
+              << "  freed bytes:        " << result.freed_bytes << '\n'
+              << "  mutation + verify:  " << std::fixed << std::setprecision(3)
+              << elapsed << " ms\n";
     return 0;
 }
 
@@ -213,7 +220,11 @@ int put_file(int argc, char** argv)
         std::cerr << "PFS writer refused partition: " << writer.error() << '\n';
         return 1;
     }
+
+    const auto started = std::chrono::steady_clock::now();
     const auto result = writer.write_file(argv[5], *bytes);
+    const double elapsed_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
         std::cerr << "PFS file mutation failed: " << result.error << '\n';
         if (!result.warning.empty()) {
@@ -222,6 +233,8 @@ int put_file(int argc, char** argv)
         return 1;
     }
 
+    const double mib = static_cast<double>(result.bytes) / (1024.0 * 1024.0);
+    const double mib_per_second = elapsed_seconds > 0.0 ? mib / elapsed_seconds : 0.0;
     std::cout << (result.disposition == ps2hdd::pfs::FileWriteDisposition::created
                       ? "PFS file created"
                       : "PFS file replaced copy-on-write")
@@ -230,7 +243,11 @@ int put_file(int argc, char** argv)
               << "  bytes:                 " << result.bytes << '\n'
               << "  payload write calls:   " << result.payload_write_calls << '\n'
               << "  metadata transactions: " << result.metadata_transactions << '\n'
-              << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n';
+              << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n'
+              << "  mutation + verify:      " << std::fixed << std::setprecision(3)
+              << elapsed_seconds * 1000.0 << " ms\n"
+              << "  effective payload rate: " << std::setprecision(2)
+              << mib_per_second << " MiB/s\n";
     if (!result.warning.empty()) {
         std::cerr << "WARNING: " << result.warning << '\n';
     }
