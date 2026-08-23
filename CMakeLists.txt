@@ -33,6 +33,7 @@ add_library(ps2driveforge_core
     src/core/apa_volume.cpp
     src/core/pfs.cpp
     src/core/pfs_write.cpp
+    src/core/pfs_directory.cpp
     src/core/pfs_batch.cpp
     src/core/hdl.cpp
     src/core/ps2_iso.cpp
@@ -209,6 +210,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-pfs-write-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-pfs-write-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-pfs-write-tests COMMAND ps2-driveforge-pfs-write-tests)
+
+    add_executable(ps2-driveforge-pfs-directory-tests tests/pfs_directory_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-directory-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-directory-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-directory-tests COMMAND ps2-driveforge-pfs-directory-tests)
 
     add_executable(ps2-driveforge-pfs-batch-tests tests/pfs_batch_tests.cpp)
     target_link_libraries(ps2-driveforge-pfs-batch-tests PRIVATE ps2driveforge_core)
