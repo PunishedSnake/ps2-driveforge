@@ -3,8 +3,12 @@
 #include "pch.h"
 #include "MainWindow.g.h"
 #include "NativeSessionController.hpp"
+#include "WinUIBootstrapProvider.hpp"
 #include "WinUIRecoveryActions.hpp"
 
+#include <commdlg.h>
+
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -21,9 +25,9 @@ struct MainWindow : MainWindowT<MainWindow>
     MainWindow();
     ~MainWindow();
 
-    // XAML code generation binds these handlers from MainWindow.xaml and must
-    // be able to take their addresses. Keep only the declarative recovery event
-    // surface public; storage helpers and state remain private.
+    // XAML-generated glue must be able to take the address of declarative event
+    // handlers. Keep only that thin UI surface public; storage state and helper
+    // methods remain private.
     void on_capture_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
         if (mutation_busy_.load()) return;
@@ -149,6 +153,153 @@ struct MainWindow : MainWindowT<MainWindow>
         });
     }
 
+    void on_choose_provider_manifest(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"DriveForge provider manifests (*.txt;*.ini;*.manifest)\0*.txt;*.ini;*.manifest\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        provider_manifest_path_ = std::filesystem::path(path.data());
+        ProviderManifestPathText().Text(provider_manifest_path_.wstring());
+        provider_preview_ = {};
+        ProviderInstallButton().IsEnabled(false);
+        ProviderPreviewText().Text(L"Manifest selected; stage it before installation.");
+    }
+
+    void on_choose_provider_keyset(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"MagicGate keysets (*.txt;*.ini)\0*.txt;*.ini\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        provider_keyset_path_ = std::filesystem::path(path.data());
+        ProviderKeysetPathText().Text(provider_keyset_path_.wstring());
+        provider_preview_ = {};
+        ProviderInstallButton().IsEnabled(false);
+    }
+
+    void on_stage_provider(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.exchange(true)) return;
+        if (!current_physical_) {
+            mutation_busy_.store(false);
+            show_error(L"Stage bootstrap provider", L"Provider bootstrap installation requires an open physical PS2 HDD.");
+            return;
+        }
+        if (provider_manifest_path_.empty()) {
+            mutation_busy_.store(false);
+            show_error(L"Stage bootstrap provider", L"Choose a local provider manifest first.");
+            return;
+        }
+
+        ProviderStageButton().IsEnabled(false);
+        ProviderInstallButton().IsEnabled(false);
+        ProviderPreviewText().Text(L"Resolving immutable provider bytes, hashing and verifying KELF...");
+        set_status(L"Staging bootstrap provider entirely on the host...");
+
+        const auto index = *current_physical_;
+        const auto manifest = provider_manifest_path_;
+        const auto keyset = provider_keyset_path_;
+        const std::wstring icv = ProviderIcvps2Box().Text().c_str();
+        const auto provenance = winrt::to_string(ProviderIcvps2ProvenanceBox().Text());
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        mutation_thread_ = std::jthread([dispatcher, weak, index, manifest, keyset, icv, provenance](std::stop_token) mutable {
+            auto preview = ps2df::winui::stage_bootstrap_provider(
+                index, manifest, keyset, icv, std::move(provenance));
+            dispatcher.TryEnqueue([weak, preview = std::move(preview)]() mutable {
+                if (auto self = weak.get()) {
+                    self->mutation_busy_.store(false);
+                    self->ProviderStageButton().IsEnabled(true);
+                    self->provider_preview_ = std::move(preview);
+                    if (!self->provider_preview_.ok) {
+                        self->ProviderPreviewText().Text(L"Staging refused: " + std::wstring(self->provider_preview_.error.begin(), self->provider_preview_.error.end()));
+                        self->ProviderInstallButton().IsEnabled(false);
+                        self->set_status(L"Bootstrap provider staging refused before any target write");
+                        return;
+                    }
+                    const auto& p = self->provider_preview_;
+                    self->ProviderPreviewText().Text(
+                        std::wstring(p.product.begin(), p.product.end()) + L" / " +
+                        std::wstring(p.version.begin(), p.version.end()) + L"\nProvider: " +
+                        std::wstring(p.provider_id.begin(), p.provider_id.end()) + L"\nSource SHA-256: " +
+                        std::wstring(p.source_sha256.begin(), p.source_sha256.end()) + L"\nPayload SHA-256: " +
+                        std::wstring(p.payload_sha256.begin(), p.payload_sha256.end()) + L"\nPayload: " +
+                        std::to_wstring(p.payload_bytes) + L" bytes / " +
+                        std::to_wstring(p.payload_sectors) + L" sectors\nTarget fingerprint: " +
+                        std::wstring(p.target_fingerprint.begin(), p.target_fingerprint.end()));
+                    self->ProviderInstallButton().IsEnabled(true);
+                    self->set_status(L"Bootstrap provider staged, verified and frozen; no target writes performed");
+                }
+            });
+        });
+    }
+
+    void on_install_provider(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.load()) return;
+        if (!current_physical_ || !provider_preview_.ok) {
+            show_error(L"Install bootstrap provider", L"Stage and verify a provider against the current physical target first.");
+            return;
+        }
+        if (hdl_artifact_directory_.empty()) {
+            show_error(L"Install bootstrap provider", L"Choose the safety/artifact directory first. Provider install requires Rescue Capsule and HDDMBR evidence.");
+            return;
+        }
+        confirm_physical_action(L"install the staged bootstrap provider", [this] {
+            if (mutation_busy_.exchange(true)) return;
+            const auto index = *current_physical_;
+            const auto frozen = provider_preview_.frozen;
+            const auto safety = hdl_artifact_directory_;
+            ProviderInstallButton().IsEnabled(false);
+            ProviderPreviewText().Text(ProviderPreviewText().Text() + L"\nInstalling with guarded physical lease...");
+            set_status(L"Installing frozen bootstrap payload with Rescue Capsule/HDDMBR protection...");
+            auto dispatcher = DispatcherQueue();
+            auto weak = get_weak();
+            mutation_thread_ = std::jthread([dispatcher, weak, index, frozen, safety](std::stop_token) mutable {
+                auto result = ps2df::winui::commit_bootstrap_provider(index, frozen, safety);
+                dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
+                    if (auto self = weak.get()) {
+                        self->mutation_busy_.store(false);
+                        if (!result.ok) {
+                            self->show_error(L"Install bootstrap provider", std::wstring(result.error.begin(), result.error.end()));
+                            self->ProviderInstallButton().IsEnabled(self->provider_preview_.ok);
+                            self->set_status(result.partial ? L"Bootstrap provider install failed after partial mutation; recovery evidence preserved"
+                                                            : L"Bootstrap provider install refused/failed before commit");
+                            return;
+                        }
+                        self->show_recovery_success(
+                            L"Bootstrap provider installed",
+                            L"Pre-install Rescue Capsule and HDDMBR were persisted. Payload, pointer and final APA state were cold-verified read-only.");
+                        self->ProviderPreviewText().Text(self->ProviderPreviewText().Text() +
+                            L"\nRescue: " + result.rescue_path.wstring() +
+                            L"\nHDDMBR: " + result.hddmbr_path.wstring());
+                        self->provider_preview_ = {};
+                        self->ProviderInstallButton().IsEnabled(false);
+                        std::string reopen_error;
+                        if (!self->controller_.open_physical(*self->current_physical_, reopen_error)) {
+                            self->show_error(L"Bootstrap provider", L"Install was cold-verified by the endpoint, but the management session could not reopen afterward.");
+                            return;
+                        }
+                        self->refresh_all_from_snapshot();
+                        self->refresh_hdl_tools();
+                        self->set_status(L"Bootstrap provider install complete and cold-verified");
+                    }
+                });
+            });
+        });
+    }
+
 private:
     void wire_events();
     void load_theme_preference();
@@ -264,6 +415,10 @@ private:
     std::filesystem::path hdl_iso_path_;
     std::filesystem::path hdl_artifact_directory_;
     ps2df::winui::HdlInstallPreviewSnapshot hdl_preview_;
+
+    std::filesystem::path provider_manifest_path_;
+    std::filesystem::path provider_keyset_path_;
+    ps2df::winui::BootstrapProviderPreview provider_preview_;
 
     std::jthread discovery_thread_;
     std::jthread source_thread_;
