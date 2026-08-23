@@ -105,15 +105,22 @@ using ProgressCallback = std::function<void(std::uint32_t lba,
                                              std::uint32_t total_sectors,
                                              std::size_t nodes_found)>;
 
-// Read-only raw reconstruction. Normal apa::Reader admission is deliberately
-// not required; this is the degraded path for damaged headers/topology.
+// Read-only raw reconstruction for the cases normal apa::Reader correctly
+// refuses. Forensic visibility is not mutation permission. Finding a plausible
+// header in damaged space proves that bytes exist there, not that we have earned
+// the right to rewrite them.
 [[nodiscard]] ScanResult scan_apa(BlockDevice& device, ProgressCallback progress = {});
 
+// Produce an evidence-scored plan from one candidate topology. The planner may
+// classify a result as automatic-safe, manual-only or blocked. Callers do not
+// improve confidence by simply wanting the repair more strongly.
 [[nodiscard]] RepairPlan build_repair_plan(const ScanResult& result,
                                            std::size_t map_index);
 
-// Only prev/next/checksum are changed. The patch must still match the original
-// scanned node byte-for-byte relationship before a caller may write it.
+// Materialize only prev/next/checksum changes described by the plan. The patch
+// must still resolve to the exact scanned node relationship. Everything else in
+// the 1024-byte header stays byte-identical because topology repair is not an
+// invitation to tidy unrelated metadata while we are here.
 [[nodiscard]] bool build_patched_header(const ScanResult& result,
                                         const Patch& patch,
                                         std::array<std::byte, kApaHeaderBytes>& repaired,
@@ -121,7 +128,9 @@ using ProgressCallback = std::function<void(std::uint32_t lba,
 
 [[nodiscard]] const char* map_name(MapKind kind) noexcept;
 
-// Canonical textual schema used by fhdb-bootstrap-manager FORENSIC.TXT.
+// Canonical human-readable schema shared with FHDB Manager FORENSIC.TXT. Keep
+// vocabulary and field meaning aligned across platforms so a report exported on
+// the PS2 remains useful on the PC and vice versa.
 [[nodiscard]] std::string render_report(const ScanResult& result);
 
 } // namespace ps2hdd::forensic
