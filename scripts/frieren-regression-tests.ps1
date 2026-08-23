@@ -10,6 +10,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-pfs-file-tests.exe',
     'ps2-driveforge-pfs-segi-tests.exe',
     'ps2-driveforge-pfs-extent-layout-tests.exe',
+    'ps2-driveforge-pfs-segi-write-tests.exe',
     'ps2-driveforge-pfs-write-tests.exe',
     'ps2-driveforge-pfs-directory-tests.exe',
     'ps2-driveforge-pfs-advanced-write-tests.exe',
