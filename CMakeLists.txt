@@ -111,6 +111,7 @@ if(WIN32)
         src/platform/windows/physical_game_deploy.cpp
         src/platform/windows/physical_partition_remove.cpp
         src/platform/windows/physical_bootstrap_recovery.cpp
+        src/platform/windows/physical_apa_recovery.cpp
     )
     target_compile_definitions(ps2driveforge_host PUBLIC PS2DF_HAS_WINDOWS_PHYSICAL_MUTATION=1)
     target_link_libraries(ps2driveforge_host PUBLIC setupapi winhttp)
@@ -484,7 +485,7 @@ if(PS2DF_BUILD_FUZZERS)
     endif()
     add_executable(ps2-driveforge-fuzz-apa fuzz/apa_fuzzer.cpp)
     target_link_libraries(ps2-driveforge-fuzz-apa PRIVATE ps2driveforge_core)
-    target_compile_features(ps2-driveforge-fuzz-apa PUBLIC cxx_std_20)
+    target_compile_features(ps2-driveforge-fuzz-apa PRIVATE cxx_std_20)
     target_compile_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
     target_link_options(ps2-driveforge-fuzz-apa PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
