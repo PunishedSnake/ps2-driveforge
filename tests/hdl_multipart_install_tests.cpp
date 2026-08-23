@@ -148,9 +148,8 @@ public:
     template <typename T>
     void put_object(std::uint64_t offset, const T& value)
     {
-        small_[{offset, sizeof(T)}] =
-            std::vector<std::byte>(std::as_bytes(std::span{&value, 1}).begin(),
-                                   std::as_bytes(std::span{&value, 1}).end());
+        const auto bytes = std::as_bytes(std::span{&value, 1});
+        small_[{offset, sizeof(T)}] = std::vector<std::byte>(bytes.begin(), bytes.end());
     }
 
 private:
@@ -239,8 +238,8 @@ void full_installer_publishes_main_and_sub_relationship()
     check(sub != nullptr, "multipart install sub partition should be visible");
     check(main->sub_count == 1 && main->sub_partitions.size() == 1,
           "main header should declare exactly one sub extent");
-    check(main->sub_partitions[0].start_lba == sub->start_lba &&
-              main->sub_partitions[0].length_sectors == sub->length_sectors,
+    check(main->sub_partitions[0].start == sub->start_lba &&
+              main->sub_partitions[0].length == sub->length_sectors,
           "main subs[] table should match the published sub header");
     check(sub->main_lba == main->start_lba && sub->number == 1,
           "sub header should point back to main and carry number 1");
