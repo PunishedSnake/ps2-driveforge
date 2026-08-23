@@ -23,6 +23,8 @@ Connection/bus/bridge:
 PhysicalDrive index observed this run:
 Initial physical media fingerprint:
 FHDB Manager version/commit used for interchange tests:
+MagicGate keyset provenance used for test fixture:
+ICVPS2 evidence provenance, when applicable:
 ```
 
 `PhysicalDriveN` is session-specific and may change after reboot or reconnection. The frozen media fingerprint, not the integer index, is the identity boundary.
@@ -155,20 +157,22 @@ Before **every** destructive physical test, run the read-only preflight from the
 
 ## M. Physical confirmation barrier
 
-For every destructive command:
+For every destructive command or GUI action:
 
-- [ ] omit `--apply` and confirm the command refuses before writable access;
+- [ ] omit `--apply` in the developer CLI and confirm refusal before writable access;
 - [ ] provide `--apply` without `--confirm PhysicalDriveN` and confirm refusal;
 - [ ] provide an incorrect `PhysicalDriveN` confirmation and confirm refusal;
+- [ ] in WinUI, type anything except the exact current `PhysicalDriveN` and confirm refusal;
 - [ ] confirm the intended target only after re-reading model/capacity/fingerprint evidence;
-- [ ] confirm failure happens before safety artifacts or target writes when authorization is stale or mismatched.
+- [ ] confirm failure happens before target writes when authorization is stale or mismatched.
 
 ## N. Guarded physical HDL install
 
 Use a sacrificial PS2 HDD and a known-good PS2 ISO.
 
 - [ ] Create/record the required safety artifact directory before mutation.
-- [ ] Run physical `install-hdl` with the exact target confirmation.
+- [ ] Build the WinUI install preview and confirm startup ID, partition ID and allocation geometry.
+- [ ] Run physical install with exact target confirmation.
 - [ ] Confirm volume locking/dismount succeeds or the operation refuses before writes.
 - [ ] Confirm payload is written to unpublished free extents first.
 - [ ] Confirm payload readback succeeds before APA publication.
@@ -185,17 +189,17 @@ Record ISO hash, game ID, allocated main/sub LBAs and final parser result.
 
 - [ ] Select the game installed in section N or another disposable test game.
 - [ ] Confirm grouped main/sub ownership before deletion.
-- [ ] Run physical `remove` with exact target confirmation and safety artifacts.
+- [ ] Run physical remove with exact target confirmation and safety artifacts.
 - [ ] Confirm deletion does not zero-fill the old payload unnecessarily.
 - [ ] Confirm removed extents become unreachable/free according to APA metadata.
 - [ ] Confirm unrelated partitions remain byte/metadata stable where expected.
 - [ ] Cold-reopen and confirm clean APA parse.
-- [ ] Confirm the removed title disappears from the management model without requiring a complete unrelated HDL rescan.
+- [ ] Confirm the removed title disappears from management without requiring a complete unrelated HDL rescan.
 - [ ] Boot the HDD in PS2/OPL and confirm the title is gone while unrelated titles remain usable.
 
 ## P. Physical PFS/OPL asset validation
 
-When the GUI/backend exposes the physical PFS asset flow for the candidate:
+When the physical PFS asset flow is exposed by the candidate:
 
 - [ ] stage provider output completely on the host before write admission;
 - [ ] import a small known CFG/artwork fixture;
@@ -204,7 +208,7 @@ When the GUI/backend exposes the physical PFS asset flow for the candidate:
 - [ ] remove the fixture and verify directory/tree integrity;
 - [ ] confirm failure leaves a parseable filesystem and recoverable transaction state.
 
-If this surface is intentionally not part of the candidate, record it as **not exposed**, not silently untested.
+If this surface is intentionally not exposed, record it as **not exposed**, not silently untested.
 
 ## Q. Read-only Rescue Capsule capture
 
@@ -287,20 +291,26 @@ At least one physical-write candidate must be tested under controlled failure in
 - [ ] Install preview shows startup ID/title/source/target and affected allocation before confirmation.
 - [ ] Grouped HDL titles expose one logical delete action rather than raw child-partition deletion.
 - [ ] Logical size includes owned subs without double counting.
-- [ ] Subpartitions remain available as diagnostics.
+- [ ] Subpartitions remain available as diagnostics in the HDD Manager.
 - [ ] Physical destructive actions are visually distinct from image operations.
-- [ ] Physical mutation requires explicit target confirmation and cannot bypass backend admission.
-- [ ] Rescue Capsule and forensic actions use FHDB-compatible terminology.
-- [ ] Result UI reports verification/cold-reopen outcome, not merely "command completed".
+- [ ] Physical mutation requires exact typed target confirmation and cannot bypass backend admission.
+- [ ] The GUI can run read-only physical preflight and display the frozen fingerprint.
+- [ ] Result UI reports recovery artifacts and cold-reopen verification, not merely "command completed".
 
-## X. MagicGate/bootstrap provider path
+## X. MagicGate/bootstrap staging path
 
 - [ ] Dedicated `MagicGate host verification` CI is green on Linux and Windows for the candidate SHA.
 - [ ] Known-vector crypto/content verification passes.
-- [ ] Host service fails closed when required key material is absent or inconsistent.
+- [ ] Host service fails closed when required software key material is absent or inconsistent.
+- [ ] Keyset provenance is explicit and secret bytes are not written to logs/recovery metadata.
+- [ ] A supported low-layout KELF without ICVPS2 verifies/signs and recovers byte-identical plaintext.
+- [ ] A KELF requesting ICVPS2 fails closed when no MechaCon/reference evidence is loaded.
+- [ ] Matching explicit ICVPS2 evidence verifies successfully.
+- [ ] Mismatched ICVPS2 evidence is rejected.
+- [ ] ICVPS2 evidence provenance is recorded separately from local keyset provenance.
 - [ ] Provider content is bounded, staged and provenance/SHA-256 checked before MagicGate processing.
-- [ ] KELF/content inspection occurs before an immutable bootstrap install plan is produced.
-- [ ] No provider/network object has direct access to a raw writer.
+- [ ] Key-free KELF inspection occurs before an immutable bootstrap install plan is produced.
+- [ ] No provider/network object and no MagicGate service object has direct access to a raw writer.
 - [ ] Recovery artifacts are prepared before the guarded write endpoint is entered.
 - [ ] Cold verification reparses the resulting bootstrap state through ordinary read-only paths.
 
@@ -311,6 +321,7 @@ At least one physical-write candidate must be tested under controlled failure in
 - [ ] Windows App SDK/WinUI dependency state matches current documentation.
 - [ ] Runtime-fetched provider data is not incorrectly bundled under DriveForge MIT licensing.
 - [ ] Shared FHDB recovery formats are not presented as DriveForge-private inventions.
+- [ ] DriveForge does not bundle or claim ownership of user-supplied MagicGate key material.
 
 ## Result
 
