@@ -172,9 +172,6 @@ public:
                                       const std::filesystem::path& destination,
                                       std::string& error);
 
-    // ISO inspection, database refresh and asset downloads are host-only. This
-    // is intentionally a separate phase so choosing a game can do all metadata
-    // work before a writable disk capability exists.
     [[nodiscard]] HdlIsoPreparationSnapshot prepare_hdl_iso(
         const std::filesystem::path& iso_path,
         const std::filesystem::path& cache_root,
@@ -206,7 +203,6 @@ public:
             result.error = "Choose a host-side artifact directory before Rescue Capsule capture.";
             return result;
         }
-
         ps2hdd::PhysicalDrive disk(*index);
         if (!disk.is_open()) {
             result.error = "Could not reopen PhysicalDrive" + std::to_string(*index) + " read-only.";
@@ -255,7 +251,6 @@ public:
             result.error = "Choose a safety directory for the mandatory current-master before-image.";
             return result;
         }
-
         ps2hdd::PhysicalBootstrapRestoreOptions options;
         options.artifact_directory = artifact_directory;
         options.safety_directory = safety_directory;
@@ -268,7 +263,6 @@ public:
         result.summary = restored.ok
             ? "Bootstrap restore committed payload-first and cold-verified read-only"
             : "Bootstrap restore did not complete";
-
         if (result.ok) {
             std::string reopen_error;
             if (!cold_reopen(reopen_error)) {
@@ -303,6 +297,12 @@ private:
     std::string source_name_;
     ps2hdd::StorageCharacteristics storage_{};
     double catalog_build_ms_{};
+
+    // Host-staged assets are bound to the exact selected ISO path. They are
+    // copied into preview/install snapshots, never used as an implicit writable
+    // capability and replaced atomically after each successful preparation.
+    mutable std::filesystem::path prepared_iso_path_;
+    mutable std::vector<ps2hdd::opl::FetchedAsset> prepared_iso_assets_;
 };
 
 } // namespace ps2df::winui
