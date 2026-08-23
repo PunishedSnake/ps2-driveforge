@@ -10,9 +10,7 @@ namespace {
 
 void check(bool condition, const char* message)
 {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
+    if (!condition) throw std::runtime_error(message);
 }
 
 ps2hdd::magicgate::DiskKelfSignPlan make_plan()
@@ -24,19 +22,24 @@ ps2hdd::magicgate::DiskKelfSignPlan make_plan()
         plan.header.user_header[i] = static_cast<std::byte>(0x71U + i * 5U);
     }
     plan.header.unknown5 = 0x0701U;
-    plan.header.flags = 0x0020U; // two-key content crypto, no variable field, no ICVPS2
+    plan.header.flags = 0x0020U;
     plan.header.mg_zones = 1U;
     plan.content_keys.kbit = mg::known_vectors::kSyntheticKbit;
     plan.content_keys.kc = mg::known_vectors::kSyntheticKc;
     plan.signed_flag = 0x02U;
     plan.encrypted_flag = 0x01U;
     plan.blocks = {
-        {32U, 0x03U}, // signed + encrypted
-        {32U, 0x02U}, // signed plaintext
-        {32U, 0x01U}, // encrypted only
+        {32U, 0x03U},
+        {32U, 0x02U},
+        {32U, 0x01U},
     };
     return plan;
 }
+
+constexpr ps2hdd::magicgate::cipher::Block kSyntheticIcvps2{
+    std::byte{0x91}, std::byte{0x82}, std::byte{0x73}, std::byte{0x64},
+    std::byte{0x55}, std::byte{0x46}, std::byte{0x37}, std::byte{0x28},
+};
 
 void test_sign_verify_decrypt_round_trip()
 {
@@ -87,9 +90,7 @@ void test_ambiguous_flag_plan_is_refused()
     namespace vectors = mg::payload_known_vectors;
 
     auto plan = make_plan();
-    for (auto& block : plan.blocks) {
-        block.flags = 0x03U;
-    }
+    for (auto& block : plan.blocks) block.flags = 0x03U;
 
     const auto result = mg::sign_low_layout_disk_kelf(
         plan, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
@@ -97,17 +98,40 @@ void test_ambiguous_flag_plan_is_refused()
           "signer must refuse a plan where signed and encrypted membership cannot be distinguished");
 }
 
-void test_icvps2_is_fail_closed()
+void test_icvps2_requires_explicit_hardware_evidence()
 {
     namespace mg = ps2hdd::magicgate;
     namespace vectors = mg::payload_known_vectors;
 
-    auto plan = make_plan();
-    plan.header.flags |= 0x0002U;
+    auto missing = make_plan();
+    missing.header.flags |= 0x0002U;
+    const auto refused = mg::sign_low_layout_disk_kelf(
+        missing, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
+    check(!refused.ok,
+          "signer must fail closed when an ICVPS2 KELF has no MechaCon/reference evidence");
+
+    auto plan = missing;
+    plan.icvps2 = kSyntheticIcvps2;
     const auto result = mg::sign_low_layout_disk_kelf(
         plan, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
-    check(!result.ok,
-          "signer must refuse ICVPS2 until the MechaCon 0x98 algorithm has a software oracle");
+    check(result.ok, "signer must accept explicit ICVPS2 evidence");
+    check(result.envelope.uses_icvps2, "signed envelope must preserve the ICVPS2 flag");
+    check(result.envelope.icvps2 == kSyntheticIcvps2,
+          "signed KELF must store the exact supplied ICVPS2 bytes at header_size - 8");
+
+    const auto verified = mg::verify_and_decrypt_disk_kelf_payload(
+        result.file, result.envelope, mg::known_vectors::kSyntheticKeyset, kSyntheticIcvps2);
+    check(verified.ok && verified.icvps2_verified,
+          "payload verifier must accept matching explicit ICVPS2 evidence");
+
+    auto wrong = kSyntheticIcvps2;
+    wrong[0] ^= std::byte{0x01};
+    check(!mg::verify_and_decrypt_disk_kelf_payload(
+               result.file, result.envelope, mg::known_vectors::kSyntheticKeyset, wrong).ok,
+          "payload verifier must reject mismatched ICVPS2 evidence");
+    check(!mg::verify_and_decrypt_disk_kelf_payload(
+               result.file, result.envelope, mg::known_vectors::kSyntheticKeyset).ok,
+          "payload verifier must refuse ICVPS2 KELF when hardware evidence is absent");
 }
 
 void test_unsupported_three_key_content_mode_is_refused()
@@ -153,7 +177,7 @@ int main()
         test_sign_verify_decrypt_round_trip();
         test_signing_is_deterministic_when_content_keys_are_frozen();
         test_ambiguous_flag_plan_is_refused();
-        test_icvps2_is_fail_closed();
+        test_icvps2_requires_explicit_hardware_evidence();
         test_unsupported_three_key_content_mode_is_refused();
         test_signed_output_corruption_is_detected();
         std::cout << "MagicGate host-side signer tests passed\n";
