@@ -1,4 +1,4 @@
-# Emilia real-HDD benchmark — 2026-08-22
+# Emilia real-HDD benchmark - 2026-08-22
 
 This note records the first complete Emilia benchmark sweep on the project's hardware-validation PS2 HDD. It is a measurement baseline, not a cross-tool speedup claim.
 
