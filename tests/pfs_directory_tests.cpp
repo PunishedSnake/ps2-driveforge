@@ -3,6 +3,7 @@
 #include "ps2hdd/pfs.hpp"
 #include "ps2hdd/pfs_write.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
