@@ -16,7 +16,7 @@ enum class ContentSignatureMode {
 // different constructions depending on how the BIT descriptor classifies the
 // block. The caller supplies that classification explicitly; this layer does
 // not guess historical BIT flag semantics.
-[[nodiscard]] inline SignatureResult content_block_signature(
+[[nodiscard]] constexpr SignatureResult content_block_signature(
     std::span<const std::byte> plaintext,
     ContentSignatureMode mode,
     const SigningKeyset& keyset) noexcept
@@ -52,7 +52,7 @@ enum class ContentSignatureMode {
     return result;
 }
 
-[[nodiscard]] inline bool verify_content_block_signature(
+[[nodiscard]] constexpr bool verify_content_block_signature(
     std::span<const std::byte> plaintext,
     ContentSignatureMode mode,
     const cipher::Block& expected,
