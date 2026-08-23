@@ -132,8 +132,11 @@ private:
                                    FileWriteResult& result);
     [[nodiscard]] DirectorySlot plan_dentry_insert(const Node& parent,
                                                    std::string_view name,
-                                                   const BlockInfo& inode_location,
-                                                   std::uint16_t entry_mode);
+                                                   const BlockInfo& inode_location);
+    [[nodiscard]] DirectorySlot plan_directory_dentry_insert(
+        const Node& parent,
+        std::string_view name,
+        const BlockInfo& inode_location);
     [[nodiscard]] bool publish_dentry(const DirectorySlot& slot,
                                       FileWriteResult& result);
     [[nodiscard]] bool verify_file(std::string_view path,
