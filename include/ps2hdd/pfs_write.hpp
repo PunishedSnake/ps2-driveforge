@@ -86,6 +86,15 @@ public:
     using BitmapKey = std::pair<std::size_t, std::uint32_t>;
     using BitmapBytes = std::array<std::byte, kMetadataSize>;
 
+    // Plain value type used by allocation planners and regression diagnostics.
+    // Exposing the value does not expose mutation capability; all bitmap/data
+    // operations remain private to ImageWriter.
+    struct ZoneRun {
+        std::size_t subpart{};
+        std::uint32_t first{};
+        std::uint32_t count{};
+    };
+
     ImageWriter(WritableBlockDevice& device, const apa::Partition& partition);
 
     [[nodiscard]] bool valid() const noexcept { return probe_.valid; }
@@ -114,12 +123,6 @@ public:
     [[nodiscard]] FileRemoveResult remove_file(std::string_view path);
 
 private:
-    struct ZoneRun {
-        std::size_t subpart{};
-        std::uint32_t first{};
-        std::uint32_t count{};
-    };
-
     struct DirectorySlot {
         bool ok{};
         std::string error;
