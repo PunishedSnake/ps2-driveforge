@@ -77,17 +77,14 @@ struct FileRemoveResult {
 // every asset.
 //
 // The original bounded write_file()/ensure_directory() entry points are kept as
-// regression-friendly primitives. The *_full entry points add directory growth,
-// fragmented direct extents and SEGI-backed extent graphs while preserving the
-// same capability boundary and cold-reader verification rules.
+// regression-friendly primitives. write_file_full adds directory growth and
+// fragmented direct extents. write_file_complete extends that path with chained
+// SEGI metadata while preserving the same cold-reader verification boundary.
 class ImageWriter final {
 public:
     using BitmapKey = std::pair<std::size_t, std::uint32_t>;
     using BitmapBytes = std::array<std::byte, kMetadataSize>;
 
-    // Plain value type used by allocation planners and regression diagnostics.
-    // Exposing the value does not expose mutation capability; all bitmap/data
-    // operations remain private to ImageWriter.
     struct ZoneRun {
         std::size_t subpart{};
         std::uint32_t first{};
@@ -116,9 +113,11 @@ public:
                                                   std::span<const std::byte> bytes,
                                                   const FileWriteOptions& options = {});
 
-    // Fast unlink for direct regular files. `remove_file_full()` additionally
-    // understands SEGI metadata and releases descriptor zones after namespace
-    // removal. Both publish namespace removal before freeing allocation bits.
+    [[nodiscard]] FileWriteResult write_file_complete(
+        std::string_view path,
+        std::span<const std::byte> bytes,
+        const FileWriteOptions& options = {});
+
     [[nodiscard]] FileRemoveResult remove_file(std::string_view path);
     [[nodiscard]] FileRemoveResult remove_file_full(std::string_view path);
 
