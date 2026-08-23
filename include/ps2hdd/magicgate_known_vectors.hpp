@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ps2hdd/magicgate_signatures.hpp"
+#include "ps2hdd/magicgate_content.hpp"
 
 #include <array>
 #include <cstddef>
@@ -122,5 +122,29 @@ inline constexpr auto kRootSignature = root_signature(
     kSigningKeyset);
 static_assert(kRootSignature.ok);
 static_assert(kRootSignature.value == kExpectedRootSignature);
+
+inline constexpr std::array<std::byte, 32> kPlainContent{
+    std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33},
+    std::byte{0x34}, std::byte{0x35}, std::byte{0x36}, std::byte{0x37},
+    std::byte{0x38}, std::byte{0x39}, std::byte{0x3a}, std::byte{0x3b},
+    std::byte{0x3c}, std::byte{0x3d}, std::byte{0x3e}, std::byte{0x3f},
+    std::byte{0x40}, std::byte{0x41}, std::byte{0x42}, std::byte{0x43},
+    std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47},
+    std::byte{0x48}, std::byte{0x49}, std::byte{0x4a}, std::byte{0x4b},
+    std::byte{0x4c}, std::byte{0x4d}, std::byte{0x4e}, std::byte{0x4f}};
+inline constexpr cipher::Block kExpectedEncryptedStyleContentSignature{
+    std::byte{0x08}, std::byte{0xd7}, std::byte{0xb4}, std::byte{0xfb},
+    std::byte{0x62}, std::byte{0x9d}, std::byte{0x08}, std::byte{0x85}};
+inline constexpr cipher::Block kExpectedPlainStyleContentSignature{
+    std::byte{0xbe}, std::byte{0x16}, std::byte{0x82}, std::byte{0xe3},
+    std::byte{0xbe}, std::byte{0x22}, std::byte{0xb6}, std::byte{0xca}};
+inline constexpr auto kEncryptedStyleContentSignature = content_block_signature(
+    kPlainContent, ContentSignatureMode::encrypted_signed, kSigningKeyset);
+inline constexpr auto kPlainStyleContentSignature = content_block_signature(
+    kPlainContent, ContentSignatureMode::plain_signed, kSigningKeyset);
+static_assert(kEncryptedStyleContentSignature.ok);
+static_assert(kPlainStyleContentSignature.ok);
+static_assert(kEncryptedStyleContentSignature.value == kExpectedEncryptedStyleContentSignature);
+static_assert(kPlainStyleContentSignature.value == kExpectedPlainStyleContentSignature);
 
 } // namespace ps2hdd::magicgate::known_vectors
