@@ -36,6 +36,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-hdl-install-plan-tests.exe',
     'ps2-driveforge-hdl-metadata-builder-tests.exe',
     'ps2-driveforge-hdl-image-install-tests.exe',
+    'ps2-driveforge-hdl-multipart-install-tests.exe',
     'ps2-driveforge-opl-assets-tests.exe',
     'ps2-driveforge-opl-asset-pipeline-tests.exe',
     'ps2-driveforge-opl-pfs-import-tests.exe',
