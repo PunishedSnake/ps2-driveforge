@@ -73,11 +73,18 @@ struct PfsImportResult {
     std::span<const FetchedAsset> assets,
     const PfsImportOptions& options = {});
 
-// Execute the complete image-only OPL import through one ImageWriter session.
-// Missing parent directories are ensured first, classic files are written as a
-// batch, then TAR containers are read/rebuilt and copy-on-write replaced. A TAR
-// failure after earlier files committed is surfaced as partial=true rather than
-// pretending the whole multi-file import was globally atomic.
+// Execute bytes already frozen by prepare_pfs_import(). Taking the plan by value
+// makes ownership explicit and lets a higher-level HDL installer carry exactly
+// one host-side snapshot across the structural APA mutation boundary.
+[[nodiscard]] PfsImportResult import_prepared_assets(
+    WritableBlockDevice& device,
+    const apa::Partition& partition,
+    PreparedPfsImport prepared,
+    const PfsImportOptions& options = {});
+
+// Convenience entry point for callers that do not need a separate preview. It
+// freezes provider output once and immediately forwards that same snapshot to
+// import_prepared_assets().
 [[nodiscard]] PfsImportResult import_fetched_assets(
     WritableBlockDevice& device,
     const apa::Partition& partition,
