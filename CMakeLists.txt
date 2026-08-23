@@ -33,9 +33,12 @@ add_library(ps2driveforge_core
     src/core/apa_remove.cpp
     src/core/apa_volume.cpp
     src/core/pfs.cpp
+    src/core/pfs_extent_map.cpp
+    src/core/pfs_extent_layout.cpp
     src/core/pfs_write.cpp
     src/core/pfs_directory.cpp
     src/core/pfs_advanced_write.cpp
+    src/core/pfs_segi_write.cpp
     src/core/pfs_batch.cpp
     src/core/hdl.cpp
     src/core/ps2_iso.cpp
@@ -212,6 +215,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-pfs-segi-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-pfs-segi-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-pfs-segi-tests COMMAND ps2-driveforge-pfs-segi-tests)
+
+    add_executable(ps2-driveforge-pfs-extent-layout-tests tests/pfs_extent_layout_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-extent-layout-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-pfs-extent-layout-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-extent-layout-tests COMMAND ps2-driveforge-pfs-extent-layout-tests)
 
     add_executable(ps2-driveforge-pfs-write-tests tests/pfs_write_tests.cpp)
     target_link_libraries(ps2-driveforge-pfs-write-tests PRIVATE ps2driveforge_core)
