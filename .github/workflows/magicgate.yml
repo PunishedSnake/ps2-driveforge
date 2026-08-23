@@ -5,14 +5,14 @@ on:
   pull_request:
     paths:
       - 'include/ps2hdd/magicgate_*.hpp'
-      - 'tests/magicgate_tests.cpp'
+      - 'tests/magicgate_*.cpp'
       - 'tests/magicgate/**'
       - '.github/workflows/magicgate.yml'
   push:
     branches: [ main, 'release/**' ]
     paths:
       - 'include/ps2hdd/magicgate_*.hpp'
-      - 'tests/magicgate_tests.cpp'
+      - 'tests/magicgate_*.cpp'
       - 'tests/magicgate/**'
       - '.github/workflows/magicgate.yml'
 
