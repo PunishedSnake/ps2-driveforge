@@ -33,9 +33,12 @@ void usage()
         << "      <pfs-directory> --apply\n"
         << "  ps2-driveforge-pfs-tools put <disk-image> <pfs-partition-id>\n"
         << "      <host-file> <pfs-path> --apply\n"
+        << "  ps2-driveforge-pfs-tools unlink <disk-image> <pfs-partition-id>\n"
+        << "      <pfs-path> --apply\n"
         << "  ps2-driveforge-pfs-tools remove-partition <disk-image>\n"
         << "      <partition-id|lba> --apply\n\n"
-        << "put creates missing parent directories through the same bounded PFS writer.\n"
+        << "mkdir/put use directory growth and fragmented direct extents when needed.\n"
+        << "unlink removes namespace visibility first and releases bitmap zones second.\n"
         << "Protective/hybrid GPT layouts are refused before image mutation.\n"
         << "PhysicalDrive write access is intentionally unavailable in Frieren here.\n";
 }
@@ -256,7 +259,7 @@ int mkdir_path(int argc, char** argv)
     }
 
     const auto started = std::chrono::steady_clock::now();
-    const auto result = writer.ensure_directory(argv[4]);
+    const auto result = writer.ensure_directory_full(argv[4]);
     const auto elapsed_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
@@ -321,14 +324,14 @@ int put_file(int argc, char** argv)
     const auto parent = parent_path(argv[5]);
     ps2hdd::pfs::DirectoryEnsureResult parents;
     if (!parent.empty() && parent != "/") {
-        parents = writer.ensure_directory(parent);
+        parents = writer.ensure_directory_full(parent);
         if (!parents.ok) {
             std::cerr << "Could not prepare PFS parent directories: " << parents.error << '\n';
             return 1;
         }
     }
 
-    const auto result = writer.write_file(argv[5], *bytes);
+    const auto result = writer.write_file_full(argv[5], *bytes);
     const double elapsed_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - started).count();
     if (!result.ok) {
@@ -366,6 +369,64 @@ int put_file(int argc, char** argv)
     return 0;
 }
 
+int unlink_file(int argc, char** argv)
+{
+    if (argc != 6 || std::string_view(argv[5]) != "--apply") {
+        std::cerr << "unlink requires: <image> <PFS partition> <PFS path> --apply\n";
+        return 2;
+    }
+
+    ps2hdd::WritableFileBlockDevice image(argv[2]);
+    if (!image.is_open()) {
+        std::cerr << "Could not open existing disk image for read/write access: " << argv[2] << '\n';
+        return 1;
+    }
+    if (!mutation_layout_allowed(image)) {
+        return 1;
+    }
+    ps2hdd::apa::Reader reader(image);
+    const auto scan = reader.scan();
+    if (!scan.ok()) {
+        std::cerr << "Refusing PFS unlink because APA scan is not clean.\n";
+        return 1;
+    }
+    const auto* partition = find_main_partition(scan, argv[3], ps2hdd::apa::kTypePfs);
+    if (partition == nullptr) {
+        std::cerr << "Unique PFS main partition not found: " << argv[3] << '\n';
+        return 1;
+    }
+
+    ps2hdd::pfs::ImageWriter writer(image, *partition);
+    if (!writer.valid()) {
+        std::cerr << "PFS writer refused partition: " << writer.error() << '\n';
+        return 1;
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = writer.remove_file(argv[4]);
+    const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    if (!result.ok) {
+        std::cerr << "PFS unlink failed: " << result.error << '\n';
+        if (!result.warning.empty()) {
+            std::cerr << "WARNING: " << result.warning << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "PFS file unlinked and allocation released\n"
+              << "  path:                  " << result.path << '\n'
+              << "  allocation freed:      " << result.bytes_freed << " bytes\n"
+              << "  metadata transactions: " << result.metadata_transactions << '\n'
+              << "  bitmap chunks touched: " << result.bitmap_chunks_touched << '\n'
+              << "  mutation + verify:      " << std::fixed << std::setprecision(3)
+              << elapsed_ms << " ms\n";
+    if (!result.warning.empty()) {
+        std::cerr << "WARNING: " << result.warning << '\n';
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -391,6 +452,9 @@ int main(int argc, char** argv)
     }
     if (command == "put") {
         return put_file(argc, argv);
+    }
+    if (command == "unlink") {
+        return unlink_file(argc, argv);
     }
     usage();
     return 2;
