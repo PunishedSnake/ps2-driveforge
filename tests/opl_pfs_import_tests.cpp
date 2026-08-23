@@ -76,7 +76,8 @@ void classic_preflight_builds_one_immutable_batch()
 
     const auto prepared = ps2hdd::opl::prepare_pfs_import(assets);
     check(prepared.ok, "classic OPL preflight succeeds");
-    check(prepared.files.size() == 2, "only OPL PFS placements become batch files");
+    check(prepared.files.size() == 2 && prepared.archives.empty(),
+          "only classic OPL PFS placements become batch files");
     check(prepared.cache_only_skipped == 1 && prepared.non_pfs_skipped == 1,
           "non-PFS placements are classified without disk writes");
     check(prepared.issues.size() == 1 && !prepared.issues[0].fatal,
@@ -116,19 +117,62 @@ void duplicate_destinations_fail_before_mutation()
     std::filesystem::remove_all(root, ec);
 }
 
-void tar_members_and_size_limit_fail_closed()
+void tar_members_are_grouped_and_validated_before_mutation()
 {
     const auto root = make_temp_root();
-    const auto file = root / "cover.png";
-    write_file(file, "12345678");
+    const auto cover = root / "cover.png";
+    const auto icon = root / "icon.png";
+    write_file(cover, "COVER123");
+    write_file(icon, "ICON456");
 
     std::vector<ps2hdd::opl::FetchedAsset> tar_assets;
     tar_assets.push_back(asset(ps2hdd::opl::AssetKind::artwork_cover,
                                ps2hdd::opl::Placement::opl_data,
-                               "art.tar", file, "SLUS_123.45_COV.png"));
-    const auto tar = ps2hdd::opl::prepare_pfs_import(tar_assets);
-    check(!tar.ok && !tar.issues.empty() && tar.issues[0].fatal,
-          "TAR member is refused until a container writer exists");
+                               "ART/art.tar", cover, "SLUS_123.45_COV.png"));
+    tar_assets.push_back(asset(ps2hdd::opl::AssetKind::artwork_icon,
+                               ps2hdd::opl::Placement::opl_data,
+                               "ART/art.tar", icon, "SLUS_123.45_ICO.png"));
+    const auto prepared = ps2hdd::opl::prepare_pfs_import(tar_assets);
+    check(prepared.ok, "TAR-layout OPL preflight succeeds with native updater");
+    check(prepared.files.empty() && prepared.archives.size() == 1,
+          "members sharing one TAR become one grouped container plan");
+    check(prepared.archives[0].path == "ART/art.tar" &&
+              prepared.archives[0].members.size() == 2,
+          "TAR group preserves destination and distinct member count");
+    check(prepared.directories.size() == 1 && prepared.directories[0] == "ART",
+          "TAR container parent directory is included in mkdir plan");
+    check(prepared.total_bytes == 15, "TAR preflight accounts staged member bytes");
+
+    std::vector<ps2hdd::opl::FetchedAsset> duplicate;
+    duplicate.push_back(asset(ps2hdd::opl::AssetKind::artwork_cover,
+                              ps2hdd::opl::Placement::opl_data,
+                              "ART/art.tar", cover, "same.png"));
+    duplicate.push_back(asset(ps2hdd::opl::AssetKind::artwork_icon,
+                              ps2hdd::opl::Placement::opl_data,
+                              "ART/art.tar", icon, "same.png"));
+    const auto duplicate_preflight = ps2hdd::opl::prepare_pfs_import(duplicate);
+    check(!duplicate_preflight.ok,
+          "duplicate member inside one TAR is rejected before mutation");
+
+    std::vector<ps2hdd::opl::FetchedAsset> collision;
+    collision.push_back(asset(ps2hdd::opl::AssetKind::artwork_cover,
+                              ps2hdd::opl::Placement::opl_data,
+                              "ART/art.tar", cover));
+    collision.push_back(asset(ps2hdd::opl::AssetKind::artwork_icon,
+                              ps2hdd::opl::Placement::opl_data,
+                              "ART/art.tar", icon, "inside.png"));
+    check(!ps2hdd::opl::prepare_pfs_import(collision).ok,
+          "classic file cannot collide with TAR container destination");
+
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
+
+void size_limit_fails_closed()
+{
+    const auto root = make_temp_root();
+    const auto file = root / "cover.png";
+    write_file(file, "12345678");
 
     ps2hdd::opl::PfsImportOptions limited;
     limited.max_file_bytes = 4;
@@ -151,7 +195,8 @@ int main()
     try {
         classic_preflight_builds_one_immutable_batch();
         duplicate_destinations_fail_before_mutation();
-        tar_members_and_size_limit_fail_closed();
+        tar_members_are_grouped_and_validated_before_mutation();
+        size_limit_fails_closed();
         std::cout << "OPL PFS import preflight tests passed\n";
         return 0;
     } catch (const std::exception& error) {
