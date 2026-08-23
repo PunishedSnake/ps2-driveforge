@@ -77,7 +77,53 @@ ISO/source image
  -> cold re-open and full APA + HDL verification
 ```
 
-APA visibility should be the final commit step so an interrupted payload copy does not publish a half-installed game as a valid partition.
+APA visibility is the final commit step so an interrupted payload copy does not publish a half-installed game as a valid partition.
+
+The first implementation deliberately streams the bulk ISO payload while the destination extents are still APA free space, byte-verifies the payload, flushes it, and only then transactionally publishes DEADFEED metadata and the APA chain.
+
+## Milestone F4a: OPL Asset Pipeline
+
+A successful HDL install should be able to prepare the game for OPL in the same operation instead of forcing a second pile of manual PC tools.
+
+The first Asset Pipeline slice is non-destructive and host-side only:
+
+1. reuse the ISO-derived startup ID as the canonical provider key;
+2. plan title database, Redump metadata, CFG, compatibility overlay, widescreen CHT, verified mastercode fallback, artwork and optional HDD-OSD icon sources;
+3. support classic OPL file paths and TAR-capable fork destination metadata;
+4. download through an injectable HTTP transport into a host staging/cache tree;
+5. merge CFG overlays without throwing away unrelated metadata;
+6. use a bare mastercode only when the primary widescreen CHT does not already contain one;
+7. reject empty/HTML provider responses and unsafe destination paths;
+8. preserve provider/source provenance in the staged result.
+
+No network result is allowed to write PFS directly. See `docs/opl-asset-pipeline.md`.
+
+## Milestone F4b: image-only PFS asset import
+
+The current PFS stack remains read-only, so copying staged ART/CFG/CHT into an OPL partition gets its own write milestone rather than being smuggled into the downloader.
+
+Required sequence:
+
+```text
+validated APA scan
+ -> resolve configured/likely OPL PFS partition
+ -> cold PFS probe
+ -> pure mkdir/create/replace allocation plan
+ -> preview exact inode/directory/bitmap/data mutations
+ -> capture filesystem metadata before-images
+ -> apply to writable disk image only
+ -> flush
+ -> cold re-open using normal PFS reader
+ -> resolve every installed path and byte-verify every installed file
+```
+
+The resolver must not blindly assume the partition ID is `+OPL`. An explicitly configured PFS partition wins; otherwise DriveForge may score valid PFS candidates using names and existing `ART`, `CFG`, `CHT`, `VMC`, `THM` or OPL configuration content.
+
+Initial PFS mutation scope is intentionally small-file oriented: directories plus create/replace of ART/CFG/CHT metadata assets. General-purpose Explorer-style PFS write support is not a Frieren requirement.
+
+Existing user CFG files are a merge input, not disposable output. The final preview must show whether a destination is new, unchanged, merged or replaced.
+
+TAR mode is a separate destination implementation. Network fetches stage individual members first; only a destination transaction may create or replace `art.tar`, `cfg.tar` or `cht.tar`.
 
 ## Milestone F5: HDL delete from image
 
@@ -87,7 +133,7 @@ No UI delete button ships before synthetic tests cover first/middle/last partiti
 
 ## Milestone F6: real physical-disk writes
 
-Only after image install/delete is boringly repeatable do we add a writable raw-disk backend.
+Only after image install/delete and PFS asset import are boringly repeatable do we add a writable raw-disk backend.
 
 Physical writes require an explicitly separate open mode/backend and additional gates:
 
@@ -107,6 +153,8 @@ The existing `PhysicalDrive` remains read-only even after this exists.
 The WinUI page should expose operations, not raw sector editing:
 
 - install game;
+- select optional OPL metadata/artwork/fixes before install;
+- preview provider availability, merges and exact OPL destinations;
 - edit title/compatibility/DMA metadata;
 - delete game;
 - show planned space usage and affected partitions;
@@ -124,7 +172,9 @@ The old "HDL Games" concept becomes **HDL Tools** because the page owns manageme
 - HDL metadata patch/rollback tests are green;
 - install/delete image tests include cold re-open verification;
 - corruption/refusal tests prove malformed APA/HDL layouts are not mutated;
-- at least one disposable real PS2 HDD has completed install, boot/read validation on console, delete, and post-delete APA verification;
+- OPL asset provider/merge/staging tests are fully offline and deterministic;
+- PFS asset-import tests verify create/replace/merge and cold re-open on disposable images;
+- at least one disposable real PS2 HDD has completed install, OPL asset deployment, boot/read validation on console, delete, and post-delete APA/PFS verification;
 - recovery artifacts have been exercised rather than merely generated.
 
 The guiding rule is simple: read-only code stays boring, write code stays explicit, and no operation earns a real-disk button merely because it survived one lucky test image.
