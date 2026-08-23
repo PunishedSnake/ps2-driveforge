@@ -137,7 +137,7 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <Grid Padding="24,20,24,28" MaxWidth="1280" HorizontalAlignment="Center" RowSpacing="12">
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install/remove HDL games and manage FHDB/APA recovery through Frieren's guarded mutation pipeline. Read-only analysis and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
+                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install/remove HDL games, stage verified bootstrap providers and manage FHDB/APA recovery through Frieren's guarded mutation pipeline. Read-only analysis and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
                             <InfoBar x:Name="HdlToolsInfoBar" Grid.Row="1" IsOpen="False" IsClosable="True" Margin="0,4,0,0"/>
 
                             <Border Grid.Row="2" Style="{StaticResource DriveForgeCardStyle}">
@@ -168,6 +168,28 @@
                                     <TextBlock Text="One selection represents the HDL main partition and its authoritative subpartitions." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
                                     <ComboBox x:Name="HdlGamePicker" PlaceholderText="Select HDL game" HorizontalAlignment="Stretch"/>
                                     <Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False" HorizontalAlignment="Left"/>
+
+                                    <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="Bootstrap provider install" FontWeight="SemiBold"/>
+                                            <TextBlock Text="The manifest resolves immutable HTTPS bytes and SHA-256 on the host. MagicGate verification and target fingerprint freeze complete before any writable disk lease exists." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <Grid ColumnSpacing="8" RowSpacing="8">
+                                                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                                <TextBox x:Name="ProviderManifestPathText" IsReadOnly="True" PlaceholderText="Local provider manifest"/><Button Grid.Column="1" Content="Manifest..." Click="on_choose_provider_manifest"/>
+                                                <TextBox x:Name="ProviderKeysetPathText" Grid.Row="1" IsReadOnly="True" PlaceholderText="Local MagicGate keyset (required for verify policy)"/><Button Grid.Row="1" Grid.Column="1" Content="Keyset..." Click="on_choose_provider_keyset"/>
+                                                <TextBox x:Name="ProviderIcvps2Box" Grid.Row="2" Header="ICVPS2 evidence (optional)" PlaceholderText="16 hex characters" MaxLength="16"/>
+                                                <TextBox x:Name="ProviderIcvps2ProvenanceBox" Grid.Row="3" Header="ICVPS2 provenance" PlaceholderText="e.g. MechaCon capture / reference sample"/>
+                                            </Grid>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="ProviderStageButton" Content="Stage and verify provider" Click="on_stage_provider"/>
+                                                <Button x:Name="ProviderInstallButton" Content="Install frozen provider" Click="on_install_provider" IsEnabled="False"/>
+                                            </StackPanel>
+                                            <TextBlock x:Name="ProviderPreviewText" Text="No provider staged." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <TextBlock Text="Provider policy 'sign' remains fail-closed in the generic GUI until a typed strategy supplies an explicit DiskKelfSignPlan. Existing verified KELFs are supported now." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+
                                     <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
                                         <StackPanel Spacing="8">
                                             <TextBlock Text="FHDB and APA recovery" FontWeight="SemiBold"/>
