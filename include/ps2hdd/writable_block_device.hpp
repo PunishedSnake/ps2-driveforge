@@ -10,9 +10,10 @@ namespace ps2hdd {
 
 // Writable access is an explicit capability rather than a member of BlockDevice.
 // Read-only sessions therefore cannot accidentally gain mutation just because a
-// backend happens to support it. Frieren starts by exposing this capability only
-// to deliberately opened writable image devices; raw physical-disk write support
-// remains a separate future boundary.
+// backend happens to support it. Writable images and the separately gated
+// WritablePhysicalDrive both implement this contract; ordinary PhysicalDrive
+// stays read-only. Same bytes, very different amount of regret if admission is
+// wrong, so callers still have to earn the physical capability explicitly.
 class WritableBlockDevice : public BlockDevice {
 public:
     ~WritableBlockDevice() override = default;
