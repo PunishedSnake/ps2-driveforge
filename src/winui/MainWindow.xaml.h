@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "MainWindow.g.h"
 #include "NativeSessionController.hpp"
+#include "WinUIRecoveryActions.hpp"
 
 #include <atomic>
 #include <filesystem>
@@ -94,8 +95,14 @@ private:
     void on_hdl_delete(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_physical_preflight(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
 
-    // These two handlers are wired directly from XAML so recovery stays a
-    // first-class HDL Tools operation without adding another ad-hoc event table.
+    void show_recovery_success(std::wstring_view title, std::wstring_view message)
+    {
+        HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+        HdlToolsInfoBar().Title(title);
+        HdlToolsInfoBar().Message(message);
+        HdlToolsInfoBar().IsOpen(true);
+    }
+
     void on_capture_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
         if (mutation_busy_.load()) return;
@@ -112,10 +119,7 @@ private:
             show_error(L"Create Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
             return;
         }
-        HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
-        HdlToolsInfoBar().Title(L"Rescue Capsule created");
-        HdlToolsInfoBar().Message(result.artifact_path.wstring());
-        HdlToolsInfoBar().IsOpen(true);
+        show_recovery_success(L"Rescue Capsule created", result.artifact_path.wstring());
         set_status(L"Canonical PS2HBRC Rescue Capsule captured read-only");
     }
 
@@ -132,22 +136,89 @@ private:
         }
         confirm_physical_action(L"restore bootstrap/recovery artifacts", [this] {
             mutation_busy_.store(true);
-            const auto result = controller_.restore_bootstrap(
-                hdl_artifact_directory_, hdl_artifact_directory_, true);
+            const auto result = controller_.restore_bootstrap(hdl_artifact_directory_, hdl_artifact_directory_, true);
             mutation_busy_.store(false);
             if (!result.ok) {
                 show_error(L"Restore Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
                 return;
             }
-            HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
-            HdlToolsInfoBar().Title(L"Bootstrap restored");
-            HdlToolsInfoBar().Message(result.cold_payload_verified
-                ? L"Payload and master pointer were cold-verified through a fresh read-only PhysicalDrive."
-                : L"Master pointer was cold-verified through a fresh read-only PhysicalDrive.");
-            HdlToolsInfoBar().IsOpen(true);
+            show_recovery_success(
+                L"Bootstrap restored",
+                result.cold_payload_verified
+                    ? L"Payload and master pointer were cold-verified through a fresh read-only PhysicalDrive."
+                    : L"Master pointer was cold-verified through a fresh read-only PhysicalDrive.");
             refresh_all_from_snapshot();
             refresh_hdl_tools();
             set_status(L"Bootstrap recovery completed and cold-verified");
+        });
+    }
+
+    void on_forensic_analyze(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!current_physical_) {
+            show_error(L"Forensic APA analysis", L"Open a physical PS2 HDD first.");
+            return;
+        }
+        if (hdl_artifact_directory_.empty()) {
+            show_error(L"Forensic APA analysis", L"Choose a safety/artifact directory first.");
+            return;
+        }
+        const auto result = ps2df::winui::analyze_physical_apa(*current_physical_, hdl_artifact_directory_);
+        if (!result.ok) {
+            show_error(L"Forensic APA analysis", std::wstring(result.error.begin(), result.error.end()));
+            return;
+        }
+        std::wstring message = L"FORENSIC.TXT: " + result.report_path.wstring();
+        if (result.automatic_safe) {
+            message += L"\nAutomatic-safe topology repair evidence is available.";
+        } else {
+            message += L"\nNo automatic-safe topology repair was found; no write is offered.";
+        }
+        show_recovery_success(L"Forensic analysis complete", message);
+        set_status(L"Forensic APA analysis completed read-only");
+    }
+
+    void on_repair_master(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!current_physical_ || hdl_artifact_directory_.empty()) {
+            show_error(L"Repair APA master", L"Open a physical PS2 HDD and choose a safety/artifact directory first.");
+            return;
+        }
+        confirm_physical_action(L"apply conservative APA master repair", [this] {
+            mutation_busy_.store(true);
+            const auto result = ps2df::winui::repair_physical_master(*current_physical_, hdl_artifact_directory_);
+            mutation_busy_.store(false);
+            if (!result.ok) {
+                show_error(L"Repair APA master", std::wstring(result.error.begin(), result.error.end()));
+                return;
+            }
+            show_recovery_success(L"APA master repaired", L"The conservative repair was cold-verified through a fresh read-only scan.");
+            std::string reopen_error;
+            controller_.open_physical(*current_physical_, reopen_error);
+            refresh_all_from_snapshot();
+            refresh_hdl_tools();
+        });
+    }
+
+    void on_repair_forensic(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!current_physical_ || hdl_artifact_directory_.empty()) {
+            show_error(L"Forensic APA repair", L"Open a physical PS2 HDD and choose a safety/artifact directory first.");
+            return;
+        }
+        confirm_physical_action(L"apply automatic-safe forensic APA topology repair", [this] {
+            mutation_busy_.store(true);
+            const auto result = ps2df::winui::repair_physical_apa_automatic(*current_physical_, hdl_artifact_directory_);
+            mutation_busy_.store(false);
+            if (!result.ok) {
+                show_error(L"Forensic APA repair", std::wstring(result.error.begin(), result.error.end()));
+                return;
+            }
+            show_recovery_success(L"Forensic APA repair complete", L"Only an automatic-safe evidence map was accepted; touched headers and the final APA scan were cold-verified.");
+            std::string reopen_error;
+            controller_.open_physical(*current_physical_, reopen_error);
+            refresh_all_from_snapshot();
+            refresh_hdl_tools();
         });
     }
 
