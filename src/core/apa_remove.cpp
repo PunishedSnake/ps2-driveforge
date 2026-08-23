@@ -1,5 +1,7 @@
 #include "ps2hdd/apa_remove.hpp"
 
+#include "ps2hdd/disk_layout_guard.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <span>
@@ -214,6 +216,18 @@ RemoveResult remove_main_partition_from_image(WritableBlockDevice& device,
                                               std::uint32_t main_lba)
 {
     RemoveResult result;
+
+    const auto layout = ps2hdd::inspect_disk_layout(device);
+    if (!layout.ok) {
+        result.error = "Could not validate PC partition-map safety before APA removal: " + layout.error;
+        return result;
+    }
+    if (!layout.allows_ps2_mutation()) {
+        result.error = std::string("Refusing APA removal on a target with ") +
+                       ps2hdd::legacy_partition_map_name(layout.kind) + " evidence";
+        return result;
+    }
+
     Reader reader(device);
     const auto before = reader.scan();
     const auto plan = plan_remove_main_partition(before, main_lba);
