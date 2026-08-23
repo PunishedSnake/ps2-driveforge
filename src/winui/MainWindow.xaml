@@ -137,7 +137,7 @@
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <Grid Padding="24,20,24,28" MaxWidth="1280" HorizontalAlignment="Center" RowSpacing="12">
                             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install and remove grouped HDL games through Frieren's guarded mutation pipeline. Read-only preflight and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
+                            <StackPanel Spacing="4"><TextBlock Text="HDL Tools" Style="{ThemeResource TitleTextBlockStyle}"/><TextBlock Text="Install/remove HDL games and manage FHDB recovery through Frieren's guarded mutation pipeline. Read-only preflight and cold verification stay separate from the writable lease." Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"/></StackPanel>
                             <InfoBar x:Name="HdlToolsInfoBar" Grid.Row="1" IsOpen="False" IsClosable="True" Margin="0,4,0,0"/>
 
                             <Border Grid.Row="2" Style="{StaticResource DriveForgeCardStyle}">
@@ -156,14 +156,29 @@
                                     <TextBox x:Name="HdlIsoPathText" Grid.Row="1" IsReadOnly="True" PlaceholderText="Select a PS2 ISO"/><Button x:Name="HdlChooseIsoButton" Grid.Row="1" Grid.Column="1" Content="Choose ISO..."/>
                                     <TextBox x:Name="HdlTitleBox" Grid.Row="2" Grid.ColumnSpan="2" Header="Display title" PlaceholderText="Game title"/>
                                     <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="14"><ComboBox x:Name="HdlMediaPicker" Header="Media" SelectedIndex="0" MinWidth="130"><ComboBoxItem Content="DVD"/><ComboBoxItem Content="CD"/></ComboBox><ToggleSwitch x:Name="HdlHiddenToggle" Header="Hidden HDL partition"/></StackPanel>
-                                    <TextBox x:Name="HdlArtifactPathText" Grid.Row="4" IsReadOnly="True" PlaceholderText="Safety artifact directory (mandatory for physical writes)"/><Button x:Name="HdlChooseArtifactButton" Grid.Row="4" Grid.Column="1" Content="Safety directory..."/>
+                                    <TextBox x:Name="HdlArtifactPathText" Grid.Row="4" IsReadOnly="True" PlaceholderText="Safety / recovery artifact directory (mandatory for physical writes)"/><Button x:Name="HdlChooseArtifactButton" Grid.Row="4" Grid.Column="1" Content="Safety directory..."/>
                                     <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8"><Button x:Name="HdlPreviewButton" Content="Preview install" IsEnabled="False"/><Button x:Name="HdlInstallButton" Content="Install game" IsEnabled="False"/></StackPanel>
                                     <Border Grid.Row="6" Grid.ColumnSpan="2" Style="{StaticResource DriveForgeCompactCardStyle}"><StackPanel Spacing="5"><TextBlock x:Name="HdlPreviewStateText" Text="No install plan" FontWeight="SemiBold"/><TextBlock x:Name="HdlPreviewStartupText" Text="Startup: -" Style="{StaticResource DriveForgeCaptionStyle}"/><TextBlock x:Name="HdlPreviewPartitionText" Text="Partition: -" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/><TextBlock x:Name="HdlPreviewAllocationText" Text="Allocation: -" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/><TextBlock x:Name="HdlPreviewTargetText" Text="Target: -" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/><ProgressBar x:Name="HdlInstallProgress" Minimum="0" Maximum="1" Value="0" Height="4"/><TextBlock x:Name="HdlInstallProgressText" Text="Idle" Style="{StaticResource DriveForgeCaptionStyle}"/></StackPanel></Border>
                                 </Grid>
                             </Border>
 
                             <Border Grid.Row="4" Style="{StaticResource DriveForgeCardStyle}">
-                                <StackPanel Spacing="10"><TextBlock Text="Installed HDL games" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="One selection represents the HDL main partition and its authoritative subpartitions." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/><ComboBox x:Name="HdlGamePicker" PlaceholderText="Select HDL game" HorizontalAlignment="Stretch"/><Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False" HorizontalAlignment="Left"/></StackPanel>
+                                <StackPanel Spacing="10">
+                                    <TextBlock Text="Installed HDL games" FontSize="18" FontWeight="SemiBold"/>
+                                    <TextBlock Text="One selection represents the HDL main partition and its authoritative subpartitions." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                    <ComboBox x:Name="HdlGamePicker" PlaceholderText="Select HDL game" HorizontalAlignment="Stretch"/>
+                                    <Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False" HorizontalAlignment="Left"/>
+                                    <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="FHDB recovery" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Create Rescue Capsule is read-only. Restore follows FHDB Manager artifact precedence, writes payload first, publishes the pointer last, then cold-reopens the disk read-only." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="CaptureRescueButton" Content="Create Rescue Capsule" Click="on_capture_rescue"/>
+                                                <Button x:Name="RestoreRescueButton" Content="Restore Rescue Capsule / legacy backup" Click="on_restore_rescue"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
                             </Border>
                         </Grid>
                     </ScrollViewer>
