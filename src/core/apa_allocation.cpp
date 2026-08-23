@@ -29,6 +29,15 @@ struct ChainNode {
     return value / divisor + (value % divisor != 0 ? 1ULL : 0ULL);
 }
 
+[[nodiscard]] std::uint64_t run_chunks(const std::vector<ChunkRun>& runs) noexcept
+{
+    std::uint64_t total = 0;
+    for (const auto& run : runs) {
+        total += run.count;
+    }
+    return total;
+}
+
 [[nodiscard]] std::vector<ChunkRun> make_runs(const std::vector<std::uint32_t>& selected,
                                               std::uint32_t max_run_chunks)
 {
@@ -138,6 +147,10 @@ AllocationPlan plan_hdl_allocation(const ScanResult& scan,
             plan.error = "APA partition is not aligned to 128 MiB allocation chunks";
             return plan;
         }
+        if (partition->start_lba % partition->length_sectors != 0) {
+            plan.error = "APA partition start is not aligned to its own allocation length";
+            return plan;
+        }
 
         const std::uint64_t first = partition->start_lba / kAllocationChunkSectors;
         const std::uint64_t count = partition->length_sectors / kAllocationChunkSectors;
@@ -199,6 +212,27 @@ AllocationPlan plan_hdl_allocation(const ScanResult& scan,
         return plan;
     }
 
+    // Keep the final plan minimal. Under normal ascending first-fit selection
+    // every remaining extent is already necessary, but trimming here makes that
+    // property explicit and prevents a future allocator policy from publishing
+    // an APA sub-partition that has no corresponding DEADFEED payload entry.
+    while (runs.size() > 1) {
+        std::vector<ChunkRun> without_last(runs.begin(), runs.end() - 1);
+        const auto chunks = run_chunks(without_last);
+        const auto allocated_mib = chunks * kAllocationChunkMiB;
+        const auto overhead_mib = 3ULL + without_last.size();
+        if (allocated_mib < requested_mib + overhead_mib) {
+            break;
+        }
+        runs.pop_back();
+    }
+
+    const auto selected_chunks = run_chunks(runs);
+    if (selected_chunks == 0 || selected_chunks > plan.free_chunks_before) {
+        plan.error = "Internal planner error: invalid final APA chunk count";
+        return plan;
+    }
+
     plan.extents.reserve(runs.size());
     for (const auto& run : runs) {
         const std::uint64_t start = static_cast<std::uint64_t>(run.first) * kAllocationChunkSectors;
@@ -209,16 +243,20 @@ AllocationPlan plan_hdl_allocation(const ScanResult& scan,
             plan.extents.clear();
             return plan;
         }
+        if (length == 0 || start % length != 0) {
+            plan.error = "Internal planner error: planned APA extent violates start/length alignment";
+            plan.extents.clear();
+            return plan;
+        }
         plan.extents.push_back({static_cast<std::uint32_t>(start),
                                 static_cast<std::uint32_t>(length), 0, 0});
     }
 
-    plan.allocated_bytes =
-        static_cast<std::uint64_t>(selected.size()) * kAllocationChunkMiB * kMiB;
+    plan.allocated_bytes = selected_chunks * kAllocationChunkMiB * kMiB;
     plan.overhead_bytes = (3ULL + plan.extents.size()) * kMiB;
     plan.usable_payload_bytes = plan.allocated_bytes - plan.overhead_bytes;
     plan.free_chunks_after =
-        plan.free_chunks_before - static_cast<std::uint32_t>(selected.size());
+        plan.free_chunks_before - static_cast<std::uint32_t>(selected_chunks);
 
     std::vector<ChainNode> final_chain;
     final_chain.reserve(sorted.size() + plan.extents.size());
