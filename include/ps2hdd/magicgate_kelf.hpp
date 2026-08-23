@@ -1,12 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
-#include <vector>
 
 namespace ps2hdd::magicgate {
 
@@ -144,11 +144,10 @@ namespace detail {
     }
     result.bit_table_offset = cursor;
 
-    // The decrypted BIT table begins with an 8-byte header and is populated by
-    // SECRMAN after header authentication. For an on-disk KELF the bytes at this
-    // offset may still be encrypted, so we validate only that the offset itself
-    // belongs to the declared KELF header. Cryptographic interpretation comes
-    // later, after the header has been processed by a MagicGate provider.
+    // The decrypted BIT table begins here after SECRMAN has processed the
+    // header. For an on-disk KELF these bytes can still be encrypted, so parser
+    // validation stops at geometry. Treating ciphertext as a plaintext BIT
+    // table would make a very confident validator and a very bad one.
     if (result.bit_table_offset > result.header.header_size) {
         result.error = "KELF BIT table offset exceeds header_size";
         return result;
@@ -167,16 +166,16 @@ namespace detail {
     return result;
 }
 
-[[nodiscard]] inline std::span<const std::byte, kKelfContentKeyBytes>
-content_key_bytes(std::span<const std::byte> file, const KelfLayout& layout)
+// Dynamic extent is intentional: malformed layout has a natural empty return
+// value. Callers that need exactly 32 bytes should require layout.ok first.
+[[nodiscard]] inline std::span<const std::byte>
+content_key_bytes(std::span<const std::byte> file, const KelfLayout& layout) noexcept
 {
     if (!layout.ok || layout.content_key_offset > file.size() ||
         kKelfContentKeyBytes > file.size() - layout.content_key_offset) {
         return {};
     }
-    return std::span<const std::byte, kKelfContentKeyBytes>(
-        file.data() + static_cast<std::ptrdiff_t>(layout.content_key_offset),
-        kKelfContentKeyBytes);
+    return file.subspan(layout.content_key_offset, kKelfContentKeyBytes);
 }
 
 } // namespace ps2hdd::magicgate
