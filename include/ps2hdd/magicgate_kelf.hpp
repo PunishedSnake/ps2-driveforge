@@ -38,14 +38,14 @@ struct KelfLayout {
 
 namespace detail {
 
-[[nodiscard]] inline std::uint16_t load_le16(const std::byte* p) noexcept
+[[nodiscard]] constexpr std::uint16_t load_le16(const std::byte* p) noexcept
 {
     return static_cast<std::uint16_t>(std::to_integer<unsigned char>(p[0])) |
            static_cast<std::uint16_t>(
                static_cast<std::uint16_t>(std::to_integer<unsigned char>(p[1])) << 8U);
 }
 
-[[nodiscard]] inline std::uint32_t load_le32(const std::byte* p) noexcept
+[[nodiscard]] constexpr std::uint32_t load_le32(const std::byte* p) noexcept
 {
     return static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[0])) |
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[1])) << 8U) |
@@ -53,7 +53,7 @@ namespace detail {
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[3])) << 24U);
 }
 
-[[nodiscard]] inline bool checked_add(std::size_t a, std::size_t b, std::size_t& out) noexcept
+[[nodiscard]] constexpr bool checked_add(std::size_t a, std::size_t b, std::size_t& out) noexcept
 {
     if (b > std::numeric_limits<std::size_t>::max() - a) {
         return false;
@@ -67,19 +67,7 @@ namespace detail {
 // Parse only the byte layout that SECRMAN itself consumes. This function does
 // not decide whether a KELF is cryptographically valid; it proves that all
 // offsets needed by a future MagicGate provider are inside one bounded file.
-//
-// The layout mirrors ps2sdk's SecrKELFHeader_t/get_BitTableOffset contract:
-//  - 32-byte fixed header;
-//  - BIT_count 16-byte descriptors immediately after it;
-//  - optional variable field when flags bit 0 is set;
-//  - an extra 8-byte field when the high flag nibble is zero;
-//  - 32 bytes of Kbit/Kc;
-//  - BIT table returned by SECRMAN immediately after those content keys.
-//
-// Keeping layout parsing key-free is deliberate. Inspection must remain useful
-// on a PC that has no MagicGate keyset, and malformed input must be rejected
-// before any cryptographic code is asked to touch it.
-[[nodiscard]] inline KelfLayout inspect_kelf(std::span<const std::byte> file)
+[[nodiscard]] constexpr KelfLayout inspect_kelf(std::span<const std::byte> file)
 {
     KelfLayout result;
     if (file.size() < kKelfFixedHeaderBytes) {
@@ -144,10 +132,6 @@ namespace detail {
     }
     result.bit_table_offset = cursor;
 
-    // The decrypted BIT table begins here after SECRMAN has processed the
-    // header. For an on-disk KELF these bytes can still be encrypted, so parser
-    // validation stops at geometry. Treating ciphertext as a plaintext BIT
-    // table would make a very confident validator and a very bad one.
     if (result.bit_table_offset > result.header.header_size) {
         result.error = "KELF BIT table offset exceeds header_size";
         return result;
@@ -166,9 +150,7 @@ namespace detail {
     return result;
 }
 
-// Dynamic extent is intentional: malformed layout has a natural empty return
-// value. Callers that need exactly 32 bytes should require layout.ok first.
-[[nodiscard]] inline std::span<const std::byte>
+[[nodiscard]] constexpr std::span<const std::byte>
 content_key_bytes(std::span<const std::byte> file, const KelfLayout& layout) noexcept
 {
     if (!layout.ok || layout.content_key_offset > file.size() ||
