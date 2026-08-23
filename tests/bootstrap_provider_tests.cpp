@@ -75,6 +75,28 @@ ps2hdd::bootstrap::ProviderArtifact make_manifest(
     return manifest;
 }
 
+void test_product_strategies_are_explicit()
+{
+    namespace bs = ps2hdd::bootstrap;
+    for (const auto family : {bs::ProductFamily::fhdb, bs::ProductFamily::hdd_osd,
+                              bs::ProductFamily::hosd, bs::ProductFamily::psbbn}) {
+        const auto strategy = bs::strategy_for(family);
+        check(strategy.family == family, "bootstrap strategy must retain its product family");
+        check(strategy.requires_kelf_payload,
+              "named PS2 HDD bootstrap families must require an explicit KELF payload policy");
+        check(strategy.default_magicgate_policy == bs::MagicGatePolicy::verify_kelf,
+              "named product strategies must default to cryptographic KELF verification");
+    }
+    check(!bs::strategy_for(bs::ProductFamily::fhdb).may_require_product_filesystem_stage,
+          "FHDB bootstrap strategy should not invent an unrelated product filesystem stage");
+    check(bs::strategy_for(bs::ProductFamily::hdd_osd).may_require_product_filesystem_stage,
+          "HDD-OSD strategy must preserve its product filesystem-stage requirement");
+    check(bs::strategy_for(bs::ProductFamily::hosd).may_require_product_filesystem_stage,
+          "HOSD strategy must preserve its product filesystem-stage requirement");
+    check(bs::strategy_for(bs::ProductFamily::psbbn).may_require_product_filesystem_stage,
+          "PSBBN strategy must preserve its product filesystem-stage requirement");
+}
+
 void test_acquire_hashes_and_freezes_identity()
 {
     const auto file = canonical_kelf();
@@ -144,6 +166,8 @@ void test_verify_policy_uses_magicgate_service()
           "frozen bootstrap must retain transformed payload SHA-256");
     check(frozen.program_start_sector == ps2hdd::fhdb::kBootstrapProgramStartSector,
           "frozen bootstrap must target the canonical __mbr program area");
+    check(frozen.payload_sector_count == (frozen.payload.size() + 511U) / 512U,
+          "frozen bootstrap sector geometry must exactly cover its immutable payload");
 }
 
 void test_verify_fails_without_key_capability()
@@ -185,22 +209,36 @@ void test_sign_plaintext_policy_is_reverified()
     check(prepared.payload != plaintext, "sign-plaintext policy must transform source bytes into a KELF");
 }
 
-void test_mutable_or_insecure_manifest_is_refused_before_network()
+void test_mutable_insecure_or_policyless_manifest_is_refused_before_network()
 {
+    namespace bs = ps2hdd::bootstrap;
     const auto file = canonical_kelf();
-    FakeHttp http;
-    http.response.status = 200;
-    http.response.body = file;
+
+    FakeHttp missing_version;
+    missing_version.response.status = 200;
+    missing_version.response.body = file;
     auto manifest = make_manifest(file);
     manifest.immutable_version.clear();
-    check(!ps2hdd::bootstrap::acquire(http, manifest).ok,
+    check(!bs::acquire(missing_version, manifest).ok,
           "provider must require resolved immutable version identity");
-    check(http.requested_url.empty(), "invalid manifest must fail before network acquisition");
+    check(missing_version.requested_url.empty(), "invalid version must fail before network acquisition");
 
+    FakeHttp insecure;
+    insecure.response.status = 200;
+    insecure.response.body = file;
     manifest = make_manifest(file);
     manifest.asset_url = "http://example.invalid/MBR.KELF";
-    check(!ps2hdd::bootstrap::acquire(http, manifest).ok,
+    check(!bs::acquire(insecure, manifest).ok,
           "provider must reject non-HTTPS asset URLs before transport");
+    check(insecure.requested_url.empty(), "insecure URL must fail before network acquisition");
+
+    FakeHttp policyless;
+    policyless.response.status = 200;
+    policyless.response.body = file;
+    manifest = make_manifest(file, bs::MagicGatePolicy::none);
+    check(!bs::acquire(policyless, manifest).ok,
+          "named PS2 bootstrap family must not bypass KELF inspection/verification policy");
+    check(policyless.requested_url.empty(), "invalid product crypto policy must fail before network acquisition");
 }
 
 } // namespace
@@ -208,12 +246,13 @@ void test_mutable_or_insecure_manifest_is_refused_before_network()
 int main()
 {
     try {
+        test_product_strategies_are_explicit();
         test_acquire_hashes_and_freezes_identity();
         test_acquire_rejects_html_and_hash_mismatch();
         test_verify_policy_uses_magicgate_service();
         test_verify_fails_without_key_capability();
         test_sign_plaintext_policy_is_reverified();
-        test_mutable_or_insecure_manifest_is_refused_before_network();
+        test_mutable_insecure_or_policyless_manifest_is_refused_before_network();
         std::cout << "Bootstrap provider staging tests passed\n";
         return 0;
     } catch (const std::exception& error) {
