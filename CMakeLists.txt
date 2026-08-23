@@ -41,6 +41,7 @@ add_library(ps2driveforge_core
     src/core/pfs_segi_write.cpp
     src/core/pfs_tree_remove.cpp
     src/core/pfs_batch.cpp
+    src/core/tar_archive.cpp
     src/core/hdl.cpp
     src/core/ps2_iso.cpp
     src/core/hdl_install_plan.cpp
@@ -251,6 +252,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-pfs-batch-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-pfs-batch-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-pfs-batch-tests COMMAND ps2-driveforge-pfs-batch-tests)
+
+    add_executable(ps2-driveforge-tar-archive-tests tests/tar_archive_tests.cpp)
+    target_link_libraries(ps2-driveforge-tar-archive-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-tar-archive-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-tar-archive-tests COMMAND ps2-driveforge-tar-archive-tests)
 
     add_executable(ps2-driveforge-host-tests tests/host_tests.cpp)
     target_link_libraries(ps2-driveforge-host-tests PRIVATE ps2driveforge_host)
