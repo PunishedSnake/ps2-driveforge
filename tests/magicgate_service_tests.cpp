@@ -13,9 +13,7 @@ namespace {
 
 void check(bool condition, const char* message)
 {
-    if (!condition) {
-        throw std::runtime_error(message);
-    }
+    if (!condition) throw std::runtime_error(message);
 }
 
 std::string hex_bytes(std::span<const std::byte> bytes)
@@ -70,6 +68,11 @@ ps2hdd::magicgate::DiskKelfSignPlan make_plan()
     };
     return plan;
 }
+
+constexpr ps2hdd::magicgate::cipher::Block kSyntheticIcvps2{
+    std::byte{0x91}, std::byte{0x82}, std::byte{0x73}, std::byte{0x64},
+    std::byte{0x55}, std::byte{0x46}, std::byte{0x37}, std::byte{0x28},
+};
 
 std::vector<std::byte> canonical_kelf()
 {
@@ -156,6 +159,42 @@ void test_service_sign_is_reverified()
           "service-signed KELF must prove the requested signed flag semantics");
 }
 
+void test_icvps2_is_a_separate_hardware_capability()
+{
+    namespace mg = ps2hdd::magicgate;
+    mg::MagicGateHostService service;
+    std::string error;
+    check(service.load_keyset(mg::known_vectors::kSyntheticKeyset,
+                              "compiled synthetic test vector", error),
+          "synthetic keyset must load");
+
+    auto plan = make_plan();
+    plan.header.flags |= 0x0002U;
+    check(!service.sign(plan, mg::payload_known_vectors::kPlaintextPayload).ok,
+          "ICVPS2 signing must fail without separate hardware evidence");
+    check(!service.load_icvps2(kSyntheticIcvps2, {}, error),
+          "ICVPS2 hardware evidence must require provenance");
+    check(service.load_icvps2(kSyntheticIcvps2, "MechaCon 0x98 synthetic fixture", error),
+          "ICVPS2 evidence with provenance must load");
+    check(service.icvps2_state().loaded,
+          "loaded ICVPS2 evidence must publish capability state");
+
+    const auto signed_kelf = service.sign(plan, mg::payload_known_vectors::kPlaintextPayload);
+    check(signed_kelf.ok, "service must sign ICVPS2 KELF with explicit hardware evidence");
+    check(signed_kelf.verification.ok && signed_kelf.verification.payload.icvps2_verified,
+          "service must reverify ICVPS2 against the loaded hardware evidence");
+
+    auto wrong = kSyntheticIcvps2;
+    wrong[7] ^= std::byte{0x80};
+    service.clear_icvps2();
+    check(!service.verify(signed_kelf.file).ok,
+          "ICVPS2 verification must fail closed after hardware evidence is revoked");
+    check(service.load_icvps2(wrong, "deliberately wrong fixture", error),
+          "wrong but explicit evidence fixture must load as a capability");
+    check(!service.verify(signed_kelf.file).ok,
+          "ICVPS2 verification must reject mismatched hardware evidence");
+}
+
 void test_limits_are_enforced_before_crypto()
 {
     namespace mg = ps2hdd::magicgate;
@@ -180,7 +219,7 @@ void test_limits_are_enforced_before_crypto()
           "oversized plaintext must be refused before signing");
 }
 
-void test_corruption_and_clear_keyset_fail_closed()
+void test_corruption_and_capability_revocation_fail_closed()
 {
     namespace mg = ps2hdd::magicgate;
     mg::MagicGateHostService service;
@@ -213,8 +252,9 @@ int main()
         test_keyset_parser_and_provenance_gate();
         test_complete_verify_and_plaintext_recovery();
         test_service_sign_is_reverified();
+        test_icvps2_is_a_separate_hardware_capability();
         test_limits_are_enforced_before_crypto();
-        test_corruption_and_clear_keyset_fail_closed();
+        test_corruption_and_capability_revocation_fail_closed();
         std::cout << "MagicGate host service tests passed\n";
         return 0;
     } catch (const std::exception& error) {
