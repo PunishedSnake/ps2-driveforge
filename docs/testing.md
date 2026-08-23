@@ -1,6 +1,6 @@
 # Testing PS2 DriveForge
 
-DriveForge tests are split by what they actually prove. Parser/unit tests, generated-image E2E, corruption cases, sanitizers, package checks, launcher startup, benchmarks and real-HDD Windows validation are complementary. None substitutes for the others.
+DriveForge tests are split by what they actually prove. Parser/unit tests, generated-image E2E, corruption cases, recovery interoperability, sanitizers, package checks, launcher startup, benchmarks and real-HDD validation are complementary. None substitutes for the others, despite the recurring human temptation to call one green checkbox a methodology.
 
 ## Normal regression suite
 
@@ -10,45 +10,26 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Current suite: **14 executables**.
+The suite grows with Frieren. Do not copy its executable count into prose. The canonical Windows list is [`../scripts/frieren-regression-tests.ps1`](../scripts/frieren-regression-tests.ps1), which is shared by build staging and package verification.
 
-```text
-ps2-driveforge-tests
-ps2-driveforge-pfs-file-tests
-ps2-driveforge-pfs-segi-tests
-ps2-driveforge-host-tests
-ps2-driveforge-e2e-image-tests
-ps2-driveforge-corruption-tests
-ps2-driveforge-session-tests
-ps2-driveforge-read-cache-tests
-ps2-driveforge-read-ahead-tests
-ps2-driveforge-partition-catalog-tests
-ps2-driveforge-hdl-enrichment-tests
-ps2-driveforge-storage-profile-tests
-ps2-driveforge-dokany-open-policy-tests
-ps2-driveforge-darkness-policy-tests
-```
+Windows/MSVC CI runs the native suite while building the Windows package and WinUI path. Linux CI runs portable tests under Clang ASan+UBSan with warnings-as-errors.
 
-Windows/MSVC CI runs the complete native suite while building Dokany and WinUI. Linux CI runs portable tests under Clang ASan+UBSan with warnings-as-errors.
+## Coverage families
 
-## Coverage map
-
-| Target | Main contract |
+| Family | Main contracts |
 | --- | --- |
-| `ps2-driveforge-tests` | APA checksum/link/core format cases |
-| `pfs-file-tests` | normal PFS file/range reads |
-| `pfs-segi-tests` | SEGI indirect descriptors and fragmented data |
-| `host-tests` | host-layer behavior |
-| `e2e-image-tests` | generated image -> APA -> PFS -> export -> SHA-256 |
-| `corruption-tests` | malformed metadata rejection |
-| `session-tests` | `DriveSession`, browse/export/stats/cache boundaries |
-| `read-cache-tests` | bounded read-window semantics/counters |
-| `read-ahead-tests` | sequential detection/prefetch policy |
-| `partition-catalog-tests` | zero-I/O catalog, model and HDL format contract |
-| `hdl-enrichment-tests` | ordering/concurrency/cancellation policy |
-| `storage-profile-tests` | storage-characteristic/tuning policy |
-| `dokany-open-policy-tests` | NT create/open dispositions and write rejection |
-| `darkness-policy-tests` | auto-open/source preservation/drive-letter selection |
+| APA core | checksum, linked chain, bounds, allocation, publication and removal |
+| PFS reader | superblock, inode, SEGD/SEGI, directory and file addressing |
+| PFS writer | bitmap allocation, file create/replace, directory growth, SEGI, removal and batching |
+| HDL | metadata parsing, patching, install plan, DEADFEED generation, image install and multipart cases |
+| Host/session | catalog, management, caching, export, enrichment and source/session boundaries |
+| OPL | provider plans, host staging, partition resolution, loose/TAR PFS import and deploy orchestration |
+| Partition UX model | authoritative main/sub grouping, orphan handling and size consistency |
+| Mutation safety | exact before-images, readback, rollback and persistent Mutation Journal lifecycle |
+| FHDB interoperability | Rescue Capsule wire format, shared artifacts, restore precedence, same-disk checks and legacy fallback |
+| Forensic recovery | raw discovery, candidate maps, repair gating, artifact-first apply and LBA 0 ordering |
+| Windows policy | storage profile, Dokany open rules, theme/startup/drive selection policies |
+| E2E/corruption | generated images, cold reopen and malformed metadata refusal |
 
 ## Generated-image E2E
 
@@ -56,7 +37,7 @@ Windows/MSVC CI runs the complete native suite while building Dokany and WinUI. 
 
 ```text
 generated image
- -> FileBlockDevice
+ -> BlockDevice
  -> APA Reader
  -> ApaVolume
  -> PFS Reader
@@ -65,41 +46,110 @@ generated image
  -> SHA-256 comparison
 ```
 
-It covers valid APA v2, PFS v3, a physically separate APA subpartition, 8 KiB zones, nested/empty directories, boundary reads, main/sub crossing, SEGI-backed data and Windows-safe export naming. This fixture deliberately covers layouts the current physical validation HDD does not contain.
+Write-side suites use disposable synthetic or sparse writable images and then reopen them through normal read parsers. A writer is not considered correct because it can read its own output through a private shortcut. That is less a filesystem and more a secret handshake.
 
-## Corruption corpus
+## Corruption and refusal coverage
 
-Malformed metadata must be rejected rather than partially exposed. Current deterministic cases include out-of-device APA extents, invalid PFS zone size, missing subpartitions, bad inode checksum and malformed directory allocation length.
+Malformed metadata is rejected rather than partially exposed or quietly repaired. Deterministic cases cover APA bounds/link failures, PFS structure errors, invalid write plans, ambiguous recovery evidence and stale preflight state.
 
-When hardware exposes a useful edge case: preserve evidence, reduce it to a deterministic regression where possible, extend generated-image coverage if it crosses layers, then fix the parser.
+When hardware exposes a useful edge case, preserve evidence, reduce it to a deterministic regression where possible, extend generated-image coverage if it crosses layers, then fix the parser or writer.
 
-## Cache/session regressions
+## Cache and session regressions
 
-Emilia caches only validated read-only metadata within one source session. Tests keep **cold cache** (`clear_caches`) distinct from **warm workload** (stats reset without clearing caches). A warm hit must eliminate the backing read, not merely make a recorded read faster.
+Caches contain only data already validated through normal parser rules. Tests keep **cold cache** (`clear_caches`) distinct from a **warm workload** where counters reset but cached data remains. A warm hit must eliminate backing I/O rather than merely make a recorded read look heroic.
 
-## Native HDL regressions
+Known committed APA deletion can update the cached session/model snapshot without re-enriching every unrelated game. Tests protect surviving HDL enrichment and stale-background-result handling.
 
-DriveForge parses HDLoader metadata in-process from the main partition at `+0x101000` with magic `0xDEADFEED`. Tests protect title/startup/compat/DMA/media/part-count/allocation-table parsing and one-read-per-game behavior.
+## HDL mutation regressions
 
-Scheduler tests separately cover physical-LBA ordering, progressive callbacks, cancellation and bounded concurrency. `unknown` storage remains a valid conservative profile.
+HDLoader metadata is parsed in-process from the main partition at `+0x101000` with magic `0xDEADFEED`.
+
+Write tests cover:
+
+- bounded metadata patching and rollback;
+- ISO startup inspection;
+- zero-write APA allocation planning;
+- main/sub header generation;
+- complete image payload copy and byte verification;
+- metadata/APA visibility published after payload;
+- multipart installs;
+- duplicate/corrupt target refusal;
+- fast main-plus-owned-subs removal.
+
+A failed publication may leave unreferenced payload bytes in free space. It must not leave a visible half-installed HDL partition.
+
+## PFS mutation regressions
+
+PFS mutation tests separately cover low-level extent/bitmap rules, directory changes, SEGI handling, copy-on-write replacement, tree removal and batch import.
+
+OPL import tests then exercise higher-level ART/CFG/CHT and TAR destination behavior. Existing user CFG content is treated as merge input where appropriate rather than disposable scenery.
+
+## Mutation Journal regressions
+
+`PS2DFRC1` is tested as a DriveForge Mutation Journal, not as a Rescue Capsule. Coverage includes:
+
+```text
+PREPARED
+ -> all-before / all-after / mixed / foreign classification
+ -> exact before-image restoration where permitted
+ -> COMMITTED terminal state
+ -> RESTORED terminal state
+```
+
+Wrong target size, damaged records, unexpected bytes and terminal-state misuse fail closed.
+
+## FHDB Manager interoperability regressions
+
+The recovery suite protects the shared contract with FHDB Manager, whose repository retains the historical `fhdb-bootstrap-manager` name.
+
+### Rescue Capsule format
+
+`fhdb_rescue_tests` verifies the exact `PS2HBRC\0` v1 layout, SHA-256 fields, reserved bytes, payload geometry, structural KELF length and same-disk identity policy.
+
+### Shared artifacts
+
+`fhdb_artifacts_tests` protects two-slot `HDDMBR`, `HDDRAW`, `HDDRESCUE`, `HDDMETA` and `FORENSIC.TXT` behavior. Unrelated existing binary evidence is not overwritten. An identical or state-equivalent snapshot may be reused.
+
+### Bootstrap restore
+
+`fhdb_restore_tests` protects FHDB Manager restore semantics:
+
+1. full `HDDRESCUE.BIN` / `HDDRESCUE2.BIN` is preferred;
+2. same-disk identity is mandatory;
+3. live `__mbr` bounds and the 4 MiB payload limit are enforced;
+4. the current master is frozen during preflight and reread before apply;
+5. `HDDMBR` safety backup exists before the first device write;
+6. rescue payload is written, flushed and byte-verified before pointer publication;
+7. only current `osdStart`, `osdSize` and checksum are changed in the master;
+8. the master is written after payload and verified through the normal APA parser;
+9. header-only Rescue Capsule may fall back to `HDDMBR*` / `FHDBMBR*`;
+10. corrupt, wrong-disk or invalid full Rescue Capsule blocks legacy fallback;
+11. a fake `HDDRESCUE.BIN` beginning with `PS2DFRC1` is rejected rather than mistaken for a Rescue Capsule;
+12. a stale restore plan refuses before both target writes and safety-artifact creation.
+
+That cross-format test is intentionally boring. Boring is the preferred personality of software restoring sector zero.
+
+## APA forensic recovery regressions
+
+Forensic tests separate discovery from authorization. They cover candidate-map evidence, conflicts, overlaps, truncation, checksum-corroborated narrow repairs, manual-only speculative plans and executor ordering.
+
+Apply tests verify:
+
+- `HDDRAW` before exceptional master repair;
+- `HDDMETA` and `FORENSIC.TXT` before topology writes;
+- source bytes reread before each mutation;
+- non-master headers before LBA 0;
+- flush/readback after each touched header;
+- final touched-set verification;
+- hard refusal of truncated evidence.
+
+Do not lower a recovery threshold merely to make a fixture green. Fix the fixture if it was accidentally modeling a different confidence class. Tests are supposed to describe the safety rule, not negotiate with it.
 
 ## Dokany open-policy regression
 
-Dokany `ZwCreateFile` receives NT create dispositions, not Win32 `CreateFileW` values. Tests protect existing-object opens, missing opens, create collisions, overwrite/create rejection, write/delete-on-close access and directory/file mismatches. This is the regression that prevents the historical Explorer `The file exists` failure.
+Dokany `ZwCreateFile` receives NT create dispositions, not Win32 `CreateFileW` values. Portable tests protect existing/missing opens, creation collisions, overwrite rejection, write/delete-on-close access and directory/file mismatches.
 
-## Discovery and drive-letter regression
-
-`tests/darkness_policy_tests.cpp` keeps Windows decisions deterministic without relying on the CI runner's actual disks or drive letters. It verifies:
-
-- zero candidates never auto-open;
-- one PS2 HDD can auto-open only when no source is already active;
-- multiple candidates require explicit selection;
-- rescan never silently replaces an open source;
-- automatic mounting selects the **first free letter from C: through Z:**;
-- A: and B: are never selected;
-- exhaustion returns no mount point.
-
-Do not reintroduce a hard-coded preferred `P:` letter.
+This prevents the historical Explorer `The file exists` root-open failure and protects us from the seductive theory that all Microsoft constants with similar names must be interchangeable.
 
 ## Optional APA libFuzzer
 
@@ -112,7 +162,7 @@ cmake --build build/fuzz --target ps2-driveforge-fuzz-apa
 ./build/fuzz/ps2-driveforge-fuzz-apa
 ```
 
-Useful crashes/hangs become deterministic regressions before a parser fix is considered complete.
+Useful crashes or hangs become deterministic regressions before a parser fix is complete.
 
 ## Canonical Windows package verification
 
@@ -120,27 +170,17 @@ Useful crashes/hangs become deterministic regressions before a parser fix is con
 .\scripts\verify-windows-package.ps1
 ```
 
-This gate verifies the native GUI/tools, documentation, exactly 14 regression executables and the actual WinUI runtime payload. It exists because a successful WinUI link does not prove the release script staged the correct MSBuild output.
+The verifier consumes the canonical Frieren regression manifest rather than maintaining another manually counted list. This matters because a successful compiler run does not prove the package contains the test binary that was just added.
 
 ## User-package and launcher smoke test
 
-`scripts/make-user-release.ps1` builds the clean user tree and performs a separate check. Before creating Portable/Setup artifacts it executes the **exact staged root launcher**:
+`scripts/make-user-release.ps1` executes the exact staged root launcher before building Portable/Setup outputs:
 
 ```powershell
 .\PS2-DriveForge.exe --self-test
 ```
 
-The self-test verifies that Windows can load the launcher and that its expected WinUI/Win32 payload paths exist. This specifically guards loader-time failures that occur before `wWinMain()` and therefore cannot be caught by normal command-line/fallback code.
-
-RC4 demonstrated why this is necessary: a common-controls ordinal import killed the launcher before argument parsing even though compilation/linking had succeeded.
-
-User-package verification also ensures regression test EXEs do not leak into the normal download and that required legal/docs files are present.
-
-## WinUI startup diagnostics
-
-A successful WinUI compile is not a successful real-machine startup test. RC testing preserves `%LOCALAPPDATA%\PS2 DriveForge\Logs\winui-startup.log` and checks XAML construction/activation.
-
-Historical fixed failures include incomplete self-contained runtime staging and missing XAML resource dictionaries. See [`winui-diagnostics.md`](winui-diagnostics.md).
+The smoke test verifies that Windows can load the launcher and find its expected WinUI/Win32 payloads. Loader failures happen before normal argument handling, which is an inconvenient place for an application to discover that packaging was optimistic.
 
 ## Benchmark harness
 
@@ -149,37 +189,23 @@ ps2-driveforge-benchmark <disk-image> [--hdl] [--hdl-qd N] [--browse <partition>
 ps2-driveforge-benchmark --physical <index> [--hdl] [--hdl-qd N] [--browse <partition> [path]]
 ```
 
-The preserved reference sweep is [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md). Important facts for that one disk:
+The preserved reference sweep is [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md). It is evidence for one disk and one date, not a universal queue-depth constitution.
+
+## Real-hardware and cross-platform gate
+
+CI cannot prove UAC, a user's storage bridge, raw-disk cache behavior, Dokany, Explorer, or actual PS2 boot behavior.
+
+Recovery parity adds another requirement: shared artifacts must be round-tripped in both directions on real samples:
 
 ```text
-Cold APA scan median:          1555.022 ms / 190 reads
-Zero-I/O catalog median:       0.006 ms / 190 rows
-Cold +OPL browse+stat:         10 reads / 16 KiB / 41.493 ms
-Warm +OPL browse+stat:         0 reads / 0.001 ms
-Cold __common/OPL browse+stat: 6 reads / 15 KiB / 27.689 ms
-Warm repeat:                   0 reads / 0.001 ms
-HDL games:                     35/35 readable
-Automatic unknown-media QD:    1
+FHDB Manager creates -> DriveForge validates/uses
+DriveForge creates    -> FHDB Manager validates/uses
 ```
 
-`--hdl-qd` is a developer measurement override, not a universal recommendation.
-
-## Real-hardware gate
-
-CI cannot prove UAC, the user's storage stack, raw-disk permissions, Dokany driver/Explorer behavior, drive-letter occupancy, Win32 theme rendering or WinUI startup on the target machine.
-
-The authoritative sequence is [`rc-hardware-checklist.md`](rc-hardware-checklist.md). Run it only against an exact candidate after deterministic/package gates are green.
-
-Historical known file on the validation HDD:
-
-```text
-__common:/OPL/conf_hdd.cfg
-size:   20 bytes
-SHA256: E94F190BA999E6621B55C290AD494CFF6421F08C470E9424AED7B2A4B085890C
-```
-
-Use that hash only for that exact known file/disk; other disks require independently known content.
+The authoritative real-device sequence is [`rc-hardware-checklist.md`](rc-hardware-checklist.md). Physical recovery writes on the PC remain gated even while the equivalent image path is tested.
 
 ## Evidence rule
 
-For physical validation preserve version/commit, artifact hash, Windows/Dokany versions, source device/capacity/connection, APA facts, exact action, useful logs/counters, expected vs actual result, write-protection result and file hashes where practical. Do not publish unrelated/private disk contents merely because they appeared in a diagnostic listing.
+For physical validation preserve version/commit, artifact hashes, Windows/Dokany versions, source device/capacity/connection, APA facts, exact action, useful logs/counters and expected versus actual result. For interoperability also record which platform produced and consumed each artifact.
+
+Do not publish unrelated/private disk contents merely because they appeared in a diagnostic listing. Recovery evidence should prove the tool, not accidentally inventory the user.
