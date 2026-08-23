@@ -11,6 +11,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace ps2hdd::hdl {
 
