@@ -69,6 +69,29 @@ struct FileRemoveResult {
     std::size_t bitmap_chunks_touched{};
 };
 
+struct DirectoryRemoveResult {
+    bool ok{};
+    std::string error;
+    std::string warning;
+    std::string path;
+    std::uint64_t bytes_freed{};
+    std::size_t metadata_transactions{};
+    std::size_t bitmap_chunks_touched{};
+};
+
+struct TreeRemoveResult {
+    bool ok{};
+    bool partial{};
+    std::string error;
+    std::string warning;
+    std::string path;
+    std::size_t files_removed{};
+    std::size_t directories_removed{};
+    std::uint64_t bytes_freed{};
+    std::size_t metadata_transactions{};
+    std::size_t bitmap_chunks_touched{};
+};
+
 // Image-only PFS mutation session. It deliberately owns a writable APA extent
 // capability and never accepts PhysicalDrive. Regular files use copy-on-write
 // replacement; directory creation allocates and publishes complete `.` / `..`
@@ -120,6 +143,12 @@ public:
 
     [[nodiscard]] FileRemoveResult remove_file(std::string_view path);
     [[nodiscard]] FileRemoveResult remove_file_full(std::string_view path);
+
+    // Empty-directory unlink uses the same namespace-first publication rule as
+    // file deletion. Recursive tree deletion is intentionally explicit and
+    // reports partial=true if a later child fails after earlier removals commit.
+    [[nodiscard]] DirectoryRemoveResult remove_empty_directory(std::string_view path);
+    [[nodiscard]] TreeRemoveResult remove_tree(std::string_view path);
 
 private:
     struct DirectorySlot {
