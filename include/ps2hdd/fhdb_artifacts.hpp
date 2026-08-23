@@ -32,7 +32,9 @@ struct HddMetaValidation {
     std::uint32_t one_or_two_bit_count{};
 };
 
-// Exact APAMETA1 bytes used by fhdb-bootstrap-manager HDDMETA.BIN slots.
+// Exact APAMETA1 bytes shared with FHDB Manager HDDMETA.BIN slots. Do not add
+// host-only convenience fields here. An interoperable forensic artifact stops
+// being interoperable the moment one side decides the other can probably cope.
 [[nodiscard]] std::vector<std::byte> build_hddmeta_image(
     const forensic::ScanResult& scan,
     const forensic::RepairPlan& plan,
@@ -40,8 +42,9 @@ struct HddMetaValidation {
 
 [[nodiscard]] HddMetaValidation validate_hddmeta_image(std::span<const std::byte> image);
 
-// Canonical non-overwriting two-slot artifacts. Existing identical/state-
-// equivalent content is reused; different existing content is never replaced.
+// Canonical two-slot policy shared with FHDB Manager. Existing identical or
+// state-equivalent evidence may be reused. Unrelated evidence is never replaced
+// merely because slot zero looked convenient.
 [[nodiscard]] ArtifactSaveResult save_hddraw(
     const std::filesystem::path& directory,
     std::span<const std::byte, kRescueApaHeaderBytes> raw_header);
@@ -56,9 +59,10 @@ struct HddMetaValidation {
     const forensic::ScanResult& scan,
     const forensic::RepairPlan& plan);
 
-// Canonical single report filename. Unlike snapshot slots, the PS2 manager
-// refreshes FORENSIC.TXT on export; DriveForge mirrors that behavior and adds
-// a durable read-back check.
+// FORENSIC.TXT is a report rather than irreplaceable binary evidence, so the
+// canonical filename is refreshed. DriveForge still writes it durably and reads
+// it back because text files are not exempt from storage failures by being easy
+// for humans to open.
 [[nodiscard]] ArtifactSaveResult save_forensic_report(
     const std::filesystem::path& directory,
     const forensic::ScanResult& scan);
