@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -107,10 +108,6 @@ void test_art_fallback()
     check(result.assets[0].target_path == "ART/SLUS_209.46_COV.jpg",
           "fallback artwork kept the wrong target extension");
     check(read_text(result.assets[0].staged_path) == "JPEG", "staged fallback body mismatch");
-}
-
-void test_cfg_overlay_download())
-{
 }
 
 void test_cfg_overlay()
