@@ -2,6 +2,7 @@
 
 #include "ps2hdd/magicgate_cbc.hpp"
 #include "ps2hdd/magicgate_kelf.hpp"
+#include "ps2hdd/magicgate_keyset.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,15 +12,6 @@
 #include <string>
 
 namespace ps2hdd::magicgate {
-
-struct SigningKeyset {
-    cipher::Block signature_master{};
-    cipher::Block signature_hash{};
-    cipher::Block root_signature_master{};
-    cipher::DoubleKey root_signature_hash{};
-    cipher::Block content_table_iv{};
-    cipher::Block content_iv{};
-};
 
 struct BitBlock {
     std::uint32_t size{};
@@ -183,7 +175,7 @@ serialize_fixed_header(const KelfHeader& header) noexcept
     return result;
 }
 
-[[nodiscard]] inline SignatureResult bit_table_signature(
+[[nodiscard]] constexpr SignatureResult bit_table_signature(
     std::span<const std::byte> plaintext_table,
     const std::array<std::byte, 16>& kbit,
     const std::array<std::byte, 16>& kc,
