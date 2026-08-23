@@ -112,6 +112,13 @@ add_executable(ps2-driveforge-hdl-tools src/cli/hdl_tools.cpp)
 target_link_libraries(ps2-driveforge-hdl-tools PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
 
+# Keep the filesystem mutation surface separate from HDL installation. It can
+# exercise native PFS file writes and constant-metadata APA removal on existing
+# disk images without giving the normal PhysicalDrive session write capability.
+add_executable(ps2-driveforge-pfs-tools src/cli/pfs_tools.cpp)
+target_link_libraries(ps2-driveforge-pfs-tools PRIVATE ps2driveforge_core)
+target_compile_features(ps2-driveforge-pfs-tools PRIVATE cxx_std_20)
+
 if(WIN32)
     add_executable(ps2-driveforge-gui WIN32
         src/gui/windows_main.cpp
