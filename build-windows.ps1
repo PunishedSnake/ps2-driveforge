@@ -237,6 +237,9 @@ if (-not $SkipTests) {
         'ps2-driveforge-ps2-iso-tests.exe',
         'ps2-driveforge-hdl-install-plan-tests.exe',
         'ps2-driveforge-hdl-metadata-builder-tests.exe',
+        'ps2-driveforge-hdl-image-install-tests.exe',
+        'ps2-driveforge-opl-assets-tests.exe',
+        'ps2-driveforge-opl-asset-pipeline-tests.exe',
         'ps2-driveforge-storage-profile-tests.exe',
         'ps2-driveforge-dokany-open-policy-tests.exe',
         'ps2-driveforge-darkness-policy-tests.exe'
