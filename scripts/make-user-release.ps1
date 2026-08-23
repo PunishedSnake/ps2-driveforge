@@ -143,7 +143,30 @@ if (Test-Path -LiteralPath $PortableZip) {
     Remove-Item -LiteralPath $PortableZip -Force
 }
 Compress-Archive -Path (Join-Path $UserRoot '*') -DestinationPath $PortableZip -CompressionLevel Optimal
+
+# Verify the actual archive, not just the directory we intended to archive.
+# Packaging bugs are impressively capable of making a correct staging tree and
+# an incomplete deliverable coexist without technically lying to either one.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::OpenRead($PortableZip)
+try {
+    $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace('/', '\') })
+    foreach ($Relative in @(
+        'PS2-DriveForge.exe',
+        'app\winui\PS2-DriveForge-WinUI.exe',
+        'tools\ps2-driveforge-hdl-tools.exe',
+        'tools\ps2-driveforge-physical-tools.exe'
+    )) {
+        if ($Relative -notin $entryNames) {
+            throw "Portable archive is missing required entry: $Relative"
+        }
+    }
+} finally {
+    $archive.Dispose()
+}
+
 Write-Host "Portable package: $PortableZip" -ForegroundColor Green
+Write-Host "Portable archive required-entry verification: PASS" -ForegroundColor Green
 Write-Host "Portable SHA-256: $((Get-FileHash -LiteralPath $PortableZip -Algorithm SHA256).Hash)"
 
 if ($InnoCompiler) {
