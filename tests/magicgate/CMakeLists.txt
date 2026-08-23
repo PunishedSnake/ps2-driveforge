@@ -53,3 +53,12 @@ add_executable(ps2-driveforge-bootstrap-frozen-tests
     ../../src/core/sha256.cpp
 )
 configure_magicgate_target(ps2-driveforge-bootstrap-frozen-tests)
+
+# Named bootstrap families are installable only after cryptographic verification
+# evidence survives into the frozen plan. Structural KELF inspection is useful
+# diagnostics, but it is not permission to mutate a physical PS2 HDD.
+add_executable(ps2-driveforge-bootstrap-install-policy-tests
+    ../bootstrap_install_policy_tests.cpp
+    ../../src/core/sha256.cpp
+)
+configure_magicgate_target(ps2-driveforge-bootstrap-install-policy-tests)
