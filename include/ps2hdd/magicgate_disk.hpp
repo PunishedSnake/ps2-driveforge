@@ -51,6 +51,9 @@ namespace detail {
     const KelfHeader& header, const DiskKeyset& keyset) noexcept
 {
     const auto input = user_header_xor(header.user_header);
+    // KELFTool expresses the same operation as (HeaderData XOR IV) followed by
+    // 2-key TDES with a zero CBC IV. Passing HeaderData with the material as the
+    // one-block CBC IV is algebraically identical and makes the role explicit.
     const auto kbit = cipher::tdes2_cbc_encrypt_block(
         input, keyset.kbit_master, keyset.kbit_material);
     const auto kc = cipher::tdes2_cbc_encrypt_block(
@@ -70,15 +73,6 @@ namespace detail {
         out[i] = bytes[offset + i];
     }
     return out;
-}
-
-constexpr void store_block(std::span<std::byte> bytes,
-                           std::size_t offset,
-                           const cipher::Block& block) noexcept
-{
-    for (std::size_t i = 0; i < block.size(); ++i) {
-        bytes[offset + i] = block[i];
-    }
 }
 
 constexpr void store_key_half(std::array<std::byte, 16>& key,
@@ -104,9 +98,9 @@ constexpr void store_key_half(std::array<std::byte, 16>& key,
 } // namespace detail
 
 // Convert the 32-byte disk representation E(file-key, Kbit || Kc) into the
-// plaintext Kbit/Kc pair. This is the host-only portion that ps3mca performs
-// before it starts the completely separate memory-card session/storage-key
-// protocol. No card, USB adapter or MechaCon state belongs in this function.
+// plaintext Kbit/Kc pair. This is the host-only portion that PC binding tools
+// perform before entering the separate memory-card session/storage-key protocol.
+// No card, USB adapter or MechaCon state belongs in this function.
 [[nodiscard]] inline DiskKeyResult unwrap_disk_content_keys(
     std::span<const std::byte> file,
     const DiskKeyset& keyset)
@@ -140,9 +134,8 @@ constexpr void store_key_half(std::array<std::byte, 16>& key,
 }
 
 // Produce the exact 32 bytes expected in a disk KELF header. Each 8-byte half
-// starts with a zero CBC IV, matching the MechaCon software reference. Do not
-// accidentally chain the four halves together: that would be a reasonable CBC
-// design and the wrong MagicGate format.
+// starts with a zero CBC IV. Do not accidentally chain the four halves together:
+// that would be a reasonable CBC design and the wrong MagicGate format.
 [[nodiscard]] inline std::array<std::byte, kKelfContentKeyBytes>
 wrap_disk_content_keys(const KelfLayout& layout,
                        const DiskContentKeys& keys,
@@ -190,18 +183,17 @@ wrap_disk_content_keys(const KelfLayout& layout,
 namespace selftest {
 
 constexpr cipher::Block kDesKey{
-    std::byte{0xf1}, std::byte{0xdf}, std::byte{0xbc}, std::byte{0x9b},
-    std::byte{0x79}, std::byte{0x57}, std::byte{0x34}, std::byte{0x13}};
+    std::byte{0x13}, std::byte{0x34}, std::byte{0x57}, std::byte{0x79},
+    std::byte{0x9b}, std::byte{0xbc}, std::byte{0xdf}, std::byte{0xf1}};
 constexpr cipher::Block kDesPlaintext{
-    std::byte{0xef}, std::byte{0xcd}, std::byte{0xab}, std::byte{0x89},
-    std::byte{0x67}, std::byte{0x45}, std::byte{0x23}, std::byte{0x01}};
+    std::byte{0x01}, std::byte{0x23}, std::byte{0x45}, std::byte{0x67},
+    std::byte{0x89}, std::byte{0xab}, std::byte{0xcd}, std::byte{0xef}};
 constexpr cipher::Block kDesCiphertext{
-    std::byte{0x05}, std::byte{0xb4}, std::byte{0x0a}, std::byte{0x0f},
-    std::byte{0x54}, std::byte{0x13}, std::byte{0xe8}, std::byte{0x85}};
+    std::byte{0x85}, std::byte{0xe8}, std::byte{0x13}, std::byte{0x54},
+    std::byte{0x0f}, std::byte{0x0a}, std::byte{0xb4}, std::byte{0x05}};
 
-// FIPS 46-3's classic DES known-answer vector expressed in the little-endian
-// byte convention used by the PS2 software references. If either assertion
-// fails, every MagicGate key derived above would be consistently useless.
+// Classic FIPS DES known-answer vector. This catches both algorithm mistakes
+// and representation mistakes before any user-supplied MagicGate keyset is used.
 static_assert(cipher::des_encrypt(kDesPlaintext, kDesKey) == kDesCiphertext);
 static_assert(cipher::des_decrypt(kDesCiphertext, kDesKey) == kDesPlaintext);
 
