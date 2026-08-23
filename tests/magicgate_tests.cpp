@@ -1,5 +1,6 @@
 #include "ps2hdd/magicgate_payload_known_vectors.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <iostream>
 #include <stdexcept>
@@ -13,12 +14,66 @@ void check(bool condition, const char* message)
     }
 }
 
+void test_independent_known_vectors()
+{
+    namespace mg = ps2hdd::magicgate;
+    namespace kv = mg::known_vectors;
+
+    const auto header = mg::header_signature(kv::kHeader, kv::kSigningKeyset);
+    check(header.ok && header.value == kv::kExpectedHeaderSignature,
+          "independent MagicGate header-signature vector mismatch");
+
+    const auto bit = mg::bit_table_signature(
+        kv::kPlainBitTable, kv::kSyntheticKbit, kv::kSyntheticKc, kv::kSigningKeyset);
+    check(bit.ok && bit.value == kv::kExpectedBitTableSignature,
+          "independent MagicGate BIT-signature vector mismatch");
+
+    const auto root = mg::root_signature(
+        kv::kExpectedHeaderSignature,
+        kv::kExpectedBitTableSignature,
+        kv::kSignedBlockSignatures,
+        kv::kSigningKeyset);
+    check(root.ok && root.value == kv::kExpectedRootSignature,
+          "independent MagicGate root-signature vector mismatch");
+
+    const auto encrypted_content = mg::content_block_signature(
+        kv::kPlainContent, mg::ContentSignatureMode::encrypted_signed, kv::kSigningKeyset);
+    const auto plain_content = mg::content_block_signature(
+        kv::kPlainContent, mg::ContentSignatureMode::plain_signed, kv::kSigningKeyset);
+    check(encrypted_content.ok &&
+              encrypted_content.value == kv::kExpectedEncryptedStyleContentSignature,
+          "independent encrypted-content signature vector mismatch");
+    check(plain_content.ok &&
+              plain_content.value == kv::kExpectedPlainStyleContentSignature,
+          "independent plaintext-content signature vector mismatch");
+}
+
+void test_strict_keyset_parser_matches_direct_fixture()
+{
+    namespace mg = ps2hdd::magicgate;
+    namespace kv = mg::known_vectors;
+
+    const auto parsed = mg::parse_magicgate_keyset(kv::kSyntheticKeysetText);
+    check(parsed.ok, "synthetic MagicGate keyset text must parse");
+    check(parsed.keyset.signing.signature_master == kv::kSyntheticKeyset.signing.signature_master,
+          "parsed signature master key mismatch");
+    check(parsed.keyset.signing.root_signature_hash ==
+              kv::kSyntheticKeyset.signing.root_signature_hash,
+          "parsed root-signature hash key mismatch");
+    check(parsed.keyset.disk.kbit_master == kv::kSyntheticKeyset.disk.kbit_master &&
+              parsed.keyset.disk.kc_master == kv::kSyntheticKeyset.disk.kc_master,
+          "parsed disk master keys mismatch");
+    check(parsed.keyset.disk.kbit_material == kv::kSyntheticKeyset.disk.kbit_material &&
+              parsed.keyset.disk.kc_material == kv::kSyntheticKeyset.disk.kc_material,
+          "parsed disk derivation material mismatch");
+}
+
 void test_complete_synthetic_kelf_round_trip()
 {
     namespace vectors = ps2hdd::magicgate::payload_known_vectors;
     namespace mg = ps2hdd::magicgate;
 
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
     const auto envelope = mg::verify_disk_kelf_header(vectors::kCompleteDiskKelf, keyset);
     check(envelope.ok, "synthetic KELF header envelope must verify");
     check(envelope.signed_flag_mapping == mg::SignedFlagMapping::bit_0x02,
@@ -50,7 +105,7 @@ void test_signed_encrypted_corruption_reaches_content_verifier()
 
     auto damaged = vectors::kCompleteDiskKelf;
     damaged[vectors::kHeaderBytes + 7U] ^= std::byte{0x20};
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
 
     const auto envelope = mg::verify_disk_kelf_header(damaged, keyset);
     check(envelope.ok,
@@ -66,7 +121,7 @@ void test_signed_plaintext_corruption_reaches_content_verifier()
 
     auto damaged = vectors::kCompleteDiskKelf;
     damaged[vectors::kHeaderBytes + 32U + 9U] ^= std::byte{0x04};
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
 
     const auto envelope = mg::verify_disk_kelf_header(damaged, keyset);
     check(envelope.ok,
@@ -80,7 +135,7 @@ void test_wrong_content_iv_fails_without_breaking_header_envelope()
     namespace vectors = ps2hdd::magicgate::payload_known_vectors;
     namespace mg = ps2hdd::magicgate;
 
-    auto keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    auto keyset = mg::known_vectors::kSyntheticKeyset;
     const auto envelope = mg::verify_disk_kelf_header(vectors::kCompleteDiskKelf, keyset);
     check(envelope.ok, "baseline envelope must verify before content-IV fault injection");
 
@@ -95,6 +150,8 @@ void test_wrong_content_iv_fails_without_breaking_header_envelope()
 int main()
 {
     try {
+        test_independent_known_vectors();
+        test_strict_keyset_parser_matches_direct_fixture();
         test_complete_synthetic_kelf_round_trip();
         test_signed_encrypted_corruption_reaches_content_verifier();
         test_signed_plaintext_corruption_reaches_content_verifier();
