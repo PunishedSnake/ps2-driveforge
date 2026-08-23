@@ -30,6 +30,7 @@ add_library(ps2driveforge_core
     src/core/sha256.cpp
     src/core/fhdb_rescue.cpp
     src/core/fhdb_artifacts.cpp
+    src/core/fhdb_restore.cpp
     src/core/apa_repair.cpp
     src/core/apa_forensic.cpp
     src/core/apa_recovery_apply.cpp
@@ -335,6 +336,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-fhdb-artifacts-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-fhdb-artifacts-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-fhdb-artifacts-tests COMMAND ps2-driveforge-fhdb-artifacts-tests)
+
+    add_executable(ps2-driveforge-fhdb-restore-tests tests/fhdb_restore_tests.cpp)
+    target_link_libraries(ps2-driveforge-fhdb-restore-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-fhdb-restore-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-fhdb-restore-tests COMMAND ps2-driveforge-fhdb-restore-tests)
 
     add_executable(ps2-driveforge-apa-repair-tests tests/apa_repair_tests.cpp)
     target_link_libraries(ps2-driveforge-apa-repair-tests PRIVATE ps2driveforge_core)
