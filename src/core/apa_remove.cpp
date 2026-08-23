@@ -131,6 +131,53 @@ RemovePlan plan_remove_main_partition(const ScanResult& scan, std::uint32_t main
     return plan;
 }
 
+bool apply_remove_plan_to_scan(ScanResult& scan, const RemovePlan& plan)
+{
+    if (!plan.ok || plan.removed_lbas.empty() || !canonical_chain(scan)) {
+        return false;
+    }
+
+    const std::unordered_set<std::uint32_t> removed(plan.removed_lbas.begin(),
+                                                    plan.removed_lbas.end());
+    if (removed.size() != plan.removed_lbas.size()) {
+        return false;
+    }
+    for (const auto lba : removed) {
+        if (std::none_of(scan.partitions.begin(), scan.partitions.end(),
+                         [lba](const Partition& partition) {
+                             return partition.start_lba == lba;
+                         })) {
+            return false;
+        }
+    }
+
+    for (const auto& rewrite : plan.link_rewrites) {
+        auto partition = std::find_if(scan.partitions.begin(), scan.partitions.end(),
+                                      [&](const Partition& candidate) {
+                                          return candidate.start_lba == rewrite.header_lba;
+                                      });
+        if (partition == scan.partitions.end() || removed.contains(rewrite.header_lba) ||
+            partition->prev_lba != rewrite.old_prev_lba ||
+            partition->next_lba != rewrite.old_next_lba) {
+            return false;
+        }
+        partition->prev_lba = rewrite.new_prev_lba;
+        partition->next_lba = rewrite.new_next_lba;
+    }
+
+    const auto old_size = scan.partitions.size();
+    scan.partitions.erase(
+        std::remove_if(scan.partitions.begin(), scan.partitions.end(),
+                       [&](const Partition& partition) {
+                           return removed.contains(partition.start_lba);
+                       }),
+        scan.partitions.end());
+    if (scan.partitions.size() + removed.size() != old_size) {
+        return false;
+    }
+    return canonical_chain(scan);
+}
+
 std::string stage_remove_main_partition(WritableBlockDevice& device,
                                         const RemovePlan& plan,
                                         WriteTransaction& transaction)
