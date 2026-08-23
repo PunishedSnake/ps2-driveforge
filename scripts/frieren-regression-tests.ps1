@@ -27,6 +27,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-hdl-enrichment-tests.exe',
     'ps2-driveforge-hdl-write-tests.exe',
     'ps2-driveforge-write-transaction-tests.exe',
+    'ps2-driveforge-recovery-capsule-tests.exe',
     'ps2-driveforge-writable-apa-volume-tests.exe',
     'ps2-driveforge-apa-allocation-tests.exe',
     'ps2-driveforge-apa-hdl-header-tests.exe',
