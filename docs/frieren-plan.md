@@ -1,180 +1,192 @@
 # Frieren 0.6.0 plan
 
-Frieren is the first DriveForge release train allowed to mutate PS2 storage. The goal is not to make the existing read-only stack casually writable. The goal is to add narrowly scoped write capabilities, prove them on disposable images, and only then graduate to real disks.
+Frieren is the first DriveForge release train allowed to mutate PS2 storage. The goal is not to make the Emilia read stack casually writable. The goal is to add narrow capabilities, prove them on disposable images, make recovery interoperable with FHDB Manager, and only then consider real disks.
 
-## Non-negotiable write boundary
+This is a living plan. Completed milestones are marked accordingly so it does not continue predicting features that are already sitting in CMake, which is a surprisingly common genre of documentation.
+
+## Non-negotiable capability boundary
 
 `BlockDevice` stays read-only. Mutation requires the separate `WritableBlockDevice` capability.
 
-The first writable backend is `WritableFileBlockDevice`, which opens an existing image read/write, never creates or truncates it, never extends it, and exposes an explicit durability `flush()` operation. `PhysicalDrive` remains `GENERIC_READ` during the first Frieren milestones.
+`WritableFileBlockDevice` opens an existing image read/write, never creates or truncates it, never extends it and exposes explicit `flush()`. The existing Windows `PhysicalDrive` remains `GENERIC_READ`.
 
-This keeps every existing Emilia read-only code path read-only by type. A parser, browser, Dokany mount, or session cannot accidentally write merely because the source backend later gains a writable sibling.
+Normal mutation and exceptional recovery are also separate authorization domains. Both may eventually write through the same low-level capability, but a PFS file operation does not acquire permission to repair sector zero merely through proximity.
 
-## Milestone F1: bounded HDL metadata writes
+## F1 - bounded HDL metadata writes - implemented
 
-The first real write is deliberately non-structural.
+`hdl::patch_game_metadata()` updates selected fields inside an already valid HDL metadata block. The operation captures the complete metadata before-image, writes a fixed range, flushes, reads back, reparses through the normal HDL reader and rolls back on verification failure.
 
-`hdl::patch_game_metadata()` may update only these fields inside an already valid native HDL header at main-partition `+0x101000`:
+This established the first rule of Frieren writes: the normal parser is the post-write judge. Writers do not get to grade their own homework with a more forgiving reader.
 
-- title;
-- compatibility flags;
-- DMA mode.
+## F2 - mutation transactions and journal - implemented
 
-It does not modify:
+`WriteTransaction` provides sector-aligned before-images, ordered writes, flush/readback, parser verification and rollback.
 
-- APA headers or linked-list pointers;
-- main/sub partition extents;
-- HDL allocation-table entries;
-- startup ID;
-- media type or layer break;
-- game payload sectors.
-
-The operation validates the existing header with the normal reader, captures the complete 1536-byte metadata before-image, performs one fixed-size write, flushes it, reads it back byte-for-byte, reparses it through the normal HDL reader, and rolls the original metadata back if verification fails.
-
-F1 is image-only until its portable and Windows regression tests are green.
-
-## Milestone F2: mutation transaction primitives
-
-Before APA layout changes, add reusable transaction support for sector-aligned before-images and an explicit commit record. Required properties:
-
-1. every mutable range is known before the first write;
-2. original bytes can be exported before commit;
-3. verification reads use the same parser paths used by normal browsing;
-4. interrupted or failed commits have a deterministic recovery story;
-5. read caches are invalidated only after a successful commit.
-
-The transaction layer must not invent APA rules. It only records, writes, flushes, verifies, and restores ranges supplied by format code.
-
-## Milestone F3: APA allocation planner
-
-Implement a pure, zero-write planner first. Given one validated APA scan and a requested HDL payload size it must produce a proposed main/sub allocation without mutating the source.
-
-The planner must validate:
-
-- free-space extents and alignment rules;
-- linked-list predecessor/successor updates;
-- main/sub limits;
-- device bounds and integer overflow;
-- the resulting chain as if it had already been written.
-
-Only after synthetic-image tests prove the plan should a separate commit function serialize APA headers.
-
-## Milestone F4: HDL install to image
-
-The first complete game install remains image-only.
-
-Expected flow:
+`Mutation Journal` adds the durable `PS2DFRC1` sidecar lifecycle for selected metadata transactions:
 
 ```text
-ISO/source image
- -> validate ISO9660 / startup ID / media geometry
- -> compute required HDL allocation
- -> build APA mutation plan
- -> write game payload into planned extents
- -> write native HDL metadata/allocation table
- -> commit APA headers last
- -> flush
- -> cold re-open and full APA + HDL verification
+PREPARED -> COMMITTED
+         -> RESTORED
 ```
 
-APA visibility is the final commit step so an interrupted payload copy does not publish a half-installed game as a valid partition.
+The Mutation Journal is DriveForge-private transaction machinery. It is not the FHDB Rescue Capsule and never uses that name. See [`fhdb-bootstrap-parity.md`](fhdb-bootstrap-parity.md).
 
-The first implementation deliberately streams the bulk ISO payload while the destination extents are still APA free space, byte-verifies the payload, flushes it, and only then transactionally publishes DEADFEED metadata and the APA chain.
+## F3 - APA allocation and removal planning - implemented
 
-## Milestone F4a: OPL Asset Pipeline
+Pure planners now cover HDL allocation and main-partition removal before mutation. APA publication validates chain relationships, device bounds, main/sub limits and stale neighbour state.
 
-A successful HDL install should be able to prepare the game for OPL in the same operation instead of forcing a second pile of manual PC tools.
+Deletion operates on a main LBA plus all authoritative owned sub headers. The UI can therefore present one HDL game as one deletion unit rather than asking the user to manually interpret a bouquet of unnamed partitions.
 
-The first Asset Pipeline slice is non-destructive and host-side only:
+## F4 - complete HDL install to image - implemented
 
-1. reuse the ISO-derived startup ID as the canonical provider key;
-2. plan title database, Redump metadata, CFG, compatibility overlay, widescreen CHT, verified mastercode fallback, artwork and optional HDD-OSD icon sources;
-3. support classic OPL file paths and TAR-capable fork destination metadata;
-4. download through an injectable HTTP transport into a host staging/cache tree;
-5. merge CFG overlays without throwing away unrelated metadata;
-6. use a bare mastercode only when the primary widescreen CHT does not already contain one;
-7. reject empty/HTML provider responses and unsafe destination paths;
-8. preserve provider/source provenance in the staged result.
-
-No network result is allowed to write PFS directly. See `docs/opl-asset-pipeline.md`.
-
-## Milestone F4b: image-only PFS asset import
-
-The current PFS stack remains read-only, so copying staged ART/CFG/CHT into an OPL partition gets its own write milestone rather than being smuggled into the downloader.
-
-Required sequence:
+The image-only install flow is:
 
 ```text
-validated APA scan
- -> resolve configured/likely OPL PFS partition
- -> cold PFS probe
- -> pure mkdir/create/replace allocation plan
- -> preview exact inode/directory/bitmap/data mutations
- -> capture filesystem metadata before-images
- -> apply to writable disk image only
- -> flush
- -> cold re-open using normal PFS reader
- -> resolve every installed path and byte-verify every installed file
+ISO
+ -> ISO9660 / SYSTEM.CNF startup validation
+ -> zero-write HDL allocation plan
+ -> APA header + DEADFEED metadata generation
+ -> payload stream into unpublished free extents
+ -> byte readback of payload
+ -> durable flush
+ -> metadata + APA publication transaction
+ -> normal APA + HDL parser verification
 ```
 
-The resolver must not blindly assume the partition ID is `+OPL`. An explicitly configured PFS partition wins; otherwise DriveForge may score valid PFS candidates using names and existing `ART`, `CFG`, `CHT`, `VMC`, `THM` or OPL configuration content.
+APA visibility is published after payload verification. An interrupted copy can leave orphan payload bytes in free space, but it does not expose a half-installed game as valid.
 
-Initial PFS mutation scope is intentionally small-file oriented: directories plus create/replace of ART/CFG/CHT metadata assets. General-purpose Explorer-style PFS write support is not a Frieren requirement.
+The installer can optionally protect its small publication transaction with a **Mutation Journal**. Bulk ISO payload is deliberately outside that journal because before-imaging gigabytes of free space would turn a metadata safety feature into a second disk image.
 
-Existing user CFG files are a merge input, not disposable output. The final preview must show whether a destination is new, unchanged, merged or replaced.
+## F4a - OPL Asset Pipeline - implemented
 
-TAR mode is a separate destination implementation. Network fetches stage individual members first; only a destination transaction may create or replace `art.tar`, `cfg.tar` or `cht.tar`.
+Provider planning/staging uses the ISO startup ID as the canonical key and supports title/Redump metadata, CFG, compatibility overlay, widescreen CHT, bare-mastercode fallback, artwork and optional HDD-OSD data.
 
-## Milestone F5: HDL delete from image
+Network data is staged on the host with provenance and response/path validation before any filesystem mutation. The downloader has no direct disk writer because HTTP has already been granted enough influence over civilization.
 
-Deletion gets its own planner and recovery tests. It must remove one selected HDL main partition plus its owned subpartitions, repair the APA chain, and leave unrelated partitions byte-identical.
+See [`opl-asset-pipeline.md`](opl-asset-pipeline.md).
 
-No UI delete button ships before synthetic tests cover first/middle/last partitions, fragmented layouts, maximum sub counts, corrupt-chain refusal, and rollback failure reporting.
+## F4b - native PFS asset import - implemented for Frieren scope
 
-## Milestone F6: real physical-disk writes
+The branch now contains native image-only PFS mutation rather than the earlier read-only placeholder described by the first draft of this plan.
 
-Only after image install/delete and PFS asset import are boringly repeatable do we add a writable raw-disk backend.
+Current writer work includes:
 
-Physical writes require an explicitly separate open mode/backend and additional gates:
+- writable APA volume translation;
+- bitmap/extent allocation;
+- regular file create and replacement;
+- copy-on-write replacement safety;
+- directory creation/growth support;
+- SEGI/fragmented cases;
+- tree removal;
+- batch operations;
+- OPL loose-file import;
+- TAR archive destination handling;
+- cold reader verification after writes.
 
-- administrator access;
+Existing user CFG content remains merge input where applicable. The writer and normal reader share on-disk semantics, not a private post-write interpretation.
+
+See [`frieren-pfs-write.md`](frieren-pfs-write.md).
+
+## F5 - HDL delete and grouped UX - core implemented, frontend integration continuing
+
+APA removal planning and image apply are implemented. `ManagementModel` can consume a committed removal without rebuilding every unrelated HDL result.
+
+Partition presentation groups a main and its authoritative subs through `main_lba`, exposes a logical total size and keeps orphan subs diagnostic rather than assigning them by adjacency.
+
+The remaining frontend task is to make the grouped HDL game action the obvious delete UX while keeping physical-drive mutation unavailable.
+
+## F5R - FHDB Manager recovery/rescue parity - image layer implemented
+
+Recovery is now an explicit Frieren milestone because write support without an interoperable recovery story is merely confidence with better branding.
+
+Implemented shared formats and behaviors include:
+
+- `PS2HBRC\0` v1 FHDB Rescue Capsule parsing/building/validation;
+- `HDDRESCUE.BIN` / `HDDRESCUE2.BIN` two-slot policy;
+- `HDDMBR.BIN` / `HDDMBR2.BIN` exact master backups;
+- legacy `FHDBMBR.BIN` / `FHDBMBR2.BIN` restore input;
+- `HDDRAW.BIN` / `HDDRAW2.BIN` exceptional master snapshots;
+- `APAMETA1` `HDDMETA.BIN` / `HDDMETA2.BIN` forensic touched-header snapshots;
+- `FORENSIC.TXT` report export;
+- raw APA forensic discovery and conservative repair planning;
+- image-only single-master and topology repair apply;
+- image-only full Rescue Capsule bootstrap restore;
+- image-only legacy pointer-only restore;
+- same-disk, stale-plan, live-bounds, payload-first and sector-zero-last safety rules.
+
+Full Rescue restore mirrors FHDB Manager selection precedence. A corrupt or wrong-disk `HDDRESCUE*` blocks fallback to an older legacy pointer. A valid header-only capsule may fall back. Payload is written, flushed and byte-verified before `osdStart`/`osdSize` are published. The current master is backed up before the first target write.
+
+`PS2DFRC1` remains a separate DriveForge Mutation Journal. A test deliberately presents its magic as `HDDRESCUE.BIN` and expects refusal. We are not allowing two recovery formats to merge into one conceptual soup merely because both contain before-images.
+
+The authoritative parity contract is [`fhdb-bootstrap-parity.md`](fhdb-bootstrap-parity.md).
+
+## F6 - physical-disk writes - locked
+
+Physical writes remain a separate future capability.
+
+Graduation requires more than changing `GENERIC_READ` to `GENERIC_READ | GENERIC_WRITE` and hoping the review is distracted. Required gates include:
+
+- administrator access and exact device identity;
 - positive PS2 APA identification;
-- source identity/capacity re-check immediately before commit;
-- volume/disk locking where Windows permits it;
-- mandatory backup/recovery artifact for metadata ranges;
-- explicit user confirmation naming the target disk;
+- immediate source identity recheck before commit;
+- Windows disk/volume locking where meaningful;
+- explicit target naming and confirmation;
+- mandatory mutation or FHDB recovery artifact appropriate to the operation;
 - write-through/flush semantics;
-- cold re-open verification after commit.
+- cold reopen verification;
+- fault injection;
+- sacrificial HDD validation;
+- cross-platform FHDB artifact round trips.
 
-The existing `PhysicalDrive` remains read-only even after this exists.
+The existing `PhysicalDrive` remains read-only even after a future writable physical backend exists.
 
-## Milestone F7: HDL Tools UI
+## F7 - HDL Tools UI - active integration
 
-The WinUI page should expose operations, not raw sector editing:
+The frontend should expose operations, not raw sector editing:
 
 - install game;
-- select optional OPL metadata/artwork/fixes before install;
-- preview provider availability, merges and exact OPL destinations;
+- optional OPL metadata/artwork/fixes;
+- provider and destination preview;
 - edit title/compatibility/DMA metadata;
-- delete game;
-- show planned space usage and affected partitions;
-- export recovery metadata before destructive commits;
-- show a detailed verification result after each operation.
+- delete one grouped HDL game;
+- show total allocated game size including subs;
+- expose subpartitions in a collapsible diagnostic view;
+- preview affected ranges and verification outcome;
+- expose recovery/rescue tools with FHDB terminology, not generic "recovery file" labels.
 
-The old "HDL Games" concept becomes **HDL Tools** because the page owns management actions, not merely another view of the game list.
+The management surface is **HDL Tools**, not merely another HDL Games list.
+
+## Recovery UX direction
+
+DriveForge and FHDB Manager should feel like two platform-specific windows onto one recovery vocabulary. Where operations overlap, names and artifacts should match:
+
+```text
+Create Rescue Capsule
+Restore Rescue Capsule
+Restore legacy HDDMBR/FHDBMBR pointer
+Inspect boot-chain evidence
+Export HDDRAW
+Export HDDMETA / FORENSIC report
+Forensic APA analysis
+Apply guarded repair
+```
+
+Platform-specific UI may differ. The meaning of the button should not.
 
 ## Frieren release gate
 
 0.6.0 is not releasable until:
 
-- all existing Emilia read-only tests remain green;
-- writable image backend tests are green on MSVC and Linux sanitizers;
-- HDL metadata patch/rollback tests are green;
-- install/delete image tests include cold re-open verification;
-- corruption/refusal tests prove malformed APA/HDL layouts are not mutated;
-- OPL asset provider/merge/staging tests are fully offline and deterministic;
-- PFS asset-import tests verify create/replace/merge and cold re-open on disposable images;
-- at least one disposable real PS2 HDD has completed install, OPL asset deployment, boot/read validation on console, delete, and post-delete APA/PFS verification;
-- recovery artifacts have been exercised rather than merely generated.
+- Emilia read-only regressions remain green;
+- all current writable image tests are green on MSVC and Linux sanitizers;
+- package verification includes every canonical Frieren regression executable;
+- HDL install/delete and PFS mutations cold-reopen cleanly;
+- corruption/refusal tests prove malformed layouts are not casually mutated;
+- Rescue Capsule, Mutation Journal and FHDB shared artifacts remain distinct and cross-format rejection is tested;
+- recovery restore precedence matches FHDB Manager;
+- wrong-disk and stale-plan restore cases fail before target writes;
+- real-hardware game/PFS validation is completed on a disposable PS2 HDD;
+- shared recovery artifacts are round-tripped FHDB Manager -> DriveForge and DriveForge -> FHDB Manager on representative real samples;
+- physical PC writes remain disabled unless their separate gate has actually been completed.
 
-The guiding rule is simple: read-only code stays boring, write code stays explicit, and no operation earns a real-disk button merely because it survived one lucky test image.
+The rule remains pleasantly unambitious: read paths stay boring, write paths stay explicit, recovery paths stay interoperable, and no button earns access to a real disk merely because one test image survived human enthusiasm.
