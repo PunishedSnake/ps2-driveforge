@@ -368,6 +368,11 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-opl-pfs-import-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-pfs-import-tests COMMAND ps2-driveforge-opl-pfs-import-tests)
 
+    add_executable(ps2-driveforge-opl-tar-pfs-import-tests tests/opl_tar_pfs_import_tests.cpp)
+    target_link_libraries(ps2-driveforge-opl-tar-pfs-import-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-opl-tar-pfs-import-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-opl-tar-pfs-import-tests COMMAND ps2-driveforge-opl-tar-pfs-import-tests)
+
     add_executable(ps2-driveforge-opl-partition-tests tests/opl_partition_tests.cpp)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-partition-tests PRIVATE cxx_std_20)
