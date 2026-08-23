@@ -23,6 +23,7 @@ configure_file(
 add_library(ps2driveforge_core
     src/core/file_block_device.cpp
     src/core/writable_file_block_device.cpp
+    src/core/disk_layout_guard.cpp
     src/core/writable_apa_volume.cpp
     src/core/write_transaction.cpp
     src/core/apa.cpp
@@ -195,6 +196,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-tests COMMAND ps2-driveforge-tests)
+
+    add_executable(ps2-driveforge-disk-layout-guard-tests tests/disk_layout_guard_tests.cpp)
+    target_link_libraries(ps2-driveforge-disk-layout-guard-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-disk-layout-guard-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-disk-layout-guard-tests COMMAND ps2-driveforge-disk-layout-guard-tests)
 
     add_executable(ps2-driveforge-pfs-file-tests tests/pfs_file_tests.cpp)
     target_link_libraries(ps2-driveforge-pfs-file-tests PRIVATE ps2driveforge_core)
