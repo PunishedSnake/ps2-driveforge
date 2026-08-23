@@ -1,9 +1,11 @@
 #ifdef _WIN32
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/apa_forensic.hpp"
 #include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/physical_apa_recovery.hpp"
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/physical_game_deploy.hpp"
@@ -29,8 +31,9 @@ void usage()
 {
     std::cerr
         << "ps2-driveforge-physical-tools " << ps2hdd::version::string << "\n\n"
-        << "Read-only admission and recovery capture:\n"
+        << "Read-only admission and recovery inspection:\n"
         << "  ps2-driveforge-physical-tools preflight <index>\n"
+        << "  ps2-driveforge-physical-tools forensic-scan <index>\n"
         << "  ps2-driveforge-physical-tools capture-rescue <index> <artifact-dir>\n"
         << "      [--romver <text>] [--family <text>] [--confidence <text>]\n\n"
         << "HDL install:\n"
@@ -42,6 +45,11 @@ void usage()
         << "FHDB/bootstrap restore:\n"
         << "  ps2-driveforge-physical-tools restore-bootstrap <index> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN [--safety-dir <dir>]\n\n"
+        << "Exceptional APA recovery:\n"
+        << "  ps2-driveforge-physical-tools repair-master <index> <artifact-dir>\n"
+        << "      --apply --confirm PhysicalDriveN\n"
+        << "  ps2-driveforge-physical-tools repair-forensic <index> <map-index> <artifact-dir>\n"
+        << "      --apply --confirm PhysicalDriveN [--allow-manual]\n\n"
         << "Physical mutations require an exact target confirmation and host-side recovery artifacts.\n";
 }
 
@@ -140,6 +148,52 @@ int preflight(unsigned index)
               << "  identity:    " << digest_hex(admission.authorization.identity.digest) << "\n"
               << "  write gate:  eligible for guarded RW lease\n";
     return 0;
+}
+
+int forensic_scan(unsigned index)
+{
+    ps2hdd::PhysicalDrive disk(index);
+    if (!disk.is_open()) {
+        std::cerr << "Could not open PhysicalDrive" << index
+                  << " read-only, Win32 error " << disk.open_error() << "\n";
+        return 1;
+    }
+
+    // Raw forensic scanning is intentionally available when normal preflight is
+    // not. The entire point is to acquire evidence from disks whose canonical
+    // APA chain can no longer be trusted. This command never opens an RW handle.
+    const auto scan = ps2hdd::forensic::scan_apa(disk);
+    std::cout << "Forensic APA scan for PhysicalDrive" << index << "\n"
+              << "  status:           " << (scan.ok ? "complete" : "failed") << "\n"
+              << "  total sectors:    " << scan.total_sectors << "\n"
+              << "  candidate nodes:  " << scan.nodes.size() << "\n"
+              << "  candidate maps:   " << scan.maps.size() << "\n"
+              << "  grid reads:       " << scan.grid_reads << "\n"
+              << "  reference reads:  " << scan.reference_reads << "\n"
+              << "  unreadable reads: " << scan.unreadable_reads << "\n"
+              << "  truncated:        " << (scan.truncated ? "YES" : "no") << "\n";
+    if (!scan.error.empty()) {
+        std::cout << "  diagnostic:       " << scan.error << "\n";
+    }
+
+    for (std::size_t i = 0; i < scan.maps.size(); ++i) {
+        const auto& map = scan.maps[i];
+        const auto plan = ps2hdd::forensic::build_repair_plan(scan, i);
+        std::cout << "\nMap " << i << " (" << ps2hdd::forensic::map_name(map.kind) << ")\n"
+                  << "  nodes:        " << map.order.size() << "\n"
+                  << "  reciprocal:   " << map.reciprocal_links << "\n"
+                  << "  inferred:     " << map.inferred_links << "\n"
+                  << "  conflicts:    " << map.conflicts << "\n"
+                  << "  overlaps:     " << map.overlaps << "\n"
+                  << "  confidence:   " << map.confidence << "\n"
+                  << "  repairable:   " << (map.repairable ? "yes" : "no") << "\n"
+                  << "  patches:      " << plan.patches.size() << "\n"
+                  << "  auto-safe:    " << (plan.automatic_safe ? "YES" : "no") << "\n"
+                  << "  manual-only:  "
+                  << (!plan.automatic_safe && plan.manual_allowed ? "yes" : "no") << "\n";
+    }
+
+    return scan.ok && !scan.truncated ? 0 : 1;
 }
 
 int capture_rescue(std::span<char*> args)
@@ -340,6 +394,111 @@ int restore_bootstrap(std::span<char*> args)
     return 0;
 }
 
+int repair_master(std::span<char*> args)
+{
+    if (args.size() < 6) {
+        usage();
+        return 2;
+    }
+    unsigned index = 0;
+    if (!parse_unsigned(args[2], index)) {
+        std::cerr << "Invalid physical drive index\n";
+        return 2;
+    }
+    std::string confirmation_error;
+    if (!confirm_target(args, index, confirmation_error)) {
+        std::cerr << confirmation_error << "\n";
+        return 2;
+    }
+
+    ps2hdd::PhysicalApaRecoveryOptions options;
+    options.artifact_directory = std::filesystem::path(args[3]);
+    const auto result = ps2hdd::repair_master_header_on_physical(index, options);
+    if (!result.ok) {
+        std::cerr << "Physical APA master repair failed: " << result.error << "\n";
+        if (!result.repair.snapshot_path.empty()) {
+            std::cerr << "HDDRAW: " << result.repair.snapshot_path.string() << "\n";
+        }
+        return result.partial ? 3 : 1;
+    }
+
+    std::cout << "Physical APA master repair complete\n"
+              << "  HDDRAW:       " << result.repair.snapshot_path.string() << "\n"
+              << "  cold master:  " << (result.cold_master_verified ? "verified" : "not verified") << "\n"
+              << "  full APA scan: " << (result.cold_apa_clean ? "clean" : "still has other damage") << "\n"
+              << "  locked Windows volumes: " << result.locked_volume_count << "\n";
+    return 0;
+}
+
+int repair_forensic(std::span<char*> args)
+{
+    if (args.size() < 7) {
+        usage();
+        return 2;
+    }
+
+    unsigned index = 0;
+    unsigned raw_map_index = 0;
+    if (!parse_unsigned(args[2], index) || !parse_unsigned(args[3], raw_map_index)) {
+        std::cerr << "Invalid physical drive index or forensic map index\n";
+        return 2;
+    }
+    std::string confirmation_error;
+    if (!confirm_target(args, index, confirmation_error)) {
+        std::cerr << confirmation_error << "\n";
+        return 2;
+    }
+
+    ps2hdd::PhysicalDrive disk(index);
+    if (!disk.is_open()) {
+        std::cerr << "Could not open PhysicalDrive" << index << " read-only for forensic scan\n";
+        return 1;
+    }
+    const auto scan = ps2hdd::forensic::scan_apa(disk);
+    const auto map_index = static_cast<std::size_t>(raw_map_index);
+    if (!scan.ok || scan.truncated || map_index >= scan.maps.size()) {
+        std::cerr << "Forensic scan is incomplete or does not contain map " << map_index << "\n";
+        return 1;
+    }
+    const auto plan = ps2hdd::forensic::build_repair_plan(scan, map_index);
+    const bool allow_manual = has_flag(args, "--allow-manual");
+    if (!plan.automatic_safe && !(allow_manual && plan.manual_allowed)) {
+        std::cerr << "Selected forensic plan is not automatic-safe";
+        if (plan.manual_allowed) {
+            std::cerr << "; explicit --allow-manual is required for this developer path";
+        }
+        std::cerr << "\n";
+        return 1;
+    }
+
+    ps2hdd::PhysicalApaRecoveryOptions options;
+    options.artifact_directory = std::filesystem::path(args[4]);
+    const auto result = ps2hdd::repair_forensic_topology_on_physical(
+        index, scan, plan, options, allow_manual);
+    if (!result.ok) {
+        std::cerr << "Physical forensic APA repair failed: " << result.error << "\n";
+        if (!result.repair.snapshot_path.empty()) {
+            std::cerr << "HDDMETA: " << result.repair.snapshot_path.string() << "\n";
+        }
+        if (!result.repair.forensic_report_path.empty()) {
+            std::cerr << "FORENSIC: " << result.repair.forensic_report_path.string() << "\n";
+        }
+        return result.partial ? 3 : 1;
+    }
+
+    std::cout << "Physical forensic APA repair complete\n"
+              << "  map:          " << map_index << " ("
+              << ps2hdd::forensic::map_name(scan.maps[map_index].kind) << ")\n"
+              << "  patches:      " << plan.patches.size() << "\n"
+              << "  writes:       " << result.repair.writes_completed << "\n"
+              << "  HDDMETA:      " << result.repair.snapshot_path.string() << "\n"
+              << "  FORENSIC:     " << result.repair.forensic_report_path.string() << "\n"
+              << "  cold touched: " << (result.cold_touched_set_verified ? "verified" : "not verified") << "\n"
+              << "  full APA scan: " << (result.cold_apa_clean ? "clean" : "still has other damage") << "\n"
+              << "  locked Windows volumes: " << result.locked_volume_count << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -367,6 +526,18 @@ int main(int argc, char** argv)
         }
         return preflight(index);
     }
+    if (command == "forensic-scan") {
+        if (argc != 3) {
+            usage();
+            return 2;
+        }
+        unsigned index = 0;
+        if (!parse_unsigned(argv[2], index)) {
+            std::cerr << "Invalid physical drive index\n";
+            return 2;
+        }
+        return forensic_scan(index);
+    }
     if (command == "capture-rescue") {
         return capture_rescue(args);
     }
@@ -378,6 +549,12 @@ int main(int argc, char** argv)
     }
     if (command == "restore-bootstrap") {
         return restore_bootstrap(args);
+    }
+    if (command == "repair-master") {
+        return repair_master(args);
+    }
+    if (command == "repair-forensic") {
+        return repair_forensic(args);
     }
 
     usage();
