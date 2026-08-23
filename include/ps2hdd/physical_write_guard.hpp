@@ -37,7 +37,13 @@ struct IdentityResult {
                                    const IdentitySnapshot& expected,
                                    std::string& error);
 
+enum class AuthorizationKind {
+    normal_mutation,
+    exceptional_recovery,
+};
+
 struct Authorization {
+    AuthorizationKind kind{AuthorizationKind::normal_mutation};
     IdentitySnapshot identity;
     std::uint32_t apa_version{};
     std::size_t apa_header_count{};
@@ -50,14 +56,21 @@ struct AuthorizationResult {
     Authorization authorization;
 };
 
-// Portable read-only admission for future physical mutation. It intentionally
-// combines the PC partition-map guard, a clean canonical APA scan and the media
-// fingerprint. Passing one of those checks is not a coupon for skipping the
-// others simply because sector zero looks familiar.
+// Normal write admission requires PC-layout ownership to be PS2-compatible, a
+// clean canonical APA scan and a stable media fingerprint.
 [[nodiscard]] AuthorizationResult authorize(BlockDevice& device);
 
-// Recheck every admission property immediately before opening the write gate.
-// This is useful both for the Windows backend and deterministic image tests.
+// Exceptional recovery deliberately does NOT require the normal APA reader to
+// accept the disk. A sector-zero or topology repair whose first prerequisite is
+// "please already have a healthy APA" would be impressively circular. This gate
+// proves device size/alignment, absence of conflicting GPT ownership and media
+// identity. The repair/forensic planner remains responsible for authorizing the
+// actual recovery bytes.
+[[nodiscard]] AuthorizationResult authorize_exceptional_recovery(BlockDevice& device);
+
+// Recheck the properties appropriate to the authorization kind immediately
+// before opening the write gate. Normal mutation rechecks clean APA topology;
+// exceptional recovery rechecks only PC ownership plus exact media identity.
 [[nodiscard]] bool verify_authorization(BlockDevice& device,
                                         const Authorization& expected,
                                         std::string& error);
