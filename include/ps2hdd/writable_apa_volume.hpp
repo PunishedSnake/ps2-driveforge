@@ -29,6 +29,14 @@ public:
                       std::span<std::byte> out);
     bool write_sectors(std::size_t sub, std::uint32_t sector, std::uint32_t count,
                        std::span<const std::byte> in);
+
+    // Resolve a validated main/sub-relative sector range to the backing device
+    // byte offset. Format-level transactions use this to stage metadata through
+    // WriteTransaction without exposing or duplicating APA extent arithmetic.
+    [[nodiscard]] bool absolute_byte_offset(std::size_t sub, std::uint32_t sector,
+                                            std::uint32_t count,
+                                            std::uint64_t& offset) const noexcept;
+
     bool flush() noexcept { return device_.flush(); }
 
 private:

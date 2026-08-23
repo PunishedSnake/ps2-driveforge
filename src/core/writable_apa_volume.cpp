@@ -44,6 +44,17 @@ bool WritableApaVolume::byte_range(std::size_t sub, std::uint32_t sector,
     return true;
 }
 
+bool WritableApaVolume::absolute_byte_offset(std::size_t sub, std::uint32_t sector,
+                                             std::uint32_t count,
+                                             std::uint64_t& offset) const noexcept
+{
+    const std::uint64_t bytes64 = static_cast<std::uint64_t>(count) * apa::kSectorSize;
+    if (bytes64 > std::numeric_limits<std::size_t>::max()) {
+        return false;
+    }
+    return byte_range(sub, sector, count, static_cast<std::size_t>(bytes64), offset);
+}
+
 bool WritableApaVolume::read_sectors(std::size_t sub, std::uint32_t sector,
                                      std::uint32_t count, std::span<std::byte> out)
 {
