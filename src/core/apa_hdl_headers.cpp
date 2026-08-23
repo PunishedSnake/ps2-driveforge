@@ -34,9 +34,10 @@ HdlHeaderPlan build_hdl_headers(const AllocationPlan& allocation,
         const auto& extent = allocation.extents[index];
         auto& header = result.headers[index];
         if (extent.length_sectors == 0 || extent.start_lba % kAllocationChunkSectors != 0 ||
-            extent.length_sectors % kAllocationChunkSectors != 0) {
+            extent.length_sectors % kAllocationChunkSectors != 0 ||
+            extent.start_lba % extent.length_sectors != 0) {
             result.headers.clear();
-            result.error = "Planned HDL extent is not a valid 128 MiB APA allocation";
+            result.error = "Planned HDL extent is not a valid self-aligned 128 MiB APA allocation";
             return result;
         }
 
