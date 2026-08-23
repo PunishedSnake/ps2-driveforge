@@ -19,13 +19,7 @@
 namespace ps2hdd::magicgate {
 
 struct HostServiceLimits {
-    // Keysets are tiny text files. Keeping a separate bound makes accidental
-    // "load this 4 GiB dump as keys.ini" behavior impossible at the service
-    // boundary even if a future frontend forgets to be suspicious.
     std::size_t max_keyset_bytes{64U * 1024U};
-
-    // Disk bootstrap KELFs are expected to be modest. The default is generous
-    // enough for real payloads while still making allocation behavior bounded.
     std::size_t max_kelf_bytes{64U * 1024U * 1024U};
     std::size_t max_plaintext_bytes{64U * 1024U * 1024U};
 };
@@ -47,7 +41,7 @@ struct HostKelfVerification {
     bool ok{};
     std::string error;
     KelfHeaderVerifyResult envelope;
-    DiskKelfPayloadResult payload;
+    KelfPayloadVerifyResult payload;
 
     [[nodiscard]] std::span<const std::byte> plaintext() const noexcept
     {
@@ -62,12 +56,6 @@ struct HostKelfSignResult {
     HostKelfVerification verification;
 };
 
-// High-level, bounded MagicGate capability for bootstrap providers/frontends.
-//
-// This class deliberately owns no filesystem object, HTTP client or raw-disk
-// writer. A provider must acquire/stage bytes first, then pass one bounded byte
-// span here. A bootstrap installer receives only output that this service has
-// already verified. The separation is the security property, not ceremony.
 class MagicGateHostService final {
 public:
     explicit MagicGateHostService(HostServiceLimits limits = {})
@@ -108,9 +96,7 @@ public:
         const auto parsed = parse_magicgate_keyset(text);
         if (!parsed.ok) {
             error = parsed.error;
-            if (parsed.line != 0U) {
-                error += " at line " + std::to_string(parsed.line);
-            }
+            if (parsed.line != 0U) error += " at line " + std::to_string(parsed.line);
             return false;
         }
 
@@ -120,10 +106,6 @@ public:
         return true;
     }
 
-    // Typed injection is useful for callers that already loaded a keyset through
-    // an OS-specific secure/configuration layer and for deterministic tests. The
-    // provenance requirement remains: anonymous production keys are debugging
-    // poison when two sources disagree.
     [[nodiscard]] bool load_keyset(MagicGateKeyset keyset,
                                    std::string provenance,
                                    std::string& error)
@@ -142,14 +124,8 @@ public:
     void clear_keyset() noexcept
     {
         if (keyset_) {
-            // Best-effort in-process scrubbing. This is not a promise that a C++
-            // optimizer/OS paging layer provides cryptographic erasure, but it
-            // avoids deliberately retaining user-supplied key material for the
-            // remaining process lifetime after the capability is released.
             auto* bytes = reinterpret_cast<volatile unsigned char*>(&*keyset_);
-            for (std::size_t i = 0; i < sizeof(MagicGateKeyset); ++i) {
-                bytes[i] = 0;
-            }
+            for (std::size_t i = 0; i < sizeof(MagicGateKeyset); ++i) bytes[i] = 0;
             keyset_.reset();
         }
         keyset_provenance_.clear();
@@ -159,9 +135,7 @@ public:
     {
         HostKelfInspection result;
         result.keyset_loaded = keyset_.has_value();
-        if (!bounded_kelf(file, result.error)) {
-            return result;
-        }
+        if (!bounded_kelf(file, result.error)) return result;
 
         result.layout = inspect_kelf(file);
         if (!result.layout.ok) {
@@ -176,9 +150,7 @@ public:
     [[nodiscard]] HostKelfVerification verify(std::span<const std::byte> file) const
     {
         HostKelfVerification result;
-        if (!bounded_kelf(file, result.error)) {
-            return result;
-        }
+        if (!bounded_kelf(file, result.error)) return result;
         if (!keyset_) {
             result.error = "MagicGate verification requires a loaded local keyset capability";
             return result;
@@ -189,9 +161,6 @@ public:
             result.error = result.envelope.error;
             return result;
         }
-
-        // Ambiguous signed-flag semantics are acceptable for key-free inspection
-        // but not for a bootstrap payload that would be handed downstream.
         if (result.envelope.signed_flag_mapping == SignedFlagMapping::ambiguous ||
             result.envelope.signed_flag_mapping == SignedFlagMapping::unresolved) {
             result.error = "MagicGate KELF signed/encrypted BIT flag semantics are unresolved";
@@ -241,9 +210,6 @@ public:
             return result;
         }
 
-        // Do not trust the signer's retained self-check as the service boundary.
-        // Reconsume the exact returned bytes through the same public verification
-        // method a provider would use for externally supplied KELFs.
         result.verification = verify(signed_kelf.file);
         if (!result.verification.ok) {
             result.error = "MagicGate host service rejected its generated KELF: " +
