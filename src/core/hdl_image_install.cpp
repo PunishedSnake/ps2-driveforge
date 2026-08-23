@@ -4,7 +4,7 @@
 #include "ps2hdd/apa_mutation.hpp"
 #include "ps2hdd/hdl_install_plan.hpp"
 #include "ps2hdd/hdl_metadata_builder.hpp"
-#include "ps2hdd/recovery_capsule.hpp"
+#include "ps2hdd/mutation_journal.hpp"
 #include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
@@ -54,20 +54,20 @@ void report(const ImageInstallProgressCallback& callback,
     for (const auto& write : writes) {
         std::vector<std::byte> current(write.before.size());
         if (!disk.read(write.offset, current)) {
-            error = "Could not re-read staged metadata before durable recovery prepare";
+            error = "Could not re-read staged metadata before durable mutation-journal prepare";
             return false;
         }
         if (current != write.before) {
-            error = "Target metadata changed after transaction staging; refusing stale recovery prepare";
+            error = "Target metadata changed after transaction staging; refusing stale mutation-journal prepare";
             return false;
         }
     }
     return true;
 }
 
-[[nodiscard]] bool admit_recovery_path(WritableBlockDevice& disk,
-                                       const std::filesystem::path& path,
-                                       std::string& error)
+[[nodiscard]] bool admit_mutation_journal_path(WritableBlockDevice& disk,
+                                                const std::filesystem::path& path,
+                                                std::string& error)
 {
     if (path.empty()) {
         return true;
@@ -75,25 +75,25 @@ void report(const ImageInstallProgressCallback& callback,
     std::error_code ec;
     const bool exists = std::filesystem::exists(path, ec);
     if (ec) {
-        error = "Could not inspect existing HDL recovery capsule path: " + ec.message();
+        error = "Could not inspect existing HDL mutation journal path: " + ec.message();
         return false;
     }
     if (!exists) {
         return true;
     }
 
-    const auto previous = inspect_recovery_capsule(path, disk);
+    const auto previous = inspect_mutation_journal(path, disk);
     if (!previous.ok) {
-        error = "Existing HDL recovery capsule is unreadable and will not be overwritten: " +
+        error = "Existing HDL mutation journal is unreadable and will not be overwritten: " +
                 previous.error;
         return false;
     }
-    if (previous.capsule_state == RecoveryCapsuleState::prepared) {
-        error = "An unresolved PREPARED HDL recovery capsule already exists; recover it before a new install";
+    if (previous.journal_state == MutationJournalState::prepared) {
+        error = "An unresolved PREPARED HDL mutation journal already exists; resolve it before a new install";
         return false;
     }
-    if (previous.device_state == RecoveryDeviceState::foreign_or_corrupt) {
-        error = "Existing terminal HDL recovery capsule does not match the current target device";
+    if (previous.device_state == MutationDeviceState::foreign_or_corrupt) {
+        error = "Existing terminal HDL mutation journal does not match the current target device";
         return false;
     }
     return true;
@@ -119,7 +119,7 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
         result.error = "HDL image install requires explicit CD or DVD media type";
         return result;
     }
-    if (!admit_recovery_path(disk, options.recovery_capsule_path, result.error)) {
+    if (!admit_mutation_journal_path(disk, options.mutation_journal_path, result.error)) {
         return result;
     }
 
@@ -235,19 +235,19 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
         return result;
     }
 
-    if (!options.recovery_capsule_path.empty()) {
+    if (!options.mutation_journal_path.empty()) {
         if (!verify_staged_before_images(disk, transaction.staged_writes(), result.error)) {
             result.orphan_payload_bytes_on_failure = copied;
             return result;
         }
-        const auto capsule = create_recovery_capsule(
-            options.recovery_capsule_path, disk, transaction.staged_writes());
-        if (!capsule.ok) {
-            result.error = "Could not durably prepare HDL recovery capsule: " + capsule.error;
+        const auto journal = create_mutation_journal(
+            options.mutation_journal_path, disk, transaction.staged_writes());
+        if (!journal.ok) {
+            result.error = "Could not durably prepare HDL mutation journal: " + journal.error;
             result.orphan_payload_bytes_on_failure = copied;
             return result;
         }
-        result.recovery_capsule_created = true;
+        result.mutation_journal_created = true;
     }
 
     report(progress, copied, result.payload_bytes, "publish");
@@ -283,28 +283,28 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
     if (!commit.ok) {
         result.error = "HDL APA publication transaction failed: " + commit.error;
         result.orphan_payload_bytes_on_failure = copied;
-        if (result.recovery_capsule_created) {
+        if (result.mutation_journal_created) {
             if (commit.rollback_ok) {
-                const auto restored = restore_prepared_recovery_capsule(
-                    options.recovery_capsule_path, disk);
+                const auto restored = restore_prepared_mutation_journal(
+                    options.mutation_journal_path, disk);
                 if (!restored.ok) {
-                    result.recovery_pending = true;
-                    result.warning = "Automatic transaction rollback succeeded, but recovery capsule "
+                    result.mutation_recovery_pending = true;
+                    result.warning = "Automatic transaction rollback succeeded, but mutation journal "
                                      "could not be finalized as RESTORED: " + restored.error;
                 }
             } else {
-                result.recovery_pending = true;
-                result.warning = "In-memory rollback failed; PREPARED recovery capsule must be resolved";
+                result.mutation_recovery_pending = true;
+                result.warning = "In-memory rollback failed; PREPARED mutation journal must be resolved";
             }
         }
         return result;
     }
 
-    if (result.recovery_capsule_created) {
-        const auto marked = mark_recovery_capsule_committed(options.recovery_capsule_path);
+    if (result.mutation_journal_created) {
+        const auto marked = mark_mutation_journal_committed(options.mutation_journal_path);
         if (!marked.ok) {
-            result.recovery_pending = true;
-            result.warning = "HDL install verified successfully, but recovery capsule could not be "
+            result.mutation_recovery_pending = true;
+            result.warning = "HDL install verified successfully, but mutation journal could not be "
                              "marked COMMITTED: " + marked.error;
         }
     }
