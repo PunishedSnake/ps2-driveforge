@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -41,10 +42,27 @@ public:
         if (offset > bytes_.size() || in.size() > bytes_.size() - static_cast<std::size_t>(offset)) {
             return false;
         }
+        if (fail_write_offset_ && offset == *fail_write_offset_ && fail_write_match_ != 0) {
+            --fail_write_match_;
+            if (fail_write_match_ == 0) {
+                // Fail exactly once. A WriteTransaction rollback of this same
+                // sector must then be allowed to restore its before-image.
+                fail_write_offset_.reset();
+                return false;
+            }
+        }
         std::memcpy(bytes_.data() + static_cast<std::size_t>(offset), in.data(), in.size());
         return true;
     }
     bool flush() override { return true; }
+
+    void fail_matching_write(std::uint64_t offset, std::size_t match)
+    {
+        check(match != 0, "fault injection match index must be non-zero");
+        fail_write_offset_ = offset;
+        fail_write_match_ = match;
+    }
+
     template <typename T> void put_object(std::uint64_t offset, const T& value)
     {
         check(write(offset, std::as_bytes(std::span{&value, 1})), "fixture object write");
@@ -55,6 +73,8 @@ public:
     }
 private:
     std::vector<std::byte> bytes_;
+    std::optional<std::uint64_t> fail_write_offset_;
+    std::size_t fail_write_match_{};
 };
 
 ps2hdd::apa::Header make_header(const char* id, std::uint16_t type,
@@ -164,6 +184,17 @@ struct Fixture {
         check(scan.ok() && scan.partitions.size() == 2, "fixture APA scan");
     }
 
+    [[nodiscard]] static constexpr std::uint64_t partition_base() noexcept
+    {
+        return static_cast<std::uint64_t>(pfs_lba) * ps2hdd::apa::kSectorSize;
+    }
+
+    [[nodiscard]] static constexpr std::uint64_t bitmap_offset() noexcept
+    {
+        return partition_base() +
+               static_cast<std::uint64_t>(bitmap_sector) * ps2hdd::apa::kSectorSize;
+    }
+
     LinearDisk disk;
     ps2hdd::apa::ScanResult scan;
 };
@@ -217,12 +248,45 @@ void create_replace_and_unlink_segi_file()
     check(!after.resolve("/SEGI.BIN"), "SEGI file no longer resolves after unlink");
 }
 
+void failed_second_segi_reservation_restores_bitmap()
+{
+    Fixture fixture;
+    ps2hdd::pfs::ImageWriter writer(fixture.disk, fixture.scan.partitions[1]);
+    check(writer.valid(), "fault-injection SEGI writer fixture probes");
+
+    std::array<std::byte, ps2hdd::pfs::kMetadataSize> bitmap_before{};
+    check(fixture.disk.read(Fixture::bitmap_offset(), bitmap_before),
+          "snapshot PFS bitmap before injected failure");
+
+    // create_file_segi commits the one-zone inode reservation first and the
+    // fragmented payload reservation second. Fail that second bitmap write.
+    // The transaction rolls the failed data reservation back, then the writer
+    // must release only the inode reservation it actually owns.
+    fixture.disk.fail_matching_write(Fixture::bitmap_offset(), 2);
+    const auto payload = pattern(Fixture::zone_size * 114U, 41);
+    const auto failed = writer.write_file_complete("/FAIL.BIN", payload);
+    check(!failed.ok, "injected second SEGI reservation fails the operation");
+
+    std::array<std::byte, ps2hdd::pfs::kMetadataSize> bitmap_after{};
+    check(fixture.disk.read(Fixture::bitmap_offset(), bitmap_after),
+          "snapshot PFS bitmap after injected failure");
+    check(bitmap_after == bitmap_before,
+          "failed SEGI reservation restores bitmap byte-for-byte");
+
+    ps2hdd::ApaVolume volume(fixture.disk, fixture.scan.partitions[1]);
+    ps2hdd::pfs::Reader reader(volume);
+    check(reader.valid(), "PFS remains readable after injected SEGI reservation failure");
+    check(!reader.resolve("/FAIL.BIN"),
+          "failed SEGI reservation never publishes namespace visibility");
+}
+
 } // namespace
 
 int main()
 {
     try {
         create_replace_and_unlink_segi_file();
+        failed_second_segi_reservation_restores_bitmap();
         std::cout << "PFS SEGI write tests passed\n";
         return 0;
     } catch (const std::exception& error) {
