@@ -2,9 +2,13 @@
 
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/apa_forensic.hpp"
+#include "ps2hdd/bootstrap_manifest.hpp"
+#include "ps2hdd/bootstrap_provider.hpp"
 #include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/http_client.hpp"
+#include "ps2hdd/magicgate_service.hpp"
 #include "ps2hdd/physical_apa_recovery.hpp"
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
@@ -13,12 +17,15 @@
 #include "ps2hdd/physical_write_guard.hpp"
 #include "ps2hdd/version.hpp"
 
+#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
@@ -39,6 +46,12 @@ void usage()
         << "HDL install:\n"
         << "  ps2-driveforge-physical-tools install-hdl <index> <game.iso> <title> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN [--cd] [--hidden]\n\n"
+        << "Bootstrap provider staging/install:\n"
+        << "  ps2-driveforge-physical-tools stage-provider <index> <manifest>\n"
+        << "      [--keyset <file>] [--icvps2 <16hex>] [--icvps2-provenance <text>]\n"
+        << "  ps2-driveforge-physical-tools install-provider <index> <manifest> <safety-dir>\n"
+        << "      --apply --confirm PhysicalDriveN [--keyset <file>]\n"
+        << "      [--icvps2 <16hex>] [--icvps2-provenance <text>]\n\n"
         << "APA/HDL remove:\n"
         << "  ps2-driveforge-physical-tools remove <index> <main-lba> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN\n\n"
@@ -50,6 +63,7 @@ void usage()
         << "      --apply --confirm PhysicalDriveN\n"
         << "  ps2-driveforge-physical-tools repair-forensic <index> <map-index> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN [--allow-manual]\n\n"
+        << "Provider network/crypto staging completes before any writable raw-disk handle is opened.\n"
         << "Physical mutations require an exact target confirmation and host-side recovery artifacts.\n";
 }
 
@@ -115,6 +129,246 @@ std::string digest_hex(const ps2hdd::crypto::Sha256Digest& digest)
         out << std::setw(2) << std::to_integer<unsigned>(byte);
     }
     return out.str();
+}
+
+bool read_text_bounded(const std::filesystem::path& path,
+                       std::size_t max_bytes,
+                       std::string& text,
+                       std::string& error)
+{
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        error = "Could not open local file: " + path.string();
+        return false;
+    }
+    const auto end = input.tellg();
+    if (end < 0 || static_cast<std::uint64_t>(end) > max_bytes) {
+        error = "Local file exceeds its bounded read limit: " + path.string();
+        return false;
+    }
+    text.resize(static_cast<std::size_t>(end));
+    input.seekg(0, std::ios::beg);
+    if (!text.empty() && !input.read(text.data(), static_cast<std::streamsize>(text.size()))) {
+        error = "Could not read local file completely: " + path.string();
+        return false;
+    }
+    return true;
+}
+
+int hex_nibble(char ch) noexcept
+{
+    if (ch >= '0' && ch <= '9') return static_cast<int>(ch - '0');
+    if (ch >= 'a' && ch <= 'f') return static_cast<int>(ch - 'a') + 10;
+    if (ch >= 'A' && ch <= 'F') return static_cast<int>(ch - 'A') + 10;
+    return -1;
+}
+
+bool parse_icvps2(std::string_view text,
+                  ps2hdd::magicgate::cipher::Block& out,
+                  std::string& error)
+{
+    if (text.empty()) return false;
+    if (text.size() != out.size() * 2U) {
+        error = "ICVPS2 must contain exactly 16 hexadecimal characters (8 bytes)";
+        return false;
+    }
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const int hi = hex_nibble(text[i * 2U]);
+        const int lo = hex_nibble(text[i * 2U + 1U]);
+        if (hi < 0 || lo < 0) {
+            error = "ICVPS2 contains a non-hexadecimal character";
+            return false;
+        }
+        out[i] = static_cast<std::byte>((hi << 4) | lo);
+    }
+    return true;
+}
+
+struct ProviderStageResult {
+    bool ok{};
+    std::string error;
+    std::string product;
+    std::string source_sha256;
+    std::string payload_sha256;
+    ps2hdd::bootstrap::FrozenInstallInput frozen;
+};
+
+ProviderStageResult stage_provider(unsigned index,
+                                   const std::filesystem::path& manifest_path,
+                                   std::span<char*> args)
+{
+    ProviderStageResult result;
+    std::string manifest_text;
+    if (!read_text_bounded(manifest_path, 128U * 1024U, manifest_text, result.error)) {
+        return result;
+    }
+    const auto parsed = ps2hdd::bootstrap::parse_provider_manifest(manifest_text);
+    if (!parsed.ok) {
+        result.error = parsed.error;
+        if (parsed.line != 0U) result.error += " at line " + std::to_string(parsed.line);
+        return result;
+    }
+
+    ps2hdd::PhysicalDrive disk(index);
+    if (!disk.is_open()) {
+        result.error = "Could not open PhysicalDrive" + std::to_string(index) + " read-only for provider staging";
+        return result;
+    }
+    const auto admission = ps2hdd::physical_write::authorize(disk);
+    if (!admission.ok) {
+        result.error = "Physical provider preflight refused the target: " + admission.error;
+        return result;
+    }
+    const auto target_fingerprint = digest_hex(admission.authorization.identity.digest);
+
+    auto http = ps2hdd::make_platform_http_client();
+    if (!http) {
+        result.error = "No native HTTPS provider transport is available on this platform";
+        return result;
+    }
+    const auto acquired = ps2hdd::bootstrap::acquire(*http, parsed.artifact);
+    if (!acquired.ok) {
+        result.error = acquired.error;
+        return result;
+    }
+
+    ps2hdd::magicgate::MagicGateHostService magicgate;
+    if (parsed.artifact.magicgate_policy == ps2hdd::bootstrap::MagicGatePolicy::verify_kelf ||
+        parsed.artifact.magicgate_policy == ps2hdd::bootstrap::MagicGatePolicy::sign_plaintext) {
+        const auto keyset_path = value_after(args, "--keyset");
+        if (keyset_path.empty()) {
+            result.error = "This provider policy requires --keyset <local-file>";
+            return result;
+        }
+        std::string keyset_text;
+        if (!read_text_bounded(keyset_path, magicgate.limits().max_keyset_bytes,
+                               keyset_text, result.error)) {
+            return result;
+        }
+        std::string key_error;
+        if (!magicgate.load_keyset_text(
+                keyset_text, "local file: " + keyset_path, key_error)) {
+            result.error = key_error;
+            return result;
+        }
+    }
+
+    const auto icvps2_hex = value_after(args, "--icvps2");
+    if (!icvps2_hex.empty()) {
+        ps2hdd::magicgate::cipher::Block icv{};
+        if (!parse_icvps2(icvps2_hex, icv, result.error)) return result;
+        const auto provenance = value_after(args, "--icvps2-provenance");
+        if (provenance.empty()) {
+            result.error = "ICVPS2 evidence requires --icvps2-provenance <text>";
+            return result;
+        }
+        std::string evidence_error;
+        if (!magicgate.load_icvps2(icv, provenance, evidence_error)) {
+            result.error = evidence_error;
+            return result;
+        }
+    }
+
+    if (parsed.artifact.magicgate_policy == ps2hdd::bootstrap::MagicGatePolicy::sign_plaintext) {
+        result.error = "Provider manifest requests MagicGate signing, but generic manifests do not serialize a DiskKelfSignPlan; use a typed provider strategy or an already signed/verified KELF";
+        return result;
+    }
+
+    const auto prepared = ps2hdd::bootstrap::prepare(acquired, &magicgate);
+    if (!prepared.ok) {
+        result.error = prepared.error;
+        return result;
+    }
+    result.frozen = ps2hdd::bootstrap::freeze_install_input(prepared, target_fingerprint);
+    if (!result.frozen.ok) {
+        result.error = result.frozen.error;
+        return result;
+    }
+    std::string frozen_error;
+    if (!ps2hdd::bootstrap::validate_frozen_payload(result.frozen, frozen_error)) {
+        result.error = frozen_error;
+        result.frozen = {};
+        return result;
+    }
+
+    result.product = std::string(ps2hdd::bootstrap::strategy_for(parsed.artifact.family).name);
+    result.source_sha256 = prepared.source_sha256;
+    result.payload_sha256 = prepared.payload_sha256;
+    result.ok = true;
+    return result;
+}
+
+void print_provider_stage(unsigned index, const ProviderStageResult& staged)
+{
+    std::cout << "Bootstrap provider staged read-only\n"
+              << "  target:       PhysicalDrive" << index << "\n"
+              << "  product:      " << staged.product << "\n"
+              << "  provider:     " << staged.frozen.provider_id << "\n"
+              << "  version:      " << staged.frozen.immutable_version << "\n"
+              << "  provenance:   " << staged.frozen.provenance << "\n"
+              << "  source SHA:   " << staged.source_sha256 << "\n"
+              << "  payload SHA:  " << staged.payload_sha256 << "\n"
+              << "  payload:      " << staged.frozen.payload.size() << " bytes\n"
+              << "  sectors:      " << staged.frozen.payload_sector_count << "\n"
+              << "  __mbr start:  " << staged.frozen.program_start_sector << "\n"
+              << "  target SHA:   " << staged.frozen.target_fingerprint << "\n"
+              << "  MagicGate:    " << (staged.frozen.magicgate_verified ? "verified" : "not required")
+              << (staged.frozen.magicgate_signed ? ", signed" : "") << "\n";
+}
+
+int provider_stage_command(std::span<char*> args, bool install)
+{
+    const std::size_t minimum = install ? 7U : 4U;
+    if (args.size() < minimum) {
+        usage();
+        return 2;
+    }
+
+    unsigned index = 0;
+    if (!parse_unsigned(args[2], index)) {
+        std::cerr << "Invalid physical drive index\n";
+        return 2;
+    }
+    if (install) {
+        std::string confirmation_error;
+        if (!confirm_target(args, index, confirmation_error)) {
+            std::cerr << confirmation_error << "\n";
+            return 2;
+        }
+    }
+
+    const auto staged = stage_provider(index, std::filesystem::path(args[3]), args);
+    if (!staged.ok) {
+        std::cerr << "Bootstrap provider staging refused: " << staged.error << "\n";
+        return 1;
+    }
+    print_provider_stage(index, staged);
+    if (!install) {
+        std::cout << "No target writes were performed.\n";
+        return 0;
+    }
+
+    ps2hdd::PhysicalBootstrapInstallOptions options;
+    options.safety_directory = std::filesystem::path(args[4]);
+    const auto result = ps2hdd::install_bootstrap_to_physical(index, staged.frozen, options);
+    if (!result.ok) {
+        std::cerr << "Physical bootstrap provider install failed: " << result.error << "\n";
+        if (!result.rescue_capsule_path.empty()) {
+            std::cerr << "Rescue Capsule: " << result.rescue_capsule_path.string() << "\n";
+        }
+        if (!result.hddmbr_path.empty()) {
+            std::cerr << "HDDMBR: " << result.hddmbr_path.string() << "\n";
+        }
+        return result.partial ? 3 : 1;
+    }
+
+    std::cout << "Physical bootstrap provider install complete\n"
+              << "  Rescue Capsule: " << result.rescue_capsule_path.string() << "\n"
+              << "  HDDMBR:         " << result.hddmbr_path.string() << "\n"
+              << "  cold master:    " << (result.cold_master_verified ? "verified" : "not verified") << "\n"
+              << "  cold payload:   " << (result.cold_payload_verified ? "verified" : "not verified") << "\n"
+              << "  locked Windows volumes: " << result.locked_volume_count << "\n";
+    return 0;
 }
 
 int preflight(unsigned index)
@@ -542,6 +796,12 @@ int main(int argc, char** argv)
     }
     if (command == "capture-rescue") {
         return capture_rescue(args);
+    }
+    if (command == "stage-provider") {
+        return provider_stage_command(args, false);
+    }
+    if (command == "install-provider") {
+        return provider_stage_command(args, true);
     }
     if (command == "install-hdl") {
         return install_hdl(args);
