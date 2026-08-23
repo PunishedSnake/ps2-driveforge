@@ -4,14 +4,17 @@
 #include "ps2hdd/apa_mutation.hpp"
 #include "ps2hdd/hdl_install_plan.hpp"
 #include "ps2hdd/hdl_metadata_builder.hpp"
+#include "ps2hdd/recovery_capsule.hpp"
 #include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace ps2hdd::hdl {
@@ -44,6 +47,58 @@ void report(const ImageInstallProgressCallback& callback,
     }
 }
 
+[[nodiscard]] bool verify_staged_before_images(WritableBlockDevice& disk,
+                                                std::span<const StagedWrite> writes,
+                                                std::string& error)
+{
+    for (const auto& write : writes) {
+        std::vector<std::byte> current(write.before.size());
+        if (!disk.read(write.offset, current)) {
+            error = "Could not re-read staged metadata before durable recovery prepare";
+            return false;
+        }
+        if (current != write.before) {
+            error = "Target metadata changed after transaction staging; refusing stale recovery prepare";
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool admit_recovery_path(WritableBlockDevice& disk,
+                                       const std::filesystem::path& path,
+                                       std::string& error)
+{
+    if (path.empty()) {
+        return true;
+    }
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        error = "Could not inspect existing HDL recovery capsule path: " + ec.message();
+        return false;
+    }
+    if (!exists) {
+        return true;
+    }
+
+    const auto previous = inspect_recovery_capsule(path, disk);
+    if (!previous.ok) {
+        error = "Existing HDL recovery capsule is unreadable and will not be overwritten: " +
+                previous.error;
+        return false;
+    }
+    if (previous.capsule_state == RecoveryCapsuleState::prepared) {
+        error = "An unresolved PREPARED HDL recovery capsule already exists; recover it before a new install";
+        return false;
+    }
+    if (previous.device_state == RecoveryDeviceState::foreign_or_corrupt) {
+        error = "Existing terminal HDL recovery capsule does not match the current target device";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 ImageInstallResult install_to_image(WritableBlockDevice& disk,
@@ -62,6 +117,9 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
     }
     if (options.media != MediaType::cd && options.media != MediaType::dvd) {
         result.error = "HDL image install requires explicit CD or DVD media type";
+        return result;
+    }
+    if (!admit_recovery_path(disk, options.recovery_capsule_path, result.error)) {
         return result;
     }
 
@@ -177,6 +235,21 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
         return result;
     }
 
+    if (!options.recovery_capsule_path.empty()) {
+        if (!verify_staged_before_images(disk, transaction.staged_writes(), result.error)) {
+            result.orphan_payload_bytes_on_failure = copied;
+            return result;
+        }
+        const auto capsule = create_recovery_capsule(
+            options.recovery_capsule_path, disk, transaction.staged_writes());
+        if (!capsule.ok) {
+            result.error = "Could not durably prepare HDL recovery capsule: " + capsule.error;
+            result.orphan_payload_bytes_on_failure = copied;
+            return result;
+        }
+        result.recovery_capsule_created = true;
+    }
+
     report(progress, copied, result.payload_bytes, "publish");
     const auto commit = transaction.commit([&]() -> std::string {
         apa::Reader reader(disk);
@@ -210,7 +283,30 @@ ImageInstallResult install_to_image(WritableBlockDevice& disk,
     if (!commit.ok) {
         result.error = "HDL APA publication transaction failed: " + commit.error;
         result.orphan_payload_bytes_on_failure = copied;
+        if (result.recovery_capsule_created) {
+            if (commit.rollback_ok) {
+                const auto restored = restore_prepared_recovery_capsule(
+                    options.recovery_capsule_path, disk);
+                if (!restored.ok) {
+                    result.recovery_pending = true;
+                    result.warning = "Automatic transaction rollback succeeded, but recovery capsule "
+                                     "could not be finalized as RESTORED: " + restored.error;
+                }
+            } else {
+                result.recovery_pending = true;
+                result.warning = "In-memory rollback failed; PREPARED recovery capsule must be resolved";
+            }
+        }
         return result;
+    }
+
+    if (result.recovery_capsule_created) {
+        const auto marked = mark_recovery_capsule_committed(options.recovery_capsule_path);
+        if (!marked.ok) {
+            result.recovery_pending = true;
+            result.warning = "HDL install verified successfully, but recovery capsule could not be "
+                             "marked COMMITTED: " + marked.error;
+        }
     }
 
     report(progress, copied, result.payload_bytes, "complete");
