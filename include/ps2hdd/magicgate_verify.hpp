@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ps2hdd/magicgate_disk.hpp"
+#include "ps2hdd/magicgate_disk_keys.hpp"
 #include "ps2hdd/magicgate_signatures.hpp"
 
 #include <array>
