@@ -77,20 +77,21 @@ inline constexpr std::array<std::array<unsigned char, 64>, 8> kSBoxes{{
       2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11}}
 }};
 
-[[nodiscard]] constexpr std::uint64_t load_le64(const Block& bytes) noexcept
+[[nodiscard]] constexpr std::uint64_t load_be64(const Block& bytes) noexcept
 {
     std::uint64_t value = 0;
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        value |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(bytes[i])) << (i * 8U);
+    for (const auto byte : bytes) {
+        value = (value << 8U) | std::to_integer<unsigned char>(byte);
     }
     return value;
 }
 
-[[nodiscard]] constexpr Block store_le64(std::uint64_t value) noexcept
+[[nodiscard]] constexpr Block store_be64(std::uint64_t value) noexcept
 {
     Block out{};
     for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
+        out[out.size() - 1U - i] = static_cast<std::byte>(value & 0xffU);
+        value >>= 8U;
     }
     return out;
 }
@@ -173,21 +174,21 @@ using Schedule = std::array<std::uint64_t, 16>;
 
 } // namespace detail
 
-// MechaCon software references load DES key/data bytes as little-endian 64-bit
-// values before applying the standard DES bit permutations. Keeping that byte
-// convention here is essential: using a library API with the usual network-byte
-// examples without adapting it produces perfectly valid DES and perfectly wrong
-// MagicGate bytes.
+// Byte semantics intentionally match the conventional DES API used by the
+// independently implemented PC KELF tooling: the first byte is the high-order
+// DES byte. Some MechaCon emulation sources use little-endian integers inside
+// optimized permutation code, but copying that representation boundary into a
+// public API would reverse otherwise standard DES test vectors.
 [[nodiscard]] constexpr Block des_encrypt(const Block& data, const Block& key) noexcept
 {
-    const auto schedule = detail::make_schedule(detail::load_le64(key));
-    return detail::store_le64(detail::crypt(detail::load_le64(data), schedule, false));
+    const auto schedule = detail::make_schedule(detail::load_be64(key));
+    return detail::store_be64(detail::crypt(detail::load_be64(data), schedule, false));
 }
 
 [[nodiscard]] constexpr Block des_decrypt(const Block& data, const Block& key) noexcept
 {
-    const auto schedule = detail::make_schedule(detail::load_le64(key));
-    return detail::store_le64(detail::crypt(detail::load_le64(data), schedule, true));
+    const auto schedule = detail::make_schedule(detail::load_be64(key));
+    return detail::store_be64(detail::crypt(detail::load_be64(data), schedule, true));
 }
 
 [[nodiscard]] constexpr Block tdes2_encrypt(const Block& data, const DoubleKey& key) noexcept
