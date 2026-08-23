@@ -8,7 +8,7 @@ on:
       - 'include/ps2hdd/bootstrap_provider.hpp'
       - 'include/ps2hdd/bootstrap_manifest.hpp'
       - 'tests/magicgate_*.cpp'
-      - 'tests/bootstrap_provider_tests.cpp'
+      - 'tests/bootstrap_*_tests.cpp'
       - 'tests/magicgate/**'
       - '.github/workflows/magicgate.yml'
   push:
@@ -18,7 +18,7 @@ on:
       - 'include/ps2hdd/bootstrap_provider.hpp'
       - 'include/ps2hdd/bootstrap_manifest.hpp'
       - 'tests/magicgate_*.cpp'
-      - 'tests/bootstrap_provider_tests.cpp'
+      - 'tests/bootstrap_*_tests.cpp'
       - 'tests/magicgate/**'
       - '.github/workflows/magicgate.yml'
 
