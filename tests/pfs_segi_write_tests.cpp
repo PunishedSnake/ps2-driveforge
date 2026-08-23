@@ -92,7 +92,8 @@ struct Fixture {
     static constexpr std::uint32_t root_inode_zone = 100;
     static constexpr std::uint32_t root_data_zone = 101;
     static constexpr std::uint32_t bitmap_sector = 0x2010;
-    static constexpr std::uint32_t zones = pfs_sectors / (zone_size / ps2hdd::apa::kSectorSize);
+    static constexpr std::uint32_t sectors_per_zone = zone_size / ps2hdd::apa::kSectorSize;
+    static constexpr std::uint32_t zones = pfs_sectors / sectors_per_zone;
 
     Fixture()
         : disk(static_cast<std::size_t>(pfs_lba + pfs_sectors + 0x1000) * ps2hdd::apa::kSectorSize)
@@ -152,6 +153,10 @@ struct Fixture {
         for (std::uint32_t zone = 112; zone < zones; zone += 2U) {
             mark(zone);
         }
+        // The synthetic allocator must obey the same invariant as a real PFS:
+        // its own superblock/bitmap metadata cannot appear as free data zones.
+        mark(ps2hdd::pfs::kSuperSector / sectors_per_zone);
+        mark(bitmap_sector / sectors_per_zone);
         disk.put(base + static_cast<std::uint64_t>(bitmap_sector) * ps2hdd::apa::kSectorSize, bitmap);
 
         ps2hdd::apa::Reader reader(disk);
