@@ -44,7 +44,7 @@ void test_sign_verify_decrypt_round_trip()
     namespace vectors = mg::payload_known_vectors;
 
     const auto plan = make_plan();
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
     const auto signed_kelf = mg::sign_low_layout_disk_kelf(
         plan, vectors::kPlaintextPayload, keyset);
 
@@ -72,7 +72,7 @@ void test_signing_is_deterministic_when_content_keys_are_frozen()
     namespace vectors = mg::payload_known_vectors;
 
     const auto plan = make_plan();
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
     const auto first = mg::sign_low_layout_disk_kelf(plan, vectors::kPlaintextPayload, keyset);
     const auto second = mg::sign_low_layout_disk_kelf(plan, vectors::kPlaintextPayload, keyset);
 
@@ -92,8 +92,7 @@ void test_ambiguous_flag_plan_is_refused()
     }
 
     const auto result = mg::sign_low_layout_disk_kelf(
-        plan, vectors::kPlaintextPayload,
-        mg::known_vectors::kParsedSyntheticKeyset.keyset);
+        plan, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
     check(!result.ok,
           "signer must refuse a plan where signed and encrypted membership cannot be distinguished");
 }
@@ -106,8 +105,7 @@ void test_icvps2_is_fail_closed()
     auto plan = make_plan();
     plan.header.flags |= 0x0002U;
     const auto result = mg::sign_low_layout_disk_kelf(
-        plan, vectors::kPlaintextPayload,
-        mg::known_vectors::kParsedSyntheticKeyset.keyset);
+        plan, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
     check(!result.ok,
           "signer must refuse ICVPS2 until the MechaCon 0x98 algorithm has a software oracle");
 }
@@ -121,8 +119,7 @@ void test_unsupported_three_key_content_mode_is_refused()
     plan.header.flags &= static_cast<std::uint16_t>(~0x0030U);
     plan.header.flags |= 0x0030U;
     const auto result = mg::sign_low_layout_disk_kelf(
-        plan, vectors::kPlaintextPayload,
-        mg::known_vectors::kParsedSyntheticKeyset.keyset);
+        plan, vectors::kPlaintextPayload, mg::known_vectors::kSyntheticKeyset);
     check(!result.ok,
           "signer must not invent a third DES content key that does not exist in Kc");
 }
@@ -133,7 +130,7 @@ void test_signed_output_corruption_is_detected()
     namespace vectors = mg::payload_known_vectors;
 
     const auto plan = make_plan();
-    const auto& keyset = mg::known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = mg::known_vectors::kSyntheticKeyset;
     const auto signed_kelf = mg::sign_low_layout_disk_kelf(
         plan, vectors::kPlaintextPayload, keyset);
     check(signed_kelf.ok, "baseline signed KELF must succeed before corruption test");
