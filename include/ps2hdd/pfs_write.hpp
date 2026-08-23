@@ -77,10 +77,9 @@ struct FileRemoveResult {
 // every asset.
 //
 // The original bounded write_file()/ensure_directory() entry points are kept as
-// regression-friendly primitives. The *_full entry points add directory growth
-// and fragmented direct-extent allocation while preserving the same capability
-// boundary and cold-reader verification rules. Indirect SEGI creation remains a
-// separate milestone and is refused rather than guessed.
+// regression-friendly primitives. The *_full entry points add directory growth,
+// fragmented direct extents and SEGI-backed extent graphs while preserving the
+// same capability boundary and cold-reader verification rules.
 class ImageWriter final {
 public:
     using BitmapKey = std::pair<std::size_t, std::uint32_t>;
@@ -117,10 +116,11 @@ public:
                                                   std::span<const std::byte> bytes,
                                                   const FileWriteOptions& options = {});
 
-    // Fast unlink for regular files. Namespace visibility is removed first;
-    // inode/data bitmap bits are released only afterwards. A cleanup failure can
-    // therefore leak space but cannot leave a live file pointing at free zones.
+    // Fast unlink for direct regular files. `remove_file_full()` additionally
+    // understands SEGI metadata and releases descriptor zones after namespace
+    // removal. Both publish namespace removal before freeing allocation bits.
     [[nodiscard]] FileRemoveResult remove_file(std::string_view path);
+    [[nodiscard]] FileRemoveResult remove_file_full(std::string_view path);
 
 private:
     struct DirectorySlot {
@@ -204,6 +204,12 @@ private:
         Node parent, std::string_view full_path, std::string_view name,
         std::span<const std::byte> bytes, const FileWriteOptions& options);
     [[nodiscard]] FileWriteResult replace_file_fragmented(
+        const Node& node, std::string_view full_path,
+        std::span<const std::byte> bytes, const FileWriteOptions& options);
+    [[nodiscard]] FileWriteResult create_file_segi(
+        Node parent, std::string_view full_path, std::string_view name,
+        std::span<const std::byte> bytes, const FileWriteOptions& options);
+    [[nodiscard]] FileWriteResult replace_file_segi(
         const Node& node, std::string_view full_path,
         std::span<const std::byte> bytes, const FileWriteOptions& options);
 
