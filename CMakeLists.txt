@@ -24,6 +24,7 @@ add_library(ps2driveforge_core
     src/core/file_block_device.cpp
     src/core/writable_file_block_device.cpp
     src/core/disk_layout_guard.cpp
+    src/core/physical_write_guard.cpp
     src/core/writable_apa_volume.cpp
     src/core/write_transaction.cpp
     src/core/mutation_journal.cpp
@@ -79,8 +80,14 @@ else()
 endif()
 
 if(WIN32)
-    target_sources(ps2driveforge_core PRIVATE src/platform/windows/physical_drive.cpp)
-    target_compile_definitions(ps2driveforge_core PUBLIC PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE=1)
+    target_sources(ps2driveforge_core PRIVATE
+        src/platform/windows/physical_drive.cpp
+        src/platform/windows/writable_physical_drive.cpp
+    )
+    target_compile_definitions(ps2driveforge_core PUBLIC
+        PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE=1
+        PS2DF_HAS_WINDOWS_PHYSICAL_WRITE=1
+    )
 endif()
 
 add_library(ps2driveforge_host
@@ -216,6 +223,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-disk-layout-guard-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-disk-layout-guard-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-disk-layout-guard-tests COMMAND ps2-driveforge-disk-layout-guard-tests)
+
+    add_executable(ps2-driveforge-physical-write-guard-tests tests/physical_write_guard_tests.cpp)
+    target_link_libraries(ps2-driveforge-physical-write-guard-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-physical-write-guard-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-physical-write-guard-tests COMMAND ps2-driveforge-physical-write-guard-tests)
 
     add_executable(ps2-driveforge-pfs-file-tests tests/pfs_file_tests.cpp)
     target_link_libraries(ps2-driveforge-pfs-file-tests PRIVATE ps2driveforge_core)
