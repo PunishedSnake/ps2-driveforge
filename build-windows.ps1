@@ -185,8 +185,19 @@ $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
 $BenchmarkExe = Join-Path $BinDir 'ps2-driveforge-benchmark.exe'
 $HdlToolsExe = Join-Path $BinDir 'ps2-driveforge-hdl-tools.exe'
 $PfsToolsExe = Join-Path $BinDir 'ps2-driveforge-pfs-tools.exe'
+$PhysicalToolsExe = Join-Path $BinDir 'ps2-driveforge-physical-tools.exe'
 $GuiExe = Join-Path $BinDir 'PS2-DriveForge.exe'
-$RequiredExecutables = @($InspectorExe, $BenchmarkExe, $HdlToolsExe, $PfsToolsExe, $GuiExe)
+# Physical mutation is part of the Windows Frieren contract. Keep the developer
+# tool mandatory in staging so a packaging regression cannot silently ship the
+# low-level backend while omitting the only deliberately gated way to exercise it.
+$RequiredExecutables = @(
+    $InspectorExe,
+    $BenchmarkExe,
+    $HdlToolsExe,
+    $PfsToolsExe,
+    $PhysicalToolsExe,
+    $GuiExe
+)
 $MountExe = Join-Path $BinDir 'PS2-DriveForge-Mount.exe'
 if ($WithDokany) {
     $RequiredExecutables += $MountExe
@@ -212,6 +223,7 @@ $PdbNames = @(
     'ps2-driveforge-benchmark.pdb',
     'ps2-driveforge-hdl-tools.pdb',
     'ps2-driveforge-pfs-tools.pdb',
+    'ps2-driveforge-physical-tools.pdb',
     'PS2-DriveForge.pdb'
 )
 if ($WithDokany) {
