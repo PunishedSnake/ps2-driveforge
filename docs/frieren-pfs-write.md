@@ -12,8 +12,9 @@ The writer is deliberately shaped around the costs that make older host workflow
 - PFS bitmap metadata is loaded lazily in 1024-byte chunks and cached by `(subpart, chunk)`;
 - allocating another small OPL asset normally reuses the bitmap chunk already in memory instead of rescanning all free space;
 - payload data is transferred sequentially in 256 KiB batches by default instead of one sector or one shell operation at a time;
-- metadata changes are narrow transactions; a file create normally touches the bitmap chunk, one inode and one directory sector;
+- metadata changes are narrow transactions with before-images, durable flush and byte readback;
 - replacement is copy-on-write, so the existing file stays valid until the replacement payload has been written and read back;
+- multi-file imports reuse one writer session through `pfs::write_batch()` instead of probing/mounting PFS once per file;
 - the normal read-only PFS parser is reused for post-commit verification instead of maintaining a second permissive interpretation of the format.
 
 These are architectural advantages, not yet benchmark claims. Release notes must not state that DriveForge is N times faster than HDL Batch Installer, PFSShell or pfsfuse until the same disk/image and host have been measured with all tools.
@@ -47,17 +48,60 @@ Existing regular files use copy-on-write:
 
 If the final old-zone release fails, the replacement remains valid and DriveForge reports a space-leak warning. It never frees the old extent before the inode has stopped referencing it.
 
-## Deliberate first-milestone limits
+## Recursive directory creation
 
-The current writer refuses rather than improvises when:
+`ImageWriter::ensure_directory()` now creates missing directory components recursively while preserving one validated PFS probe and the same lazy bitmap cache used by file writes.
 
-- a parent directory does not already exist;
-- the directory has no reusable dentry slack and would need to grow;
-- the target file or directory requires indirect SEGI descriptors;
+For every new directory component it:
+
+1. validates the existing parent through the normal PFS reader;
+2. plans reusable parent dentry space before reserving zones;
+3. reserves two contiguous zones, one for the directory SEGD inode and one for its first data block;
+4. initializes a 512-byte directory sector containing verified `.` and `..` entries;
+5. creates a checksummed directory inode with the normal PFS directory mode/attributes;
+6. publishes the new inode and its parent dentry together in one metadata transaction;
+7. resolves the new path through a fresh reader and verifies both dot entries before reporting success.
+
+Calling `ensure_directory()` on an already-existing directory tree is a zero-mutation no-op. Encountering a regular file where a directory component is required is a hard refusal.
+
+Directory *growth* is deliberately separate from directory creation. When an existing directory has no reusable dentry slack, Frieren still refuses rather than silently inventing a new layout. That next step will extend direct directory data safely before SEGI support is introduced.
+
+## Batch writes and OPL asset import
+
+`pfs::write_batch()` executes many regular-file operations through one `ImageWriter` session. Each file keeps its own safe publication sequence, so the batch does not require a filesystem-sized before-image in memory. Required failures stop the batch by default; optional failures can be reported without discarding already verified required work.
+
+The host-side `opl_pfs_import` module is intentionally separate from both HTTP fetching and raw PFS format code:
+
+```text
+provider fetch/staging
+ -> immutable PFS import preflight
+ -> normalize/deduplicate exact target paths
+ -> derive parent directories shallow-to-deep
+ -> freeze staged host bytes before mutation
+ -> ensure required directories through ImageWriter
+ -> one cached pfs::write_batch session
+ -> normal-reader verification per file
+```
+
+Cache-only provider data is not written to PFS. HDD-OSD metadata is reported as a separate placement domain. TAR members fail closed until DriveForge has a real TAR-container updater; the importer never pretends an archive member is an ordinary PFS file.
+
+## PC partition-map safety gate
+
+Frieren now has a read-only `disk_layout_guard` module for the conventional PC partitioning sectors. It distinguishes ordinary legacy MBR evidence from protective GPT, hybrid GPT/MBR and an orphan GPT header. Protective/hybrid/GPT evidence is a hard mutation refusal in the image-only PFS developer CLI.
+
+This guard does not replace APA validation. A future physical writer must pass both gates: no conflicting PC GPT ownership and a clean, positively identified PS2 APA disk.
+
+## Remaining bounded limits
+
+The writer still refuses rather than improvises when:
+
+- an existing directory has no reusable dentry slack and must grow;
+- a target requires indirect SEGI descriptors;
 - a file cannot currently be represented by one contiguous new data run;
+- a TAR-container destination must be updated;
 - the PFS probe or APA bounds are not clean.
 
-Next PFS milestones are directory growth, fragmented direct extents, SEGI creation, batch asset import and stronger journal/recovery semantics before any physical-disk writer is enabled.
+Next PFS milestones are direct directory growth, fragmented direct extents, SEGI creation, deterministic TAR updates and stronger persistent recovery/journal semantics before any physical-disk writer is enabled.
 
 ## Fast APA partition removal
 
@@ -77,19 +121,22 @@ This means the intended GUI delete path is:
 
 1. use the session's validated APA snapshot to make a removal plan;
 2. commit the small link transaction;
-3. apply that exact plan to the in-memory manager;
+3. apply that exact plan to the in-memory manager/session snapshot;
 4. optionally schedule a low-priority consistency rescan later, but never block the UI on a full HDL metadata rebuild.
 
-The conservative developer CLI currently performs a post-delete APA rescan because it has no persistent GUI session/model to update. The GUI path should not confuse that verification policy with a requirement to rediscover every game.
+The conservative developer CLI currently performs a post-delete APA rescan because it has no persistent GUI model to update. The GUI path should not confuse that verification policy with a requirement to rediscover every game.
 
 ## Developer surface
 
 `ps2-driveforge-pfs-tools` is image-only and requires explicit `--apply` for mutations:
 
 ```text
+ps2-driveforge-pfs-tools mkdir <disk-image> <pfs-partition-id> <pfs-directory> --apply
 ps2-driveforge-pfs-tools put <disk-image> <pfs-partition-id> <host-file> <pfs-path> --apply
 ps2-driveforge-pfs-tools plan-remove <disk-image> <partition-id|lba>
 ps2-driveforge-pfs-tools remove-partition <disk-image> <partition-id|lba> --apply
 ```
+
+`put` automatically ensures missing parent directories first. The tool reports mutation/verification time, payload write calls and metadata/bitmap work so later comparative benchmarks can measure the actual implementation instead of guessing from wall-clock folklore.
 
 The regular DriveForge `PhysicalDrive` backend remains read-only in this milestone.
