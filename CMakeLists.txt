@@ -1,9 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
 if(POLICY CMP0144)
-    # CMake 3.27+ makes <PACKAGENAME>_ROOT a first-class find_package hint.
-    # Frieren passes DOKANY_ROOT explicitly in CI, so opt into the policy
-    # instead of emitting a developer warning on newer CMake releases.
     cmake_policy(SET CMP0144 NEW)
 endif()
 
@@ -79,6 +76,7 @@ add_library(ps2driveforge_host
     src/host/http_client.cpp
     src/host/opl_asset_pipeline.cpp
     src/host/opl_partition.cpp
+    src/host/opl_pfs_import.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -106,16 +104,10 @@ add_executable(ps2-driveforge-benchmark src/cli/benchmark.cpp)
 target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
 
-# Frieren developer surface. It can dry-run APA allocation/install plans,
-# stage provider-backed OPL assets, and perform explicitly gated image-only HDL
-# mutations. PhysicalDrive writes still do not exist in this executable.
 add_executable(ps2-driveforge-hdl-tools src/cli/hdl_tools.cpp)
 target_link_libraries(ps2-driveforge-hdl-tools PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
 
-# Keep the filesystem mutation surface separate from HDL installation. It can
-# exercise native PFS file writes and constant-metadata APA removal on existing
-# disk images without giving the normal PhysicalDrive session write capability.
 add_executable(ps2-driveforge-pfs-tools src/cli/pfs_tools.cpp)
 target_link_libraries(ps2-driveforge-pfs-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-pfs-tools PRIVATE cxx_std_20)
@@ -327,6 +319,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-opl-asset-pipeline-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-asset-pipeline-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-asset-pipeline-tests COMMAND ps2-driveforge-opl-asset-pipeline-tests)
+
+    add_executable(ps2-driveforge-opl-pfs-import-tests tests/opl_pfs_import_tests.cpp)
+    target_link_libraries(ps2-driveforge-opl-pfs-import-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-opl-pfs-import-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-opl-pfs-import-tests COMMAND ps2-driveforge-opl-pfs-import-tests)
 
     add_executable(ps2-driveforge-opl-partition-tests tests/opl_partition_tests.cpp)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
