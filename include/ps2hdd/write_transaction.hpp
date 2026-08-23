@@ -30,13 +30,15 @@ struct WriteTransactionResult {
     std::string error;
 };
 
-// Small metadata transaction primitive for Frieren. Every replacement range is
-// staged together with its before-image before the first mutation is allowed.
-// Ranges are sector aligned/non-overlapping and the backing store is fixed-size.
+// Small metadata transaction primitive. Every replacement range is staged with
+// its exact before-image before the first mutation. Ranges are 512-byte-sector
+// aligned, non-overlapping and fixed within the existing backing store.
 //
-// This deliberately does not know APA or HDL. Format code decides what ranges
-// are legal; this class only owns capture -> write -> flush -> readback ->
-// optional parser verification -> rollback semantics.
+// This class deliberately knows nothing about APA, PFS, HDL or bootstrap rules.
+// Format code decides which bytes are legal; WriteTransaction owns only capture
+// -> write -> flush -> exact readback -> optional parser verification ->
+// rollback. A generic byte transaction is useful precisely because it does not
+// develop opinions about filesystems behind everybody's back.
 class WriteTransaction final {
 public:
     using Verifier = std::function<std::string()>;
@@ -54,8 +56,10 @@ public:
     }
 
     // Verifier returns an empty string on success or a human-readable failure.
-    // It runs only after byte-for-byte readback has succeeded. Any failure after
-    // writes begin triggers restoration of every staged before-image.
+    // It runs only after byte-for-byte readback succeeds. Any post-write failure
+    // triggers restoration of all staged before-images. This rollback is the
+    // in-process transaction mechanism; persistent crash recovery, when needed,
+    // belongs to Mutation Journal rather than being smuggled into this class.
     [[nodiscard]] WriteTransactionResult commit(Verifier verifier = {});
 
 private:
