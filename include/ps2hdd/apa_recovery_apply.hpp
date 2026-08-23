@@ -2,6 +2,7 @@
 
 #include "ps2hdd/apa_forensic.hpp"
 #include "ps2hdd/apa_repair.hpp"
+#include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/writable_block_device.hpp"
 
 #include <cstddef>
