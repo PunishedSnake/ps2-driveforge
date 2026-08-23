@@ -37,6 +37,8 @@ add_library(ps2driveforge_core
     src/core/ps2_iso.cpp
     src/core/hdl_install_plan.cpp
     src/core/hdl_metadata_builder.cpp
+    src/core/hdl_image_install.cpp
+    src/core/opl_assets.cpp
     src/core/partition_catalog.cpp
 )
 
@@ -98,8 +100,8 @@ target_link_libraries(ps2-driveforge-benchmark PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-benchmark PRIVATE cxx_std_20)
 
 # Frieren developer surface. It can dry-run APA allocation/install plans and
-# perform the explicitly gated image-only HDL metadata patch operation. There is
-# deliberately no PhysicalDrive write path in this executable.
+# perform explicitly gated image-only HDL mutations. PhysicalDrive writes still
+# do not exist in this executable.
 add_executable(ps2-driveforge-hdl-tools src/cli/hdl_tools.cpp)
 target_link_libraries(ps2-driveforge-hdl-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
@@ -129,9 +131,6 @@ if(WIN32)
         endif()
     endif()
 
-    # User-facing entrypoint. It launches the modern WinUI frontend, waits for
-    # a post-Activate readiness handshake, and offers the proven Win32 GUI plus
-    # the startup log if WinUI exits before becoming ready.
     add_executable(ps2-driveforge-launcher WIN32 src/launcher/windows_launcher.cpp)
     set_target_properties(ps2-driveforge-launcher PROPERTIES OUTPUT_NAME "PS2-DriveForge-Launcher")
     target_link_libraries(ps2-driveforge-launcher PRIVATE comctl32 shell32)
@@ -280,21 +279,26 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-hdl-metadata-builder-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-hdl-metadata-builder-tests COMMAND ps2-driveforge-hdl-metadata-builder-tests)
 
+    add_executable(ps2-driveforge-hdl-image-install-tests tests/hdl_image_install_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-image-install-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-hdl-image-install-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-image-install-tests COMMAND ps2-driveforge-hdl-image-install-tests)
+
+    add_executable(ps2-driveforge-opl-assets-tests tests/opl_assets_tests.cpp)
+    target_link_libraries(ps2-driveforge-opl-assets-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-opl-assets-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-opl-assets-tests COMMAND ps2-driveforge-opl-assets-tests)
+
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-storage-profile-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-storage-profile-tests COMMAND ps2-driveforge-storage-profile-tests)
 
-    # This test is deliberately portable even though the policy belongs to the
-    # Dokany frontend. It protects the NT FILE_OPEN/FILE_CREATE numeric contract
-    # under Linux sanitizers as well as MSVC, without requiring Dokany itself.
     add_executable(ps2-driveforge-dokany-open-policy-tests tests/dokany_open_policy_tests.cpp)
     target_include_directories(ps2-driveforge-dokany-open-policy-tests PRIVATE src/mount)
     target_compile_features(ps2-driveforge-dokany-open-policy-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-dokany-open-policy-tests COMMAND ps2-driveforge-dokany-open-policy-tests)
 
-    # Keep startup auto-open and drive-letter selection deterministic and
-    # testable without SetupAPI, Dokany, or a particular runner drive layout.
     add_executable(ps2-driveforge-darkness-policy-tests tests/darkness_policy_tests.cpp)
     target_compile_features(ps2-driveforge-darkness-policy-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-darkness-policy-tests COMMAND ps2-driveforge-darkness-policy-tests)
