@@ -1,7 +1,7 @@
 #include "ps2hdd/hdl_image_install.hpp"
 
 #include "ps2hdd/apa_allocation.hpp"
-#include "ps2hdd/recovery_capsule.hpp"
+#include "ps2hdd/mutation_journal.hpp"
 #include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
@@ -70,9 +70,6 @@ public:
             std::memcpy(out.data(), exact->second.data(), out.size());
             return true;
         }
-        // Test fixture models untouched free space as zero-filled. This keeps
-        // arbitrary transaction before-image reads deterministic without
-        // allocating a multi-gigabyte dense buffer.
         if (offset <= size_ && out.size() <= size_ - offset) {
             std::fill(out.begin(), out.end(), std::byte{0});
             return true;
@@ -151,8 +148,6 @@ MemoryIso make_game_iso()
     constexpr std::string_view cnf = "BOOT2 = cdrom0:\\SLUS_123.45;1\r\nVER = 1.00\r\n";
     MemoryIso image(sectors * 2048);
 
-    // Fill non-filesystem sectors with a deterministic pattern too, so payload
-    // verification covers real non-zero bytes rather than only metadata.
     for (std::size_t i = 0; i < image.bytes().size(); ++i) {
         image.bytes()[i] = static_cast<std::byte>((i * 17U + 3U) & 0xFFU);
     }
@@ -221,13 +216,13 @@ ps2hdd::hdl::ImageInstallOptions options()
     return value;
 }
 
-std::filesystem::path recovery_path(std::string_view name)
+std::filesystem::path journal_path(std::string_view name)
 {
     const auto root = std::filesystem::temp_directory_path() /
                       "ps2-driveforge-hdl-image-install-tests";
     std::error_code ec;
     std::filesystem::create_directories(root, ec);
-    check(!ec, "create HDL install recovery test directory");
+    check(!ec, "create HDL install mutation journal test directory");
     const auto path = root / std::string(name);
     std::filesystem::remove(path, ec);
     return path;
@@ -271,54 +266,54 @@ void test_full_install_publishes_verified_hdl_partition()
     check(game.game.raw_size_bytes == iso.size_bytes(), "installed raw size mismatch");
 }
 
-void test_recovery_capsule_commits_after_verified_publication()
+void test_mutation_journal_commits_after_verified_publication()
 {
     auto disk = make_disk();
     auto iso = make_game_iso();
     auto install_options = options();
-    const auto capsule = recovery_path("successful.rcap");
-    install_options.recovery_capsule_path = capsule;
+    const auto journal = journal_path("successful.ps2df-journal");
+    install_options.mutation_journal_path = journal;
 
     const auto result = ps2hdd::hdl::install_to_image(disk, iso, install_options);
-    check(result.ok, "recoverable HDL install should succeed");
-    check(result.recovery_capsule_created && !result.recovery_pending,
-          "successful recoverable install should create and finalize its capsule");
-    check(result.warning.empty(), "successful recovery lifecycle should not warn");
+    check(result.ok, "journaled HDL install should succeed");
+    check(result.mutation_journal_created && !result.mutation_recovery_pending,
+          "successful journaled install should create and finalize its mutation journal");
+    check(result.warning.empty(), "successful mutation journal lifecycle should not warn");
 
-    const auto inspection = ps2hdd::inspect_recovery_capsule(capsule, disk);
+    const auto inspection = ps2hdd::inspect_mutation_journal(journal, disk);
     check(inspection.ok &&
-              inspection.capsule_state == ps2hdd::RecoveryCapsuleState::committed &&
-              inspection.device_state == ps2hdd::RecoveryDeviceState::all_after,
-          "verified HDL publication should leave a COMMITTED all-after capsule");
+              inspection.journal_state == ps2hdd::MutationJournalState::committed &&
+              inspection.device_state == ps2hdd::MutationDeviceState::all_after,
+          "verified HDL publication should leave a COMMITTED all-after mutation journal");
 
     std::error_code ec;
-    std::filesystem::remove(capsule, ec);
+    std::filesystem::remove(journal, ec);
 }
 
-void test_unresolved_prepared_capsule_refuses_before_payload_copy()
+void test_unresolved_prepared_journal_refuses_before_payload_copy()
 {
     auto disk = make_disk();
     auto iso = make_game_iso();
-    const auto capsule = recovery_path("unresolved.rcap");
+    const auto journal = journal_path("unresolved.ps2df-journal");
 
     std::array<std::byte, ps2hdd::apa::kHeaderSize> replacement{};
     ps2hdd::WriteTransaction pending(disk);
     check(pending.stage(0, replacement, "synthetic unresolved APA mutation"),
-          "stage unresolved recovery fixture");
-    check(ps2hdd::create_recovery_capsule(capsule, disk, pending.staged_writes()).ok,
-          "create unresolved PREPARED recovery capsule");
+          "stage unresolved mutation fixture");
+    check(ps2hdd::create_mutation_journal(journal, disk, pending.staged_writes()).ok,
+          "create unresolved PREPARED mutation journal");
 
     auto install_options = options();
-    install_options.recovery_capsule_path = capsule;
+    install_options.mutation_journal_path = journal;
     const auto writes_before = disk.write_calls;
     const auto result = ps2hdd::hdl::install_to_image(disk, iso, install_options);
     check(!result.ok && result.error.find("unresolved PREPARED") != std::string::npos,
-          "new install should refuse an unresolved PREPARED recovery capsule");
+          "new install should refuse an unresolved PREPARED mutation journal");
     check(disk.write_calls == writes_before,
-          "unresolved recovery refusal must happen before any ISO payload write");
+          "unresolved mutation journal refusal must happen before any ISO payload write");
 
     std::error_code ec;
-    std::filesystem::remove(capsule, ec);
+    std::filesystem::remove(journal, ec);
 }
 
 void test_failed_publication_leaves_old_chain_and_reports_orphan_payload()
@@ -326,10 +321,6 @@ void test_failed_publication_leaves_old_chain_and_reports_orphan_payload()
     auto disk = make_disk();
     auto iso = make_game_iso();
 
-    // One payload write is produced with this tiny ISO/buffer combination in
-    // multiple chunks, so choose corruption dynamically after payload writes by
-    // using a large buffer that makes payload one forward write. Publication is
-    // then metadata=2, new main=3, MBR=4, old tail=5.
     auto install_options = options();
     install_options.copy_buffer_bytes = iso.size_bytes();
     disk.corrupt_write_call = 5;
@@ -364,8 +355,8 @@ int main()
 {
     try {
         test_full_install_publishes_verified_hdl_partition();
-        test_recovery_capsule_commits_after_verified_publication();
-        test_unresolved_prepared_capsule_refuses_before_payload_copy();
+        test_mutation_journal_commits_after_verified_publication();
+        test_unresolved_prepared_journal_refuses_before_payload_copy();
         test_failed_publication_leaves_old_chain_and_reports_orphan_payload();
         test_duplicate_partition_id_refuses_before_payload_write();
         std::cout << "HDL image install tests passed\n";
