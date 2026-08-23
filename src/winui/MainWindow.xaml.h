@@ -94,6 +94,63 @@ private:
     void on_hdl_delete(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_physical_preflight(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
 
+    // These two handlers are wired directly from XAML so recovery stays a
+    // first-class HDL Tools operation without adding another ad-hoc event table.
+    void on_capture_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.load()) return;
+        if (!current_physical_) {
+            show_error(L"Create Rescue Capsule", L"Open a physical PS2 HDD first. Disk images do not have a live FHDB bootstrap pointer to capture.");
+            return;
+        }
+        if (hdl_artifact_directory_.empty()) {
+            show_error(L"Create Rescue Capsule", L"Choose a safety/artifact directory first.");
+            return;
+        }
+        const auto result = controller_.capture_rescue_capsule(hdl_artifact_directory_);
+        if (!result.ok) {
+            show_error(L"Create Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
+            return;
+        }
+        HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+        HdlToolsInfoBar().Title(L"Rescue Capsule created");
+        HdlToolsInfoBar().Message(result.artifact_path.wstring());
+        HdlToolsInfoBar().IsOpen(true);
+        set_status(L"Canonical PS2HBRC Rescue Capsule captured read-only");
+    }
+
+    void on_restore_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.load()) return;
+        if (!current_physical_) {
+            show_error(L"Restore Rescue Capsule", L"Bootstrap restore is available only for a physical PS2 HDD.");
+            return;
+        }
+        if (hdl_artifact_directory_.empty()) {
+            show_error(L"Restore Rescue Capsule", L"Choose the directory containing HDDRESCUE/HDDMBR/FHDBMBR inputs first.");
+            return;
+        }
+        confirm_physical_action(L"restore bootstrap/recovery artifacts", [this] {
+            mutation_busy_.store(true);
+            const auto result = controller_.restore_bootstrap(
+                hdl_artifact_directory_, hdl_artifact_directory_, true);
+            mutation_busy_.store(false);
+            if (!result.ok) {
+                show_error(L"Restore Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
+                return;
+            }
+            HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+            HdlToolsInfoBar().Title(L"Bootstrap restored");
+            HdlToolsInfoBar().Message(result.cold_payload_verified
+                ? L"Payload and master pointer were cold-verified through a fresh read-only PhysicalDrive."
+                : L"Master pointer was cold-verified through a fresh read-only PhysicalDrive.");
+            HdlToolsInfoBar().IsOpen(true);
+            refresh_all_from_snapshot();
+            refresh_hdl_tools();
+            set_status(L"Bootstrap recovery completed and cold-verified");
+        });
+    }
+
     void on_pfs_partition_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_selection_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_double_tapped(IInspectable const&, Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const&);
