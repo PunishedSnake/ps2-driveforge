@@ -2,6 +2,7 @@
 
 #include "ps2hdd/magicgate_cipher.hpp"
 #include "ps2hdd/magicgate_kelf.hpp"
+#include "ps2hdd/magicgate_keyset.hpp"
 #include "ps2hdd/magicgate_known_vectors.hpp"
 
 #include <algorithm>
@@ -11,18 +12,6 @@
 #include <string>
 
 namespace ps2hdd::magicgate {
-
-struct DiskKeyset {
-    // DriveForge deliberately ships no Sony key material. These values are an
-    // injected capability, not constants hidden in the executable. Keeping the
-    // two master keys and their derivation IV/material values separate mirrors
-    // the disk-KELF path and avoids dragging memory-card authentication keys
-    // into a feature that does not need them.
-    cipher::Block kbit_material{};
-    cipher::Block kc_material{};
-    cipher::DoubleKey kbit_master{};
-    cipher::DoubleKey kc_master{};
-};
 
 struct DiskContentKeys {
     std::array<std::byte, 16> kbit{};
