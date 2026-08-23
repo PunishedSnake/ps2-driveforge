@@ -261,7 +261,9 @@ int install_hdl(std::span<char*> args)
         return 2;
     }
 
-    ps2hdd::FileBlockDevice iso(std::filesystem::path(args[3]));
+    // Braces are intentional. The parenthesized spelling is the classic C++
+    // "most vexing parse" under MSVC here and becomes a function declaration.
+    ps2hdd::FileBlockDevice iso{std::filesystem::path(args[3])};
     if (!iso.is_open()) {
         std::cerr << "Could not open game ISO: " << args[3] << "\n";
         return 1;
