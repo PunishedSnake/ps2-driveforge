@@ -38,14 +38,16 @@ struct ApaRepairPlan {
     bool pointer_clear_recommended{};
 };
 
-// Byte-for-byte policy port of fhdb-bootstrap-manager apa_repair. It examines
+// Conservative byte-level policy port of FHDB Manager apa_repair. It examines
 // only canonical master identity/anchor fields and never guesses chain links,
-// length, passwords, timestamps, sub-partitions or filesystem contents.
+// partition length, passwords, timestamps, subpartitions or filesystem data.
+// A checksum is supporting evidence, not absolution.
 [[nodiscard]] ApaRepairPlan analyze_apa_master(
     std::span<const std::byte, kApaHeaderBytes> header) noexcept;
 
 // Materialize only plan.safe_header_fixes plus the checksum word. Blocked or
-// ambiguous plans are refused.
+// ambiguous plans stay blocked. Recovery code should be conservative enough to
+// disappoint an impatient operator before it disappoints an entire disk.
 [[nodiscard]] bool build_repaired_apa_master(
     std::span<const std::byte, kApaHeaderBytes> source,
     const ApaRepairPlan& plan,
