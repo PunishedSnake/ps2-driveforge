@@ -6,7 +6,6 @@
 #include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/fhdb_rescue.hpp"
 #include "ps2hdd/fhdb_rescue_capture.hpp"
-#include "ps2hdd/magicgate_kelf.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/physical_write_guard.hpp"
 #include "ps2hdd/sha256.hpp"
@@ -89,42 +88,11 @@ constexpr std::uint64_t kSectorBytes = 512ULL;
     fhdb::BootstrapRestorePlan& plan,
     std::string& error)
 {
-    if (!input.ok) {
-        error = input.error.empty() ? "Provider bootstrap input is not frozen/valid" : input.error;
+    // Repeat the storage-neutral frozen-plan validation at the physical trust
+    // boundary. A caller cannot manufacture `ok=true`, alter crypto evidence or
+    // change geometry and rely on the endpoint to trust the struct's optimism.
+    if (!bootstrap::validate_frozen_payload(input, error)) {
         return false;
-    }
-    if (input.payload.empty() || input.payload_sha256.empty()) {
-        error = "Provider bootstrap input has no frozen payload/hash";
-        return false;
-    }
-    if (crypto::sha256_hex(crypto::sha256(input.payload)) != input.payload_sha256) {
-        error = "Provider bootstrap payload changed after the install input was frozen";
-        return false;
-    }
-    if (input.program_start_sector != fhdb::kBootstrapProgramStartSector) {
-        error = "Provider bootstrap input targets a non-canonical __mbr program start";
-        return false;
-    }
-    if (input.payload_sector_count == 0U ||
-        input.payload.size() > fhdb::kBootstrapPayloadMaxBytes) {
-        error = "Provider bootstrap payload geometry is outside the reserved __mbr limit";
-        return false;
-    }
-    const auto required_sectors = static_cast<std::uint64_t>((input.payload.size() + 511U) / 512U);
-    if (required_sectors != input.payload_sector_count) {
-        error = "Provider bootstrap sector count no longer matches the frozen payload";
-        return false;
-    }
-
-    const auto strategy = bootstrap::strategy_for(input.family);
-    if (strategy.requires_kelf_payload) {
-        const auto layout = magicgate::inspect_kelf(input.payload);
-        if (!layout.ok || layout.file_bytes != input.payload.size()) {
-            error = layout.ok
-                ? "Provider bootstrap KELF contains unexpected trailing bytes"
-                : "Provider bootstrap is not a structurally valid KELF: " + layout.error;
-            return false;
-        }
     }
 
     std::array<std::byte, fhdb::kRescueApaHeaderBytes> current{};
@@ -140,6 +108,7 @@ constexpr std::uint64_t kSectorBytes = 512ULL;
         return false;
     }
 
+    const auto strategy = bootstrap::strategy_for(input.family);
     plan.ok = true;
     plan.kind = fhdb::BootstrapRestoreKind::rescue_payload;
     plan.source_master = current;
@@ -147,7 +116,8 @@ constexpr std::uint64_t kSectorBytes = 512ULL;
     plan.payload_start = input.program_start_sector;
     plan.payload_sectors = input.payload_sector_count;
     plan.family = std::string(strategy.name);
-    plan.confidence = "provider-verified";
+    plan.confidence = input.magicgate_signed ? "provider-signed-and-verified"
+                                              : "provider-verified";
     plan.payload.assign(static_cast<std::size_t>(padded_bytes), std::byte{0});
     std::copy(input.payload.begin(), input.payload.end(), plan.payload.begin());
     return true;
@@ -229,6 +199,12 @@ PhysicalBootstrapInstallResult install_bootstrap_to_physical(
         return result;
     }
 
+    std::string frozen_error;
+    if (!bootstrap::validate_frozen_payload(input, frozen_error)) {
+        result.error = "Frozen provider bootstrap validation failed: " + frozen_error;
+        return result;
+    }
+
     PhysicalDrive read_only(physical_drive_index);
     if (!read_only.is_open()) {
         result.error = "Could not open the selected PhysicalDrive read-only before provider bootstrap install";
@@ -279,7 +255,7 @@ PhysicalBootstrapInstallResult install_bootstrap_to_physical(
 
         // Reuse the proven payload-first / pointer-last transaction. Here the
         // plan was produced from verified provider bytes instead of a rescue
-        // artifact, but the disk-safety ordering must remain identical.
+        // artifact, but the disk-safety ordering remains identical.
         result.apply = fhdb::apply_bootstrap_restore(writable, plan, options.safety_directory);
         result.hddmbr_path = result.apply.safety_backup_path;
         if (!result.apply.ok) {
