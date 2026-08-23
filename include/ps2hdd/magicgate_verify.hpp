@@ -38,17 +38,17 @@ struct KelfHeaderVerifyResult {
 
 namespace verify_detail {
 
-[[nodiscard]] inline cipher::Block block_at(std::span<const std::byte> bytes,
-                                            std::size_t offset) noexcept
+[[nodiscard]] inline bool read_block(std::span<const std::byte> bytes,
+                                     std::size_t offset,
+                                     cipher::Block& block) noexcept
 {
-    cipher::Block block{};
     if (offset > bytes.size() || block.size() > bytes.size() - offset) {
-        return block;
+        return false;
     }
     for (std::size_t i = 0; i < block.size(); ++i) {
         block[i] = bytes[offset + i];
     }
-    return block;
+    return true;
 }
 
 [[nodiscard]] inline std::size_t collect_block_signatures(
@@ -113,9 +113,18 @@ namespace verify_detail {
         result.error = "MagicGate encrypted BIT table has an invalid byte length";
         return result;
     }
+    if (result.encrypted_bit_table_offset > file.size() ||
+        result.encrypted_bit_table_bytes > file.size() - result.encrypted_bit_table_offset) {
+        result.error = "MagicGate encrypted BIT table extends beyond the supplied file";
+        return result;
+    }
 
     const auto header_signature_offset = result.layout.content_key_offset - 8U;
-    const auto stored_header_signature = verify_detail::block_at(file, header_signature_offset);
+    cipher::Block stored_header_signature{};
+    if (!verify_detail::read_block(file, header_signature_offset, stored_header_signature)) {
+        result.error = "MagicGate header signature lies outside the supplied file";
+        return result;
+    }
     const auto calculated_header_signature = header_signature(header, keyset.signing);
     result.header_signature_valid = calculated_header_signature.ok &&
                                     calculated_header_signature.value == stored_header_signature;
@@ -168,7 +177,14 @@ namespace verify_detail {
 
     const auto stored_bit_signature_offset =
         result.encrypted_bit_table_offset + result.encrypted_bit_table_bytes;
-    const auto stored_bit_signature = verify_detail::block_at(file, stored_bit_signature_offset);
+    cipher::Block stored_bit_signature{};
+    cipher::Block stored_root_signature{};
+    if (!verify_detail::read_block(file, stored_bit_signature_offset, stored_bit_signature) ||
+        !verify_detail::read_block(file, stored_bit_signature_offset + 8U, stored_root_signature)) {
+        result.error = "MagicGate BIT/root signature trailer extends beyond the supplied file";
+        return result;
+    }
+
     const auto calculated_bit_signature = bit_table_signature(
         plaintext_bit_table,
         result.content_keys.kbit,
@@ -181,7 +197,6 @@ namespace verify_detail {
         return result;
     }
 
-    const auto stored_root_signature = verify_detail::block_at(file, stored_bit_signature_offset + 8U);
     std::array<cipher::Block, kKelfMaxBitBlocks> bit01_signatures{};
     std::array<cipher::Block, kKelfMaxBitBlocks> bit02_signatures{};
     const auto bit01_count = verify_detail::collect_block_signatures(
@@ -215,7 +230,10 @@ namespace verify_detail {
     }
 
     if (result.uses_icvps2) {
-        result.icvps2 = verify_detail::block_at(file, header.header_size - 8U);
+        if (!verify_detail::read_block(file, header.header_size - 8U, result.icvps2)) {
+            result.error = "MagicGate ICVPS2 lies outside the supplied file";
+            return result;
+        }
     }
 
     result.ok = true;
