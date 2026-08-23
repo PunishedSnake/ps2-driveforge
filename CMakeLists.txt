@@ -105,7 +105,12 @@ add_library(ps2driveforge_host
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
 if(WIN32)
-    target_sources(ps2driveforge_host PRIVATE src/platform/windows/physical_discovery.cpp)
+    target_sources(ps2driveforge_host PRIVATE
+        src/platform/windows/physical_discovery.cpp
+        src/platform/windows/physical_game_deploy.cpp
+        src/platform/windows/physical_partition_remove.cpp
+    )
+    target_compile_definitions(ps2driveforge_host PUBLIC PS2DF_HAS_WINDOWS_PHYSICAL_MUTATION=1)
     target_link_libraries(ps2driveforge_host PUBLIC setupapi winhttp)
 endif()
 if(MSVC)
