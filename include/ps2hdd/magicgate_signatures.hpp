@@ -122,7 +122,7 @@ serialize_fixed_header(const KelfHeader& header) noexcept
 // not assign meaning to individual flag bits yet: historical public sources
 // disagree on the labels for bits 0 and 1, so interpretation remains a later,
 // separately verified layer instead of becoming accidental ABI.
-[[nodiscard]] inline BitTable parse_plaintext_bit_table(std::span<const std::byte> bytes)
+[[nodiscard]] constexpr BitTable parse_plaintext_bit_table(std::span<const std::byte> bytes)
 {
     BitTable result;
     if (bytes.size() < kKelfBitTableHeaderBytes || (bytes.size() % 8U) != 0) {
