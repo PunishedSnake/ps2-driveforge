@@ -2,7 +2,11 @@
 #include "ps2hdd/apa_allocation.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/hdl.hpp"
+#include "ps2hdd/hdl_image_install.hpp"
 #include "ps2hdd/hdl_install_plan.hpp"
+#include "ps2hdd/http_client.hpp"
+#include "ps2hdd/opl_asset_pipeline.hpp"
+#include "ps2hdd/opl_assets.hpp"
 #include "ps2hdd/ps2_iso.hpp"
 #include "ps2hdd/version.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
@@ -13,6 +17,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,16 +29,23 @@ void usage()
     std::cout
         << "PS2 DriveForge " << ps2hdd::version::string << "-dev ("
         << ps2hdd::version::codename << ") - Frieren HDL developer tools\n\n"
-        << "Image-only commands:\n"
+        << "Read-only / host-staging commands:\n"
         << "  ps2-driveforge-hdl-tools inspect-iso <game.iso>\n"
         << "  ps2-driveforge-hdl-tools plan <disk-image> <payload-mib>\n"
         << "  ps2-driveforge-hdl-tools plan-install <disk-image> <game.iso>\n"
         << "      [--title <text>] [--hidden]\n"
+        << "  ps2-driveforge-hdl-tools plan-assets <game.iso>\n"
+        << "      [--title <text>] [--tar] [--hdd-osd] [--all-art]\n"
+        << "  ps2-driveforge-hdl-tools fetch-assets <game.iso> <cache-dir>\n"
+        << "      [--title <text>] [--tar] [--hdd-osd] [--all-art] [--refresh-catalog]\n\n"
+        << "Image-only mutation commands (explicit --apply required):\n"
+        << "  ps2-driveforge-hdl-tools install-image <disk-image> <game.iso>\n"
+        << "      [--title <text>] [--hidden] [--cd|--dvd] [--compat <0..255>]\n"
+        << "      [--dma <0..65535>] [--layer-break <sectors>] --apply\n"
         << "  ps2-driveforge-hdl-tools patch-metadata <disk-image> <partition-id>\n"
         << "      [--title <text>] [--compat <0..255>] [--dma <0..65535>] --apply\n\n"
-        << "inspect-iso, plan and plan-install are read-only. patch-metadata requires\n"
-        << "--apply and opens only an existing image through WritableFileBlockDevice.\n"
-        << "PhysicalDrive writes do not exist in this Frieren milestone.\n";
+        << "Asset downloads are staged on the host only. PFS import is intentionally a\n"
+        << "separate Frieren write milestone. PhysicalDrive writes do not exist here.\n";
 }
 
 std::optional<std::uint64_t> parse_u64(std::string_view text)
@@ -211,6 +223,280 @@ int plan_install(int argc, char** argv)
     return 0;
 }
 
+struct ParsedAssetOptions {
+    ps2hdd::opl::AssetOptions assets;
+    bool refresh_catalog{};
+    std::string title;
+};
+
+std::optional<ParsedAssetOptions> parse_asset_options(int argc, char** argv, int first,
+                                                       std::string default_title)
+{
+    ParsedAssetOptions parsed;
+    parsed.title = std::move(default_title);
+    for (int i = first; i < argc; ++i) {
+        const std::string_view option = argv[i];
+        if (option == "--title") {
+            if (++i >= argc) {
+                std::cerr << "--title requires a value.\n";
+                return std::nullopt;
+            }
+            parsed.title = argv[i];
+        } else if (option == "--tar") {
+            parsed.assets.layout = ps2hdd::opl::LayoutMode::tar_archives;
+        } else if (option == "--hdd-osd") {
+            parsed.assets.hdd_osd_icon = true;
+        } else if (option == "--all-art") {
+            parsed.assets.artwork_logo = true;
+            parsed.assets.artwork_label = true;
+        } else if (option == "--refresh-catalog") {
+            parsed.refresh_catalog = true;
+        } else {
+            std::cerr << "Unknown asset option: " << option << '\n';
+            return std::nullopt;
+        }
+    }
+    return parsed;
+}
+
+std::optional<ps2hdd::opl::AssetPlan> make_iso_asset_plan(const char* iso_path,
+                                                           const ParsedAssetOptions& parsed)
+{
+    ps2hdd::FileBlockDevice game(iso_path);
+    if (!game.is_open()) {
+        std::cerr << "Could not open game ISO read-only: " << iso_path << '\n';
+        return std::nullopt;
+    }
+    const auto inspected = ps2hdd::iso::inspect_ps2_iso(game);
+    if (!inspected.ok) {
+        std::cerr << "PS2 ISO inspection failed before asset lookup: " << inspected.error << '\n';
+        return std::nullopt;
+    }
+
+    auto plan = ps2hdd::opl::plan_assets({inspected.game.startup, parsed.title}, parsed.assets);
+    if (!plan.ok) {
+        std::cerr << "OPL asset planning failed: " << plan.error << '\n';
+        return std::nullopt;
+    }
+    return plan;
+}
+
+void print_asset_plan(const ps2hdd::opl::AssetPlan& plan)
+{
+    std::cout << "OPL asset plan\n"
+              << "  game ID:  " << plan.game_id << '\n'
+              << "  title:    " << plan.title << '\n'
+              << "  requests: " << plan.requests.size() << "\n\n";
+
+    for (const auto& request : plan.requests) {
+        std::cout << ps2hdd::opl::asset_kind_name(request.kind)
+                  << (request.optional ? " [optional]" : " [required]") << '\n';
+        for (const auto& candidate : request.candidates) {
+            std::cout << "  provider: " << candidate.provider << '\n'
+                      << "  source:   " << candidate.url << '\n'
+                      << "  target:   " << candidate.target_path;
+            if (!candidate.archive_member.empty()) {
+                std::cout << " :: " << candidate.archive_member;
+            }
+            std::cout << '\n';
+        }
+        std::cout << '\n';
+    }
+}
+
+int plan_assets(int argc, char** argv)
+{
+    if (argc < 3) {
+        usage();
+        return 2;
+    }
+    const char* iso_path = argv[2];
+    const auto parsed = parse_asset_options(argc, argv, 3,
+                                             std::filesystem::path(iso_path).stem().string());
+    if (!parsed) {
+        return 2;
+    }
+    const auto plan = make_iso_asset_plan(iso_path, *parsed);
+    if (!plan) {
+        return 1;
+    }
+    print_asset_plan(*plan);
+    std::cout << "Host/PFS writes performed: zero.\n";
+    return 0;
+}
+
+int fetch_assets(int argc, char** argv)
+{
+    if (argc < 4) {
+        usage();
+        return 2;
+    }
+    const char* iso_path = argv[2];
+    const std::filesystem::path cache_root = argv[3];
+    const auto parsed = parse_asset_options(argc, argv, 4,
+                                             std::filesystem::path(iso_path).stem().string());
+    if (!parsed) {
+        return 2;
+    }
+    const auto plan = make_iso_asset_plan(iso_path, *parsed);
+    if (!plan) {
+        return 1;
+    }
+
+    std::unique_ptr<ps2hdd::HttpClient> http = ps2hdd::make_platform_http_client();
+    if (!http) {
+        std::cerr << "Native HTTPS asset transport is not available on this platform build.\n";
+        return 1;
+    }
+
+    ps2hdd::opl::FetchOptions fetch_options;
+    fetch_options.refresh_catalog = parsed->refresh_catalog;
+    const auto fetched = ps2hdd::opl::fetch_assets(*plan, *http, cache_root, fetch_options);
+
+    std::cout << "OPL asset staging result\n"
+              << "  game ID: " << plan->game_id << '\n'
+              << "  staged:  " << fetched.assets.size() << '\n'
+              << "  issues:  " << fetched.issues.size() << "\n\n";
+    for (const auto& asset : fetched.assets) {
+        std::cout << "  " << ps2hdd::opl::asset_kind_name(asset.kind) << '\n'
+                  << "    provider: " << asset.provider << '\n'
+                  << "    target:   " << asset.target_path;
+        if (!asset.archive_member.empty()) {
+            std::cout << " :: " << asset.archive_member;
+        }
+        std::cout << '\n'
+                  << "    staged:   " << asset.staged_path.string() << '\n'
+                  << "    bytes:    " << asset.bytes;
+        if (asset.from_cache) {
+            std::cout << " [cache]";
+        }
+        if (asset.merged) {
+            std::cout << " [merged]";
+        }
+        if (asset.verified_mastercode) {
+            std::cout << " [mastercode verified]";
+        }
+        std::cout << "\n\n";
+    }
+    for (const auto& issue : fetched.issues) {
+        std::cerr << (issue.fatal ? "ERROR: " : "WARNING: ")
+                  << ps2hdd::opl::asset_kind_name(issue.kind) << ": "
+                  << issue.message << '\n';
+    }
+    std::cout << "PFS writes performed: zero. Assets are host-staged for the later PFS transaction.\n";
+    return fetched.ok ? 0 : 1;
+}
+
+int install_image(int argc, char** argv)
+{
+    if (argc < 5) {
+        usage();
+        return 2;
+    }
+    const char* disk_path = argv[2];
+    const char* iso_path = argv[3];
+    ps2hdd::hdl::ImageInstallOptions options;
+    options.title = std::filesystem::path(iso_path).stem().string();
+    options.media = ps2hdd::hdl::MediaType::dvd;
+    bool apply = false;
+
+    for (int i = 4; i < argc; ++i) {
+        const std::string_view option = argv[i];
+        if (option == "--apply") {
+            apply = true;
+        } else if (option == "--title") {
+            if (++i >= argc) {
+                std::cerr << "--title requires a value.\n";
+                return 2;
+            }
+            options.title = argv[i];
+        } else if (option == "--hidden") {
+            options.hidden = true;
+        } else if (option == "--cd") {
+            options.media = ps2hdd::hdl::MediaType::cd;
+        } else if (option == "--dvd") {
+            options.media = ps2hdd::hdl::MediaType::dvd;
+        } else if (option == "--compat") {
+            if (++i >= argc) {
+                std::cerr << "--compat requires a value.\n";
+                return 2;
+            }
+            const auto value = parse_u64(argv[i]);
+            if (!value || *value > 0xFFU) {
+                std::cerr << "--compat must be in 0..255.\n";
+                return 2;
+            }
+            options.compat_flags = static_cast<std::uint8_t>(*value);
+        } else if (option == "--dma") {
+            if (++i >= argc) {
+                std::cerr << "--dma requires a value.\n";
+                return 2;
+            }
+            const auto value = parse_u64(argv[i]);
+            if (!value || *value > 0xFFFFU) {
+                std::cerr << "--dma must be in 0..65535.\n";
+                return 2;
+            }
+            options.dma = static_cast<std::uint16_t>(*value);
+        } else if (option == "--layer-break") {
+            if (++i >= argc) {
+                std::cerr << "--layer-break requires a value.\n";
+                return 2;
+            }
+            const auto value = parse_u64(argv[i]);
+            if (!value || *value > std::numeric_limits<std::uint32_t>::max()) {
+                std::cerr << "--layer-break must fit in 32 bits.\n";
+                return 2;
+            }
+            options.layer_break = static_cast<std::uint32_t>(*value);
+        } else {
+            std::cerr << "Unknown install-image option: " << option << '\n';
+            return 2;
+        }
+    }
+
+    if (!apply) {
+        std::cerr << "Refusing image mutation without explicit --apply. Use plan-install first.\n";
+        return 2;
+    }
+
+    ps2hdd::WritableFileBlockDevice disk(disk_path);
+    if (!disk.is_open()) {
+        std::cerr << "Could not open existing PS2 disk image for explicit read/write access: "
+                  << disk_path << '\n';
+        return 1;
+    }
+    ps2hdd::FileBlockDevice game(iso_path);
+    if (!game.is_open()) {
+        std::cerr << "Could not open game ISO read-only: " << iso_path << '\n';
+        return 1;
+    }
+
+    const auto result = ps2hdd::hdl::install_to_image(
+        disk, game, options,
+        [](const ps2hdd::hdl::ImageInstallProgress& progress) {
+            std::cout << "[" << progress.phase << "] " << progress.copied_bytes
+                      << '/' << progress.total_bytes << " bytes\n";
+        });
+    if (!result.ok) {
+        std::cerr << "Image-only HDL install failed: " << result.error << '\n';
+        if (result.orphan_payload_bytes_on_failure != 0) {
+            std::cerr << "Unpublished payload bytes may remain in APA free space: "
+                      << result.orphan_payload_bytes_on_failure << '\n';
+        }
+        return 1;
+    }
+
+    std::cout << "Image-only HDL install verified\n"
+              << "  partition: " << result.partition_id << '\n'
+              << "  startup:   " << result.startup << '\n'
+              << "  main LBA:  " << result.main_start_lba << '\n'
+              << "  subparts:  " << result.sub_count << '\n'
+              << "  payload:   " << result.payload_bytes << " bytes\n"
+              << "  allocated: " << result.allocated_bytes << " bytes\n";
+    return 0;
+}
+
 int patch_metadata(int argc, char** argv)
 {
     if (argc < 5) {
@@ -348,6 +634,15 @@ int main(int argc, char** argv)
     }
     if (command == "plan-install") {
         return plan_install(argc, argv);
+    }
+    if (command == "plan-assets") {
+        return plan_assets(argc, argv);
+    }
+    if (command == "fetch-assets") {
+        return fetch_assets(argc, argv);
+    }
+    if (command == "install-image") {
+        return install_image(argc, argv);
     }
     if (command == "patch-metadata") {
         return patch_metadata(argc, argv);
