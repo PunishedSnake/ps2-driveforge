@@ -98,6 +98,8 @@ void test_fragmented_space_remains_multiple_extents()
     for (std::size_t i = 1; i < plan.extents.size(); ++i) {
         check(plan.extents[i - 1].start_lba < plan.extents[i].start_lba,
               "planned extents should stay in physical-LBA order");
+        check(plan.extents[i].start_lba % plan.extents[i].length_sectors == 0,
+              "every planned sub extent must be self-aligned");
     }
 }
 
@@ -122,6 +124,16 @@ void test_unaligned_existing_extent_is_refused()
     check(!plan.ok, "planner must refuse unaligned existing APA extents");
     check(plan.error.find("128 MiB") != std::string::npos,
           "unaligned error should identify APA chunk alignment");
+}
+
+void test_existing_extent_must_be_aligned_to_its_own_length()
+{
+    const auto scan = make_scan({{0, 1}, {2, 4}});
+    const auto plan = ps2hdd::apa::plan_hdl_allocation(scan, disk_bytes(64), mib(64));
+
+    check(!plan.ok, "planner must refuse an APA extent whose start is not aligned to its length");
+    check(plan.error.find("own allocation length") != std::string::npos,
+          "self-alignment refusal should explain the exact invariant");
 }
 
 void test_fragmentation_can_hit_hdl_part_limit()
@@ -157,6 +169,7 @@ int main()
         test_fragmented_space_remains_multiple_extents();
         test_noncanonical_chain_is_refused();
         test_unaligned_existing_extent_is_refused();
+        test_existing_extent_must_be_aligned_to_its_own_length();
         test_fragmentation_can_hit_hdl_part_limit();
         test_zero_payload_is_refused();
         std::cout << "APA allocation planner tests passed\n";
