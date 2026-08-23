@@ -34,7 +34,8 @@ struct ImageGameDeployResult {
     bool ok{};
     bool partial{};
     std::string error;
-    ImageGameDeployPreview preview;
+    std::string opl_partition_id;
+    std::uint32_t opl_partition_start_lba{};
     hdl::ImageInstallResult game;
     opl::PfsImportResult assets;
 };
