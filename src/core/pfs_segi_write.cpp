@@ -67,7 +67,8 @@ bool needs_segi_path(std::string_view error) noexcept
 {
     return error.find("SEGI") != std::string_view::npos ||
            error.find("indirect/unsupported") != std::string_view::npos ||
-           error.find("indirect regular-file layout") != std::string_view::npos;
+           error.find("indirect regular-file layout") != std::string_view::npos ||
+           error.find("requires a direct regular-file layout") != std::string_view::npos;
 }
 
 std::uint64_t zone_count(std::span<const ImageWriter::ZoneRun> runs) noexcept
