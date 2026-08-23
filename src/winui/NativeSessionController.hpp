@@ -6,6 +6,7 @@
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/hdl_image_install.hpp"
 #include "ps2hdd/management_model.hpp"
+#include "ps2hdd/opl_metadata.hpp"
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
@@ -63,6 +64,29 @@ struct SessionSnapshot {
     std::vector<PartitionRowSnapshot> rows;
 };
 
+struct HdlIsoPreparationSnapshot {
+    bool ok{};
+    std::string error;
+    std::string startup;
+    std::string game_id;
+    std::string title;
+    std::string description;
+    std::string genre;
+    std::string release_date;
+    std::string developer;
+    std::string players;
+    std::string rating;
+    std::uint64_t image_bytes{};
+    ps2hdd::hdl::MediaType media{ps2hdd::hdl::MediaType::dvd};
+    std::vector<ps2hdd::opl::FetchedAsset> assets;
+    std::vector<std::string> warnings;
+    std::size_t cache_assets{};
+    std::size_t opl_assets{};
+    std::uint64_t asset_bytes{};
+    bool title_from_database{};
+    bool cfg_found{};
+};
+
 struct HdlInstallRequest {
     std::filesystem::path iso_path;
     std::string title;
@@ -72,11 +96,13 @@ struct HdlInstallRequest {
     std::uint16_t dma{};
     std::uint32_t layer_break{};
     std::filesystem::path artifact_directory;
+    std::vector<ps2hdd::opl::FetchedAsset> assets;
 };
 
 struct HdlInstallPreviewSnapshot {
     bool ok{};
     std::string error;
+    std::string warning;
     SourceKind target_kind{SourceKind::none};
     std::string target_name;
     std::string title;
@@ -87,6 +113,10 @@ struct HdlInstallPreviewSnapshot {
     std::uint32_t main_start_lba{};
     std::size_t sub_count{};
     std::size_t affected_existing_headers{};
+    std::size_t staged_asset_count{};
+    std::uint64_t staged_asset_bytes{};
+    bool assets_will_install{};
+    std::string opl_partition_id;
     bool requires_physical_confirmation{};
 };
 
@@ -142,6 +172,14 @@ public:
                                       const std::filesystem::path& destination,
                                       std::string& error);
 
+    // ISO inspection, database refresh and asset downloads are host-only. This
+    // is intentionally a separate phase so choosing a game can do all metadata
+    // work before a writable disk capability exists.
+    [[nodiscard]] HdlIsoPreparationSnapshot prepare_hdl_iso(
+        const std::filesystem::path& iso_path,
+        const std::filesystem::path& cache_root,
+        bool refresh_catalog = false) const;
+
     [[nodiscard]] HdlInstallPreviewSnapshot preview_hdl_install(const HdlInstallRequest& request);
     [[nodiscard]] HdlMutationResultSnapshot install_hdl(
         const HdlInstallRequest& request, bool physical_confirmation,
@@ -151,9 +189,6 @@ public:
         bool physical_confirmation);
     [[nodiscard]] PhysicalPreflightSnapshot physical_write_preflight() const;
 
-    // Recovery entry points deliberately live beside the other WinUI command
-    // snapshots, not in raw XAML code. Capture stays strictly read-only. Restore
-    // uses the shared FHDB precedence/planner plus the guarded physical writer.
     [[nodiscard]] RecoveryActionSnapshot capture_rescue_capsule(
         const std::filesystem::path& artifact_directory) const
     {
