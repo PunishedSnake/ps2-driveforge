@@ -40,8 +40,6 @@ namespace disk_key_detail {
     const KelfHeader& header, const DiskKeyset& keyset) noexcept
 {
     const auto input = user_header_xor(header.user_header);
-    // Equivalent to (HeaderData XOR material) followed by 2-key TDES with a
-    // zero CBC IV, expressed through the one-block helper used elsewhere.
     const auto kbit = cipher::tdes2_cbc_encrypt_block(
         input, keyset.kbit_master, keyset.kbit_material);
     const auto kc = cipher::tdes2_cbc_encrypt_block(
@@ -85,7 +83,7 @@ constexpr void store_key_half(std::array<std::byte, 16>& key,
 
 } // namespace disk_key_detail
 
-[[nodiscard]] inline DiskKeyResult unwrap_disk_content_keys(
+[[nodiscard]] constexpr DiskKeyResult unwrap_disk_content_keys(
     std::span<const std::byte> file,
     const DiskKeyset& keyset)
 {
@@ -121,7 +119,7 @@ constexpr void store_key_half(std::array<std::byte, 16>& key,
     return result;
 }
 
-[[nodiscard]] inline std::array<std::byte, kKelfContentKeyBytes>
+[[nodiscard]] constexpr std::array<std::byte, kKelfContentKeyBytes>
 wrap_disk_content_keys(const KelfLayout& layout,
                        const DiskContentKeys& keys,
                        const DiskKeyset& keyset)
@@ -149,7 +147,7 @@ wrap_disk_content_keys(const KelfLayout& layout,
     return out;
 }
 
-[[nodiscard]] inline bool write_wrapped_disk_content_keys(
+[[nodiscard]] constexpr bool write_wrapped_disk_content_keys(
     std::span<std::byte> file,
     const KelfLayout& layout,
     const DiskContentKeys& keys,
