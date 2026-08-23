@@ -24,10 +24,10 @@ BatchWriteResult write_batch(ImageWriter& writer,
         item.path = file.path;
         item.required = file.required;
 
-        // Batch users get the complete image-only path: existing fast contiguous
-        // writes stay fast, while packed directories and fragmented free space
-        // transparently fall back to the advanced bounded writer.
-        item.write = writer.write_file_full(file.path, file.bytes, file.options);
+        // Keep the common contiguous path cheap, but let one long-lived writer
+        // fall through directory growth, fragmented direct extents and finally
+        // chained SEGI metadata without rebuilding the PFS session between files.
+        item.write = writer.write_file_complete(file.path, file.bytes, file.options);
 
         ++result.attempted;
         result.metadata_transactions += item.write.metadata_transactions;
