@@ -85,6 +85,7 @@ add_library(ps2driveforge_host
     src/host/opl_asset_pipeline.cpp
     src/host/opl_partition.cpp
     src/host/opl_pfs_import.cpp
+    src/host/image_game_deploy.cpp
 )
 target_link_libraries(ps2driveforge_host PUBLIC ps2driveforge_core)
 target_compile_features(ps2driveforge_host PUBLIC cxx_std_20)
@@ -372,6 +373,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-opl-tar-pfs-import-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-tar-pfs-import-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-tar-pfs-import-tests COMMAND ps2-driveforge-opl-tar-pfs-import-tests)
+
+    add_executable(ps2-driveforge-image-game-deploy-tests tests/image_game_deploy_tests.cpp)
+    target_link_libraries(ps2-driveforge-image-game-deploy-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-image-game-deploy-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-image-game-deploy-tests COMMAND ps2-driveforge-image-game-deploy-tests)
 
     add_executable(ps2-driveforge-opl-partition-tests tests/opl_partition_tests.cpp)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
