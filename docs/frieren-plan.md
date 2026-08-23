@@ -89,7 +89,7 @@ APA removal planning and apply are implemented for images and guarded physical m
 
 `ManagementModel` can consume a committed removal without rebuilding the full HDL list. Presentation groups a main and its authoritative subs through `main_lba`, exposes logical total size and leaves orphan subs diagnostic.
 
-## F5R - FHDB Manager recovery/rescue parity - implemented in core and physical developer tooling
+## F5R - FHDB Manager recovery/rescue parity - implemented in core, CLI and WinUI
 
 Implemented shared recovery formats and behaviors include:
 
@@ -104,7 +104,10 @@ Implemented shared recovery formats and behaviors include:
 - Rescue Capsule capture from the exact published `osdStart` / `osdSize` payload;
 - full bootstrap restore using payload-first / pointer-last publication;
 - legacy pointer-only restore;
-- physical exceptional recovery admission and guarded repair endpoints.
+- physical exceptional recovery admission and guarded repair endpoints;
+- WinUI read-only Rescue Capsule capture and forensic APA analysis;
+- WinUI guarded bootstrap restore and conservative APA master repair;
+- WinUI automatic-safe forensic topology repair, with manual-only maps deliberately refused.
 
 A corrupt or wrong-disk full Rescue Capsule blocks fallback to an older legacy pointer. A valid header-only capsule may permit fallback according to FHDB Manager precedence.
 
@@ -140,13 +143,13 @@ repair-master
 repair-forensic
 ```
 
-Destructive commands require both `--apply` and literal `--confirm PhysicalDriveN`.
+Destructive developer commands require both `--apply` and literal `--confirm PhysicalDriveN`. WinUI uses the same literal target-confirmation rule before its physical mutation/recovery paths.
 
 **Release status:** implemented but not yet graduated. Sacrificial real-HDD destructive validation, failure/recovery drills and cross-tool recovery round trips remain release blockers.
 
 ## F7 - HDL Tools GUI - implemented, hardware-gated
 
-WinUI now exposes a first-class **HDL Tools** management surface backed directly by the native Frieren coordinators rather than spawning developer CLI tools.
+WinUI exposes a first-class **HDL Tools** management surface backed directly by the native Frieren coordinators rather than spawning developer CLI tools.
 
 Implemented GUI flow includes:
 
@@ -161,17 +164,27 @@ Implemented GUI flow includes:
 - list grouped HDL main partitions;
 - delete one grouped HDL game without exposing raw child deletion;
 - run read-only physical write admission and display the frozen media fingerprint;
-- require literal `PhysicalDriveN` confirmation in the GUI before physical mutation;
+- require literal `PhysicalDriveN` confirmation before every exposed physical mutation/recovery action;
+- create a canonical Rescue Capsule read-only;
+- restore Rescue Capsule or legacy FHDB/HDDMBR evidence through shared FHDB precedence;
+- run read-only forensic APA analysis and export evidence;
+- run conservative master repair;
+- apply only automatic-safe forensic topology repair and refuse manual-only maps;
+- stage a local bootstrap provider manifest entirely on the host;
+- show immutable provider/version, source SHA-256, final payload SHA-256, sector geometry and target fingerprint before installation;
+- install the exact frozen provider payload with mandatory pre-install Rescue Capsule + HDDMBR and cold verification;
 - report mutation outcome, recovery artifacts and cold-reopen verification;
-- keep the existing Explorer mount/read paths on ordinary read-only `PhysicalDrive`.
+- keep Explorer mount/read paths on ordinary read-only `PhysicalDrive`.
 
-The WinUI surface compiles through its dedicated Windows CI. Release graduation still requires the destructive hardware checklist on sacrificial media.
+Provider staging runs off the UI thread. Network/crypto work completes before `WritablePhysicalDrive` exists, so the preview is the actual immutable install input rather than decoration.
 
-## F8 - MagicGate host service - implemented; product-provider integration remains
+**Release status:** software-complete for Frieren scope, but still hardware-gated. The exact candidate must pass the destructive checklist on sacrificial media.
 
-The supported common low-layout disk KELF MagicGate path is code-complete.
+## F8 - MagicGate and bootstrap provider pipeline - implemented, fixture/hardware-gated
 
-Frieren now contains:
+The supported common low-layout disk KELF MagicGate path and the common bootstrap provider pipeline are implemented.
+
+Frieren contains:
 
 - DES / two-key TDES / CBC primitives;
 - strict KELF layout parsing;
@@ -185,33 +198,50 @@ Frieren now contains:
 - mandatory keyset provenance and capability revocation;
 - explicit MechaCon/reference ICVPS2 evidence as a separate capability;
 - fail-closed behavior when ICVPS2 is required but absent or mismatched;
-- dedicated Linux/Windows `MagicGate host verification` CI and negative-vector coverage.
+- strict local bootstrap manifest parsing with unknown/duplicate/missing-field rejection;
+- explicit product strategies for FHDB, HDD-OSD, HOSD and PSBBN over one shared trust pipeline;
+- immutable HTTPS acquisition with a caller-supplied exact SHA-256 and bounded response size;
+- HTML/error-page rejection before artifact acceptance;
+- staged KELF inspect/verify/sign policy through `MagicGateHostService`;
+- `FrozenInstallInput` containing provider/version/provenance, source hash, final payload hash, canonical `__mbr` geometry and target media fingerprint;
+- cross-platform post-freeze validation detecting payload/hash/geometry changes and KELF trailing bytes;
+- guarded physical bootstrap install that rechecks the live target fingerprint;
+- mandatory pre-install Rescue Capsule and HDDMBR before target mutation;
+- reuse of the proven payload-first / pointer-last FHDB transaction instead of a second raw writer;
+- cold read-only master, APA and payload verification after the RW lease closes;
+- WinUI provider staging/preview/install for existing signed KELFs;
+- dedicated Linux/Windows `MagicGate and bootstrap provider host verification` CI.
 
 PS2SDK obtains ICVPS2 from MechaCon command `0x98`; DriveForge therefore does not invent a software derivation. KELFs requiring ICVPS2 consume explicit trusted hardware/reference evidence and place it at `KELF_header_size - 8`.
 
-See [`magicgate-host.md`](magicgate-host.md).
+See [`magicgate-host.md`](magicgate-host.md) and [`bootstrap-provider-pipeline.md`](bootstrap-provider-pipeline.md).
 
-The remaining bootstrap work is product/provider integration, not unfinished MagicGate crypto. FHDB/HDD-OSD/HOSD/PSBBN strategies still need pinned real upstream fixtures, immutable `BootstrapInstallPlan` generation and sacrificial-hardware validation.
-
-The complete staged path is:
+The common staged path is now executable code:
 
 ```text
-bounded provider acquisition
- -> pinned provenance / SHA-256
+strict local provider manifest
+ -> immutable HTTPS acquisition
+ -> exact source SHA-256
  -> staged content inspection
  -> MagicGateHostService inspect/verify/sign
- -> independently verified staged KELF
- -> immutable bootstrap install plan
- -> recovery artifacts
- -> guarded image/physical write endpoint
- -> cold verification
+ -> exact final payload SHA-256
+ -> frozen target fingerprint + __mbr geometry
+ -> FrozenInstallInput validation
+ -> pre-install Rescue Capsule + HDDMBR
+ -> guarded physical write endpoint
+ -> payload readback
+ -> pointer publication last
+ -> close RW lease
+ -> cold read-only master + APA + payload verification
 ```
 
-No network provider is allowed to hand bytes directly to a raw writer.
+No network provider can hand bytes directly to a raw writer.
+
+The generic WinUI provider surface accepts existing inspectable/verified KELFs. MagicGate signing itself is implemented, but generic `magicgate=sign` manifests remain fail-closed until a typed product strategy supplies the explicit `DiskKelfSignPlan`; the UI never invents signing geometry from a filename. Product-specific filesystem/package stages for HDD-OSD/HOSD/PSBBN likewise require pinned, legally usable real fixtures before they can graduate from shared strategy metadata. Those are integration/fixture gates, not missing raw-disk or MagicGate primitives.
 
 ## Recovery UX vocabulary
 
-DriveForge and FHDB Manager should present the same operation names where semantics overlap:
+DriveForge and FHDB Manager present the same operation names where semantics overlap:
 
 ```text
 Create Rescue Capsule
@@ -232,19 +262,19 @@ Platform UI may differ. Artifact meaning must not.
 
 - Emilia read-only regressions remain green;
 - writable image tests remain green on MSVC and Linux sanitizers;
-- MagicGate host verification is green on Linux and Windows;
+- MagicGate + bootstrap provider host verification is green on Linux and Windows;
 - canonical Windows package verification includes every Frieren regression/developer executable required by the release;
 - HDL install/delete and PFS mutations cold-reopen cleanly;
 - corruption/refusal tests prove malformed layouts are not casually mutated;
 - Rescue Capsule, Mutation Journal and FHDB shared artifacts remain distinct and cross-format rejection is tested;
 - recovery restore precedence matches FHDB Manager;
-- wrong-disk and stale-plan cases fail before target writes;
+- wrong-disk and stale/frozen-plan tampering cases fail before target writes;
 - guarded physical HDL install/delete are validated on a disposable PS2 HDD;
 - physical recovery and deliberate failure/recovery drills are validated on sacrificial media;
 - shared recovery artifacts round-trip FHDB Manager -> DriveForge and DriveForge -> FHDB Manager on representative real samples;
-- HDL Tools GUI passes the destructive-hardware workflow without bypassing the guarded backend;
-- representative real KELFs/key material/ICVPS2 evidence pass the completed MagicGate service and bootstrap staging path;
-- product/provider strategies intended for 0.6.0 have pinned fixtures and immutable planning tests;
+- HDL Tools GUI passes install/delete/provider/recovery destructive-hardware workflows without bypassing the guarded backend;
+- representative real KELFs/key material/ICVPS2 evidence pass the MagicGate service and provider staging path;
+- each product/provider strategy intended to ship with a built-in manifest has pinned, legally usable fixtures and immutable planning tests;
 - a final exact candidate artifact passes the Frieren destructive-hardware checklist.
 
 The rule remains pleasantly unambitious: read paths stay boring, write paths stay explicit, recovery stays interoperable, cryptography fails closed and no button earns access to a real disk merely because a synthetic image survived human enthusiasm.
