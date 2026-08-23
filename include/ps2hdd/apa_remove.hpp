@@ -43,6 +43,13 @@ struct RemoveResult {
 [[nodiscard]] RemovePlan plan_remove_main_partition(const ScanResult& scan,
                                                     std::uint32_t main_lba);
 
+// Apply an already-validated removal plan to the caller's cached ScanResult with
+// zero device I/O. GUI/session code uses this only after the matching transaction
+// commits successfully, keeping its APA snapshot synchronized without rescanning
+// the disk or rebuilding HDL enrichment.
+[[nodiscard]] bool apply_remove_plan_to_scan(ScanResult& scan,
+                                             const RemovePlan& plan);
+
 // Stages only surviving-header link rewrites. Removed headers are intentionally
 // left untouched and become unreachable free space; a future allocation may
 // overwrite them. This avoids turning deletion into a giant zero-fill operation.
