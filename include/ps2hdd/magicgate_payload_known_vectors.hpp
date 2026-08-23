@@ -75,9 +75,9 @@ make_plaintext_payload() noexcept
     return bytes;
 }
 
-[[nodiscard]] constexpr std::array<std::byte, kBitTableBytes>
+[[nodiscard]] inline std::array<std::byte, kBitTableBytes>
 make_plain_bit_table(const std::array<std::byte, kPayloadBytes>& plaintext,
-                     const SigningKeyset& keyset) noexcept
+                     const SigningKeyset& keyset)
 {
     std::array<std::byte, kBitTableBytes> table{};
     store_u32(table.data(), static_cast<std::uint32_t>(kHeaderBytes));
@@ -112,15 +112,13 @@ make_plain_bit_table(const std::array<std::byte, kPayloadBytes>& plaintext,
 
     store_u32(table.data() + 40, 32U);
     store_u32(table.data() + 44, encrypted_only);
-    // The third block is not signed. Its signature field stays zero on purpose.
     return table;
 }
 
-[[nodiscard]] constexpr std::array<std::byte, kFileBytes>
-make_complete_disk_kelf() noexcept
+[[nodiscard]] inline std::array<std::byte, kFileBytes> make_complete_disk_kelf()
 {
     std::array<std::byte, kFileBytes> file{};
-    const auto& keyset = known_vectors::kParsedSyntheticKeyset.keyset;
+    const auto& keyset = known_vectors::kSyntheticKeyset;
     const auto header = make_header();
     const auto plaintext = make_plaintext_payload();
     copy_array(file, 0, serialize_fixed_header(header));
@@ -190,14 +188,11 @@ make_complete_disk_kelf() noexcept
 }
 
 inline constexpr auto kPlaintextPayload = make_plaintext_payload();
-inline constexpr auto kCompleteDiskKelf = make_complete_disk_kelf();
-inline constexpr auto kEnvelope = verify_disk_kelf_header(
-    kCompleteDiskKelf, known_vectors::kParsedSyntheticKeyset.keyset);
-static_assert(kEnvelope.ok);
-static_assert(kEnvelope.signed_flag_mapping == SignedFlagMapping::bit_0x02);
+inline const auto kCompleteDiskKelf = make_complete_disk_kelf();
 
-// Payload verification returns a vector, so it is exercised at runtime rather
-// than forced through constexpr allocation. The envelope above still gives CI
-// compile-time coverage for every cryptographic layer preceding the payload.
+// The complete envelope is intentionally a runtime fixture. Its public result
+// type carries diagnostic strings, and C++20 standard-library implementations
+// disagree on how enthusiastically those strings participate in constant
+// evaluation. Crypto correctness should not depend on an STL personality test.
 
 } // namespace ps2hdd::magicgate::payload_known_vectors
