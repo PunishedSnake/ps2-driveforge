@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -24,6 +25,11 @@ struct DiskKelfSignPlan {
     DiskContentKeys content_keys;
     std::uint32_t signed_flag{};
     std::uint32_t encrypted_flag{};
+
+    // KELFs with header flag bit 1 require the eight-byte ICVPS2 emitted by
+    // MechaCon. DriveForge never derives or ships this value. A caller may only
+    // sign such a KELF when explicit hardware/reference evidence is available.
+    std::optional<cipher::Block> icvps2;
 };
 
 struct DiskKelfSignResult {
@@ -47,9 +53,7 @@ constexpr void store_block(std::span<std::byte> bytes,
                            std::size_t offset,
                            const cipher::Block& block) noexcept
 {
-    for (std::size_t i = 0; i < block.size(); ++i) {
-        bytes[offset + i] = block[i];
-    }
+    for (std::size_t i = 0; i < block.size(); ++i) bytes[offset + i] = block[i];
 }
 
 [[nodiscard]] inline bool encrypt_content_block(
@@ -71,26 +75,17 @@ constexpr void store_block(std::span<std::byte> bytes,
 
 [[nodiscard]] inline SignedFlagMapping mapping_for(std::uint32_t flag) noexcept
 {
-    if (flag == 0x01U) {
-        return SignedFlagMapping::bit_0x01;
-    }
-    if (flag == 0x02U) {
-        return SignedFlagMapping::bit_0x02;
-    }
+    if (flag == 0x01U) return SignedFlagMapping::bit_0x01;
+    if (flag == 0x02U) return SignedFlagMapping::bit_0x02;
     return SignedFlagMapping::unresolved;
 }
 
 } // namespace sign_detail
 
-// Build the common low-layout disk KELF entirely on the host. This milestone is
-// deliberately narrower than every KELF Sony ever shipped: variable pre-key
-// fields and ICVPS2 remain unsupported until we have equally strong behavioral
-// evidence for them. A small honest signer is more useful than a universal one
-// that occasionally invents eight bytes and hopes the MechaCon is sentimental.
-//
-// The caller supplies Kbit/Kc explicitly. Random generation belongs to a higher
-// service layer so deterministic tests, imported historical keys and future
-// provider policies can all use the same byte-level signer.
+// Build the common low-layout disk KELF entirely on the host. Variable pre-key
+// fields remain outside this signer because we do not have equivalent behavioral
+// evidence for those layouts. ICVPS2 is supported only as an explicit MechaCon
+// capability supplied by the caller when header flag bit 1 requests it.
 [[nodiscard]] inline DiskKelfSignResult sign_low_layout_disk_kelf(
     const DiskKelfSignPlan& plan,
     std::span<const std::byte> plaintext,
@@ -111,8 +106,13 @@ constexpr void store_block(std::span<std::byte> bytes,
         result.error = "MagicGate low-layout signer does not support the variable pre-key field";
         return result;
     }
-    if ((plan.header.flags & 0x0002U) != 0U) {
-        result.error = "MagicGate low-layout signer refuses ICVPS2 until its software algorithm is verified";
+    const bool uses_icvps2 = (plan.header.flags & 0x0002U) != 0U;
+    if (uses_icvps2 && !plan.icvps2) {
+        result.error = "MagicGate KELF requests ICVPS2 but no MechaCon/reference evidence was supplied";
+        return result;
+    }
+    if (!uses_icvps2 && plan.icvps2) {
+        result.error = "MagicGate sign plan supplies ICVPS2 while the KELF header does not request it";
         return result;
     }
     if ((plan.header.flags & 0xF000U) != 0U) {
@@ -168,7 +168,8 @@ constexpr void store_block(std::span<std::byte> bytes,
     }
 
     const auto bit_table_bytes = 8U + plan.blocks.size() * 16U;
-    const auto header_bytes = 72U + bit_table_bytes + 16U;
+    const auto trailer_bytes = uses_icvps2 ? 24U : 16U;
+    const auto header_bytes = 72U + bit_table_bytes + trailer_bytes;
     if (header_bytes > std::numeric_limits<std::uint16_t>::max()) {
         result.error = "MagicGate generated KELF header exceeds its 16-bit size field";
         return result;
@@ -177,8 +178,6 @@ constexpr void store_block(std::span<std::byte> bytes,
     auto header = plan.header;
     header.elf_size = static_cast<std::uint32_t>(plaintext.size());
     header.header_size = static_cast<std::uint16_t>(header_bytes);
-    // KELF BIT_count belongs to the optional pre-key descriptor area. The
-    // encrypted runtime BIT table we build below has its own block_count.
     header.bit_count = 0;
 
     result.file.assign(header_bytes + plaintext.size(), std::byte{0});
@@ -257,6 +256,9 @@ constexpr void store_block(std::span<std::byte> bytes,
     const auto bit_sig_offset = layout.bit_table_offset + bit_table_bytes;
     sign_detail::store_block(result.file, bit_sig_offset, bit_sig.value);
     sign_detail::store_block(result.file, bit_sig_offset + 8U, root_sig.value);
+    if (uses_icvps2) {
+        sign_detail::store_block(result.file, bit_sig_offset + 16U, *plan.icvps2);
+    }
 
     std::copy(plaintext.begin(), plaintext.end(),
               result.file.begin() + static_cast<std::ptrdiff_t>(header_bytes));
@@ -274,9 +276,6 @@ constexpr void store_block(std::span<std::byte> bytes,
         payload_cursor += block.size;
     }
 
-    // A signer that does not consume its own output is how format folklore is
-    // born. Verify the exact bytes we are about to return through the separate
-    // parser/verifier path and reject any disagreement immediately.
     result.envelope = verify_disk_kelf_header(result.file, keyset);
     if (!result.envelope.ok) {
         result.error = "MagicGate self-verification rejected the signed header: " +
@@ -288,7 +287,7 @@ constexpr void store_block(std::span<std::byte> bytes,
         return result;
     }
     const auto payload_check = verify_and_decrypt_disk_kelf_payload(
-        result.file, result.envelope, keyset);
+        result.file, result.envelope, keyset, plan.icvps2);
     if (!payload_check.ok || payload_check.plaintext.size() != plaintext.size() ||
         !std::equal(payload_check.plaintext.begin(), payload_check.plaintext.end(), plaintext.begin())) {
         result.error = payload_check.ok
