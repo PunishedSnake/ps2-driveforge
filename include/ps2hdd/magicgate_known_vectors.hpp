@@ -79,6 +79,11 @@ inline constexpr std::array<std::byte, 16> kSyntheticKbit{
     std::byte{0x44}, std::byte{0x45}, std::byte{0x46}, std::byte{0x47},
     std::byte{0x48}, std::byte{0x49}, std::byte{0x4a}, std::byte{0x4b},
     std::byte{0x4c}, std::byte{0x4d}, std::byte{0x4e}, std::byte{0x4f}};
+inline constexpr std::array<std::byte, 16> kSyntheticKc{
+    std::byte{0xa0}, std::byte{0xa1}, std::byte{0xa2}, std::byte{0xa3},
+    std::byte{0xa4}, std::byte{0xa5}, std::byte{0xa6}, std::byte{0xa7},
+    std::byte{0xa8}, std::byte{0xa9}, std::byte{0xaa}, std::byte{0xab},
+    std::byte{0xac}, std::byte{0xad}, std::byte{0xae}, std::byte{0xaf}};
 
 inline constexpr std::array<std::byte, 40> kExpectedEncryptedBitTable{
     std::byte{0xec}, std::byte{0xfb}, std::byte{0x4a}, std::byte{0x01},
@@ -105,6 +110,11 @@ static_assert(kEncryptedBitTable == kExpectedEncryptedBitTable);
 inline constexpr cipher::Block kExpectedBitTableSignature{
     std::byte{0xf7}, std::byte{0x8e}, std::byte{0x13}, std::byte{0x62},
     std::byte{0x02}, std::byte{0x3e}, std::byte{0xef}, std::byte{0xcd}};
+inline constexpr auto kBitTableSignature = bit_table_signature(
+    kPlainBitTable, kSyntheticKbit, kSyntheticKc, kSigningKeyset);
+static_assert(kBitTableSignature.ok);
+static_assert(kBitTableSignature.value == kExpectedBitTableSignature);
+
 inline constexpr std::array<cipher::Block, 2> kSignedBlockSignatures{
     cipher::Block{
         std::byte{0x00}, std::byte{0x11}, std::byte{0x22}, std::byte{0x33},
@@ -146,5 +156,24 @@ static_assert(kEncryptedStyleContentSignature.ok);
 static_assert(kPlainStyleContentSignature.ok);
 static_assert(kEncryptedStyleContentSignature.value == kExpectedEncryptedStyleContentSignature);
 static_assert(kPlainStyleContentSignature.value == kExpectedPlainStyleContentSignature);
+
+inline constexpr std::string_view kSyntheticKeysetText =
+    "# DriveForge synthetic MagicGate regression keyset\n"
+    " MG_SIG_MASTER_KEY = 0123456789ABCDEF \n"
+    "MG_SIG_HASH_KEY=fedcba9876543210\n"
+    "MG_KBIT_MASTER_KEY=00112233445566778899aabbccddeeff\n"
+    "MG_KBIT_MATERIAL = 1011121314151617\n"
+    "MG_KC_MASTER_KEY=ffeeddccbbaa99887766554433221100\n"
+    "MG_KC_IV=2021222324252627\n"
+    "; comment between key classes\n"
+    "MG_ROOTSIG_MASTER_KEY=133457799bbcdff1\n"
+    "MG_ROOTSIG_HASH_KEY=0123456789abcdef23456789abcdef01\n"
+    "MG_CONTENT_TABLE_IV=1011121314151617\n"
+    "MG_CONTENT_IV=2021222324252627\n";
+inline constexpr auto kParsedSyntheticKeyset = parse_magicgate_keyset(kSyntheticKeysetText);
+static_assert(kParsedSyntheticKeyset.ok);
+static_assert(kParsedSyntheticKeyset.keyset.signing.signature_master == kSigningKeyset.signature_master);
+static_assert(kParsedSyntheticKeyset.keyset.signing.root_signature_hash == kSigningKeyset.root_signature_hash);
+static_assert(kParsedSyntheticKeyset.keyset.disk.kbit_material == kSigningKeyset.content_table_iv);
 
 } // namespace ps2hdd::magicgate::known_vectors
