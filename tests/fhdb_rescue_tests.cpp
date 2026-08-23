@@ -1,5 +1,6 @@
 #include "ps2hdd/fhdb_rescue.hpp"
 #include "ps2hdd/fhdb_rescue_capture.hpp"
+#include "ps2hdd/magicgate_disk.hpp"
 #include "ps2hdd/sha256.hpp"
 
 #include <algorithm>
@@ -74,8 +75,8 @@ std::array<std::byte, 1024> make_standard_apa_header(
 std::vector<std::byte> make_sector_padded_kelf()
 {
     std::vector<std::byte> payload(512, std::byte{0});
-    // Mirrors fhdb-bootstrap-manager kelf.c: low-layout flags add 8 bytes,
-    // followed by the required 32-byte key/check area.
+    // Mirrors the low-layout SECRMAN KELF: an extra 8-byte field followed by
+    // the 32-byte Kbit/Kc window. The decrypted BIT table begins at offset 72.
     constexpr std::uint16_t header_size = 72;
     constexpr std::uint32_t elf_size = 8;
     store_u32(payload.data() + 0x10, elf_size);
@@ -221,6 +222,88 @@ void test_complete_capsule_interop_and_kelf_validation()
           "payload corruption must be rejected by canonical SHA-256 validation");
 }
 
+void test_magicgate_kelf_layout_matches_secrman_rules()
+{
+    const auto simple = make_sector_padded_kelf();
+    const auto layout = ps2hdd::magicgate::inspect_kelf(simple);
+    check(layout.ok, "simple disk KELF layout should parse");
+    check(layout.header.header_size == 72 && layout.header.elf_size == 8,
+          "KELF fixed header fields mismatch");
+    check(layout.content_key_offset == 40,
+          "low-layout KELF content key should follow the extra 8-byte field");
+    check(layout.bit_table_offset == 72 && layout.payload_offset == 72,
+          "SECRMAN BIT/payload offsets mismatch for simple fixture");
+    check(layout.file_bytes == 80,
+          "KELF parser must report unpadded file bytes inside sector-padded bootstrap data");
+    check(ps2hdd::magicgate::content_key_bytes(simple, layout).size() == 32,
+          "KELF content-key window must be exactly 32 bytes");
+
+    std::vector<std::byte> variable(160, std::byte{0});
+    for (std::size_t i = 0; i < 16; ++i) {
+        variable[i] = static_cast<std::byte>(0x10U + static_cast<unsigned>(i));
+    }
+    store_u32(variable.data() + 0x10, 4);
+    store_u16(variable.data() + 0x14, 108);
+    store_u16(variable.data() + 0x18, 0x1001U); // variable field, high nibble skips low-layout +8
+    store_u16(variable.data() + 0x1a, 2);
+    variable[64] = std::byte{3}; // four bytes including this length byte
+    const auto variable_layout = ps2hdd::magicgate::inspect_kelf(variable);
+    check(variable_layout.ok, "variable/BIT disk KELF layout should parse");
+    check(variable_layout.content_key_offset == 68,
+          "BIT descriptors plus variable field should locate Kbit/Kc at byte 68");
+    check(variable_layout.bit_table_offset == 100 && variable_layout.payload_offset == 108,
+          "variable KELF BIT/payload geometry mismatch");
+
+    auto too_many_bits = variable;
+    store_u16(too_many_bits.data() + 0x1a, 64);
+    check(!ps2hdd::magicgate::inspect_kelf(too_many_bits).ok,
+          "KELF BIT_count above SECRMAN limit must be rejected");
+
+    auto short_keys = simple;
+    store_u16(short_keys.data() + 0x14, 56);
+    check(!ps2hdd::magicgate::inspect_kelf(short_keys).ok,
+          "KELF header that truncates Kbit/Kc must be rejected");
+}
+
+void test_magicgate_disk_content_key_round_trip_with_synthetic_keyset()
+{
+    auto file = make_sector_padded_kelf();
+    for (std::size_t i = 0; i < 16; ++i) {
+        file[i] = static_cast<std::byte>(0x31U + static_cast<unsigned>(i * 7U));
+    }
+    const auto layout = ps2hdd::magicgate::inspect_kelf(file);
+    check(layout.ok, "synthetic disk KELF should parse before key transform");
+
+    ps2hdd::magicgate::DiskKeyset keyset;
+    for (std::size_t i = 0; i < keyset.kbit_master.size(); ++i) {
+        keyset.kbit_master[i] = static_cast<std::byte>(0x11U + static_cast<unsigned>(i * 3U));
+        keyset.kc_master[i] = static_cast<std::byte>(0xa1U - static_cast<unsigned>(i * 2U));
+    }
+    for (std::size_t i = 0; i < keyset.kbit_material.size(); ++i) {
+        keyset.kbit_material[i] = static_cast<std::byte>(0x20U + static_cast<unsigned>(i));
+        keyset.kc_material[i] = static_cast<std::byte>(0x70U + static_cast<unsigned>(i * 2U));
+    }
+
+    ps2hdd::magicgate::DiskContentKeys plaintext;
+    for (std::size_t i = 0; i < plaintext.kbit.size(); ++i) {
+        plaintext.kbit[i] = static_cast<std::byte>(0x40U + static_cast<unsigned>(i));
+        plaintext.kc[i] = static_cast<std::byte>(0xd0U - static_cast<unsigned>(i));
+    }
+
+    const auto wrapped = ps2hdd::magicgate::wrap_disk_content_keys(layout, plaintext, keyset);
+    check(std::any_of(wrapped.begin(), wrapped.end(), [](std::byte b) { return b != std::byte{0}; }),
+          "synthetic MagicGate wrapping should not collapse to all zeroes");
+    check(ps2hdd::magicgate::write_wrapped_disk_content_keys(file, layout, plaintext, keyset),
+          "wrapped disk content keys should fit the parsed KELF window");
+
+    const auto unwrapped = ps2hdd::magicgate::unwrap_disk_content_keys(file, keyset);
+    check(unwrapped.ok, "synthetic disk Kbit/Kc should unwrap");
+    check(unwrapped.keys.kbit == plaintext.kbit && unwrapped.keys.kc == plaintext.kc,
+          "disk Kbit/Kc wrap/unwrap must round-trip byte-for-byte");
+    check(unwrapped.content_key_offset == layout.content_key_offset,
+          "disk key transform must report the same parsed Kbit/Kc offset");
+}
+
 void test_live_capture_reads_exact_published_payload()
 {
     MemoryDisk disk(16U * 1024U * 1024U);
@@ -273,6 +356,15 @@ void test_live_capture_rejects_ambiguous_or_out_of_range_pointer()
         0x2000U, ps2hdd::fhdb::kBootstrapPayloadMaxBytes / 512U + 1U));
     check(!ps2hdd::fhdb::capture_rescue_image(too_large).ok,
           "payload above FHDB 4 MiB limit must be rejected before read");
+
+    MemoryDisk pc_owned(16U * 1024U * 1024U);
+    auto hybrid = make_standard_apa_header();
+    hybrid[0x1fe] = std::byte{0x55};
+    hybrid[0x1ff] = std::byte{0xaa};
+    store_u32(hybrid.data(), apa_checksum(hybrid));
+    pc_owned.set_master(hybrid);
+    check(!ps2hdd::fhdb::capture_rescue_image(pc_owned).ok,
+          "Rescue capture must refuse a master carrying PC MBR/GPT ownership evidence");
 }
 
 void test_canonical_rejections()
@@ -304,14 +396,16 @@ int main()
         test_exact_v1_metadata_layout();
         test_same_disk_identity_policy();
         test_complete_capsule_interop_and_kelf_validation();
+        test_magicgate_kelf_layout_matches_secrman_rules();
+        test_magicgate_disk_content_key_round_trip_with_synthetic_keyset();
         test_live_capture_reads_exact_published_payload();
         test_live_capture_supports_header_only_bootstrap_state();
         test_live_capture_rejects_ambiguous_or_out_of_range_pointer();
         test_canonical_rejections();
-        std::cout << "FHDB rescue interoperability tests passed\n";
+        std::cout << "FHDB rescue and MagicGate disk-key tests passed\n";
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "FHDB rescue interoperability tests failed: " << error.what() << '\n';
+        std::cerr << "FHDB rescue and MagicGate disk-key tests failed: " << error.what() << '\n';
         return 1;
     }
 }
