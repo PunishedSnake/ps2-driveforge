@@ -1,7 +1,10 @@
 #ifdef _WIN32
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/fhdb_artifacts.hpp"
+#include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/physical_game_deploy.hpp"
 #include "ps2hdd/physical_partition_remove.hpp"
@@ -26,14 +29,19 @@ void usage()
 {
     std::cerr
         << "ps2-driveforge-physical-tools " << ps2hdd::version::string << "\n\n"
-        << "Read-only admission:\n"
-        << "  ps2-driveforge-physical-tools preflight <index>\n\n"
+        << "Read-only admission and recovery capture:\n"
+        << "  ps2-driveforge-physical-tools preflight <index>\n"
+        << "  ps2-driveforge-physical-tools capture-rescue <index> <artifact-dir>\n"
+        << "      [--romver <text>] [--family <text>] [--confidence <text>]\n\n"
         << "HDL install:\n"
         << "  ps2-driveforge-physical-tools install-hdl <index> <game.iso> <title> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN [--cd] [--hidden]\n\n"
         << "APA/HDL remove:\n"
         << "  ps2-driveforge-physical-tools remove <index> <main-lba> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN\n\n"
+        << "FHDB/bootstrap restore:\n"
+        << "  ps2-driveforge-physical-tools restore-bootstrap <index> <artifact-dir>\n"
+        << "      --apply --confirm PhysicalDriveN [--safety-dir <dir>]\n\n"
         << "Physical mutations require an exact target confirmation and host-side recovery artifacts.\n";
 }
 
@@ -131,6 +139,53 @@ int preflight(unsigned index)
     std::cout << mains << "/" << subs << "\n"
               << "  identity:    " << digest_hex(admission.authorization.identity.digest) << "\n"
               << "  write gate:  eligible for guarded RW lease\n";
+    return 0;
+}
+
+int capture_rescue(std::span<char*> args)
+{
+    if (args.size() < 4) {
+        usage();
+        return 2;
+    }
+    unsigned index = 0;
+    if (!parse_unsigned(args[2], index)) {
+        std::cerr << "Invalid physical drive index\n";
+        return 2;
+    }
+
+    ps2hdd::PhysicalDrive disk(index);
+    if (!disk.is_open()) {
+        std::cerr << "Could not open PhysicalDrive" << index
+                  << " read-only, Win32 error " << disk.open_error() << "\n";
+        return 1;
+    }
+
+    ps2hdd::fhdb::RescueCaptureOptions options;
+    options.romver = value_after(args, "--romver");
+    options.family = value_after(args, "--family");
+    options.confidence = value_after(args, "--confidence");
+    const auto captured = ps2hdd::fhdb::capture_rescue_image(disk, options);
+    if (!captured.ok) {
+        std::cerr << "Rescue Capsule capture failed: " << captured.error << "\n";
+        return 1;
+    }
+
+    const auto saved = ps2hdd::fhdb::save_hddrescue(std::filesystem::path(args[3]), captured);
+    if (!saved.ok) {
+        std::cerr << "Captured Rescue Capsule but could not persist it safely: " << saved.error << "\n";
+        return 1;
+    }
+
+    std::cout << "FHDB Rescue Capsule captured read-only\n"
+              << "  source:     PhysicalDrive" << index << "\n"
+              << "  artifact:   " << saved.path.string() << (saved.reused ? " (reused)" : "") << "\n"
+              << "  payload:    " << captured.info.payload_bytes << " bytes\n"
+              << "  osdStart:   " << captured.info.payload_start << "\n"
+              << "  osdSize:    " << captured.info.payload_sectors << " sectors\n"
+              << "  valid KELF: "
+              << ((captured.info.flags & ps2hdd::fhdb::kRescueFlagValidKelf) != 0 ? "yes" : "no")
+              << "\n";
     return 0;
 }
 
@@ -239,6 +294,52 @@ int remove_partition(std::span<char*> args)
     return 0;
 }
 
+int restore_bootstrap(std::span<char*> args)
+{
+    if (args.size() < 7) {
+        usage();
+        return 2;
+    }
+
+    unsigned index = 0;
+    if (!parse_unsigned(args[2], index)) {
+        std::cerr << "Invalid physical drive index\n";
+        return 2;
+    }
+    std::string confirmation_error;
+    if (!confirm_target(args, index, confirmation_error)) {
+        std::cerr << confirmation_error << "\n";
+        return 2;
+    }
+
+    ps2hdd::PhysicalBootstrapRestoreOptions options;
+    options.artifact_directory = std::filesystem::path(args[3]);
+    const auto safety = value_after(args, "--safety-dir");
+    options.safety_directory = safety.empty()
+                                   ? options.artifact_directory
+                                   : std::filesystem::path(safety);
+
+    const auto result = ps2hdd::restore_bootstrap_to_physical(index, options);
+    if (!result.ok) {
+        std::cerr << "Physical bootstrap restore failed: " << result.error << "\n";
+        if (!result.restore.safety_backup_path.empty()) {
+            std::cerr << "Safety HDDMBR: " << result.restore.safety_backup_path.string() << "\n";
+        }
+        return result.partial ? 3 : 1;
+    }
+
+    std::cout << "Physical bootstrap restore complete\n"
+              << "  source artifact: " << result.restore.source_path.string() << "\n"
+              << "  safety HDDMBR:   " << result.restore.safety_backup_path.string() << "\n"
+              << "  osdStart:        " << result.restore.payload_start << "\n"
+              << "  osdSize:         " << result.restore.payload_sectors << " sectors\n"
+              << "  payload bytes:   " << result.restore.payload_bytes << "\n"
+              << "  cold master:     " << (result.cold_master_verified ? "verified" : "not verified") << "\n"
+              << "  cold payload:    " << (result.cold_payload_verified ? "verified/not-applicable" : "not verified") << "\n"
+              << "  locked Windows volumes: " << result.locked_volume_count << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -266,11 +367,17 @@ int main(int argc, char** argv)
         }
         return preflight(index);
     }
+    if (command == "capture-rescue") {
+        return capture_rescue(args);
+    }
     if (command == "install-hdl") {
         return install_hdl(args);
     }
     if (command == "remove") {
         return remove_partition(args);
+    }
+    if (command == "restore-bootstrap") {
+        return restore_bootstrap(args);
     }
 
     usage();
