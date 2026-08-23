@@ -3,11 +3,16 @@
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/fhdb_rescue.hpp"
+#include "ps2hdd/fhdb_rescue_capture.hpp"
+#include "ps2hdd/magicgate_kelf.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/physical_write_guard.hpp"
+#include "ps2hdd/sha256.hpp"
 #include "ps2hdd/writable_physical_drive.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -27,6 +32,125 @@ constexpr std::uint64_t kSectorBytes = 512ULL;
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[1])) << 8U) |
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[2])) << 16U) |
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[3])) << 24U);
+}
+
+[[nodiscard]] bool cold_verify_bootstrap(
+    unsigned physical_drive_index,
+    const fhdb::BootstrapRestorePlan& plan,
+    const fhdb::BootstrapRestoreResult& applied,
+    bool& master_verified,
+    bool& payload_verified,
+    std::string& error)
+{
+    PhysicalDrive cold(physical_drive_index);
+    if (!cold.is_open()) {
+        error = "Bootstrap mutation completed, but cold read-only PhysicalDrive reopen failed";
+        return false;
+    }
+
+    std::array<std::byte, fhdb::kRescueApaHeaderBytes> master{};
+    if (!cold.read(0, master) || !fhdb::is_standard_apa_master(master)) {
+        error = "Bootstrap mutation completed, but the cold APA master failed validation";
+        return false;
+    }
+    if (!fhdb::same_disk_identity(master, plan.source_master)) {
+        error = "Bootstrap mutation changed APA master bytes outside the permitted checksum/OSD pointer fields";
+        return false;
+    }
+    if (load_u32(master.data() + kApaOsdStartOffset) != applied.payload_start ||
+        load_u32(master.data() + kApaOsdSizeOffset) != applied.payload_sectors) {
+        error = "Cold APA master does not contain the bootstrap pointer that was committed";
+        return false;
+    }
+    master_verified = true;
+
+    apa::Reader reader(cold);
+    const auto scan = reader.scan();
+    if (!scan.ok()) {
+        error = "Bootstrap mutation completed, but cold APA chain verification failed";
+        return false;
+    }
+
+    if (plan.kind == fhdb::BootstrapRestoreKind::rescue_payload && !plan.payload.empty()) {
+        const auto offset = static_cast<std::uint64_t>(plan.payload_start) * kSectorBytes;
+        std::vector<std::byte> payload(plan.payload.size());
+        if (!cold.read(offset, payload) || payload != plan.payload) {
+            error = "Bootstrap mutation completed, but cold payload byte verification failed";
+            return false;
+        }
+    }
+    payload_verified = true;
+    return true;
+}
+
+[[nodiscard]] bool build_provider_install_plan(
+    BlockDevice& disk,
+    const bootstrap::FrozenInstallInput& input,
+    fhdb::BootstrapRestorePlan& plan,
+    std::string& error)
+{
+    if (!input.ok) {
+        error = input.error.empty() ? "Provider bootstrap input is not frozen/valid" : input.error;
+        return false;
+    }
+    if (input.payload.empty() || input.payload_sha256.empty()) {
+        error = "Provider bootstrap input has no frozen payload/hash";
+        return false;
+    }
+    if (crypto::sha256_hex(crypto::sha256(input.payload)) != input.payload_sha256) {
+        error = "Provider bootstrap payload changed after the install input was frozen";
+        return false;
+    }
+    if (input.program_start_sector != fhdb::kBootstrapProgramStartSector) {
+        error = "Provider bootstrap input targets a non-canonical __mbr program start";
+        return false;
+    }
+    if (input.payload_sector_count == 0U ||
+        input.payload.size() > fhdb::kBootstrapPayloadMaxBytes) {
+        error = "Provider bootstrap payload geometry is outside the reserved __mbr limit";
+        return false;
+    }
+    const auto required_sectors = static_cast<std::uint64_t>((input.payload.size() + 511U) / 512U);
+    if (required_sectors != input.payload_sector_count) {
+        error = "Provider bootstrap sector count no longer matches the frozen payload";
+        return false;
+    }
+
+    const auto strategy = bootstrap::strategy_for(input.family);
+    if (strategy.requires_kelf_payload) {
+        const auto layout = magicgate::inspect_kelf(input.payload);
+        if (!layout.ok || layout.file_bytes != input.payload.size()) {
+            error = layout.ok
+                ? "Provider bootstrap KELF contains unexpected trailing bytes"
+                : "Provider bootstrap is not a structurally valid KELF: " + layout.error;
+            return false;
+        }
+    }
+
+    std::array<std::byte, fhdb::kRescueApaHeaderBytes> current{};
+    if (!disk.read(0, current) || !fhdb::is_standard_apa_master(current)) {
+        error = "Provider bootstrap install requires a canonical live APA master";
+        return false;
+    }
+
+    const auto payload_offset = static_cast<std::uint64_t>(input.program_start_sector) * kSectorBytes;
+    const auto padded_bytes = static_cast<std::uint64_t>(input.payload_sector_count) * kSectorBytes;
+    if (payload_offset > disk.size_bytes() || padded_bytes > disk.size_bytes() - payload_offset) {
+        error = "Provider bootstrap payload extends beyond the physical disk";
+        return false;
+    }
+
+    plan.ok = true;
+    plan.kind = fhdb::BootstrapRestoreKind::rescue_payload;
+    plan.source_master = current;
+    plan.saved_master = current;
+    plan.payload_start = input.program_start_sector;
+    plan.payload_sectors = input.payload_sector_count;
+    plan.family = std::string(strategy.name);
+    plan.confidence = "provider-verified";
+    plan.payload.assign(static_cast<std::size_t>(padded_bytes), std::byte{0});
+    std::copy(input.payload.begin(), input.payload.end(), plan.payload.begin());
+    return true;
 }
 
 } // namespace
@@ -51,10 +175,6 @@ PhysicalBootstrapRestoreResult restore_bootstrap_to_physical(
         return result;
     }
 
-    // Bootstrap restore operates on a canonical live master and therefore uses
-    // normal mutation admission. Damaged-master repair is a different trust
-    // domain and must enter through authorize_exceptional_recovery plus an APA
-    // forensic/repair plan instead of smuggling recovery bytes through here.
     const auto authorization = physical_write::authorize(read_only);
     if (!authorization.ok) {
         result.error = "Physical bootstrap restore admission failed: " + authorization.error;
@@ -75,18 +195,11 @@ PhysicalBootstrapRestoreResult restore_bootstrap_to_physical(
 
         WritablePhysicalDrive writable(physical_drive_index, writable_options);
         if (!writable.is_open()) {
-            result.error = "Could not acquire guarded physical bootstrap write lease: " +
-                           writable.admission_error();
+            result.error = "Could not acquire guarded physical bootstrap write lease: " + writable.admission_error();
             return result;
         }
         result.locked_volume_count = writable.locked_volume_count();
-
-        // apply_bootstrap_restore() owns the format-critical ordering and the
-        // mandatory HDDMBR before-image. Do not duplicate that sequence here;
-        // otherwise image and physical recovery would quietly become two
-        // different recovery products sharing only a name.
-        result.restore = fhdb::apply_bootstrap_restore(
-            writable, plan, options.safety_directory);
+        result.restore = fhdb::apply_bootstrap_restore(writable, plan, options.safety_directory);
         if (!result.restore.ok) {
             result.partial = result.restore.partial;
             result.error = "Physical bootstrap restore failed: " + result.restore.error;
@@ -94,56 +207,95 @@ PhysicalBootstrapRestoreResult restore_bootstrap_to_physical(
         }
     }
 
-    // The RW handle and every locked/dismounted Windows volume are gone before
-    // this point. Reopen through the ordinary read-only class so successful
-    // verification cannot accidentally rely on state cached inside the writer.
-    PhysicalDrive cold(physical_drive_index);
-    if (!cold.is_open()) {
+    if (!cold_verify_bootstrap(physical_drive_index, plan, result.restore,
+                               result.cold_master_verified,
+                               result.cold_payload_verified,
+                               result.error)) {
         result.partial = true;
-        result.error = "Bootstrap restore completed, but cold read-only PhysicalDrive reopen failed";
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
+PhysicalBootstrapInstallResult install_bootstrap_to_physical(
+    unsigned physical_drive_index,
+    const bootstrap::FrozenInstallInput& input,
+    const PhysicalBootstrapInstallOptions& options)
+{
+    PhysicalBootstrapInstallResult result;
+    if (options.safety_directory.empty()) {
+        result.error = "Physical provider bootstrap install requires a safety-artifact directory";
         return result;
     }
 
-    std::array<std::byte, fhdb::kRescueApaHeaderBytes> master{};
-    if (!cold.read(0, master) || !fhdb::is_standard_apa_master(master)) {
-        result.partial = true;
-        result.error = "Bootstrap restore completed, but the cold APA master failed validation";
+    PhysicalDrive read_only(physical_drive_index);
+    if (!read_only.is_open()) {
+        result.error = "Could not open the selected PhysicalDrive read-only before provider bootstrap install";
         return result;
     }
-    if (!fhdb::same_disk_identity(master, plan.source_master)) {
-        result.partial = true;
-        result.error = "Bootstrap restore changed APA master bytes outside the permitted checksum/OSD pointer fields";
+    const auto authorization = physical_write::authorize(read_only);
+    if (!authorization.ok) {
+        result.error = "Physical provider bootstrap admission failed: " + authorization.error;
         return result;
     }
-    if (load_u32(master.data() + kApaOsdStartOffset) != result.restore.payload_start ||
-        load_u32(master.data() + kApaOsdSizeOffset) != result.restore.payload_sectors) {
-        result.partial = true;
-        result.error = "Cold APA master does not contain the bootstrap pointer that was committed";
-        return result;
-    }
-    result.cold_master_verified = true;
-
-    apa::Reader reader(cold);
-    const auto scan = reader.scan();
-    if (!scan.ok()) {
-        result.partial = true;
-        result.error = "Bootstrap restore completed, but cold APA chain verification failed";
+    const auto actual_fingerprint = crypto::sha256_hex(authorization.authorization.identity.digest);
+    if (actual_fingerprint != input.target_fingerprint) {
+        result.error = "Frozen provider bootstrap target fingerprint does not match the live physical disk";
         return result;
     }
 
-    if (plan.kind == fhdb::BootstrapRestoreKind::rescue_payload && !plan.payload.empty()) {
-        const auto offset = static_cast<std::uint64_t>(plan.payload_start) * kSectorBytes;
-        std::vector<std::byte> payload(plan.payload.size());
-        if (!cold.read(offset, payload) || payload != plan.payload) {
-            result.partial = true;
-            result.error = "Bootstrap restore completed, but cold payload byte verification failed";
+    fhdb::BootstrapRestorePlan plan;
+    if (!build_provider_install_plan(read_only, input, plan, result.error)) {
+        return result;
+    }
+
+    // Installation replaces a boot-visible payload. Capture historical evidence
+    // before entering RW, even when the current pointer is zero/zero. A corrupt
+    // live pointer is a recovery problem and therefore blocks normal install.
+    const auto rescue = fhdb::capture_rescue_image(read_only);
+    if (!rescue.ok) {
+        result.error = "Could not capture the mandatory pre-install Rescue Capsule: " + rescue.error;
+        return result;
+    }
+    const auto saved_rescue = fhdb::save_hddrescue(options.safety_directory, rescue);
+    if (!saved_rescue.ok) {
+        result.error = "Could not persist the mandatory pre-install Rescue Capsule: " + saved_rescue.error;
+        return result;
+    }
+    result.rescue_capsule_path = saved_rescue.path;
+
+    {
+        WritablePhysicalDriveOptions writable_options;
+        writable_options.authorization = authorization.authorization;
+        writable_options.lock_mounted_volumes = options.lock_mounted_volumes;
+        writable_options.dismount_locked_volumes = options.dismount_locked_volumes;
+        WritablePhysicalDrive writable(physical_drive_index, writable_options);
+        if (!writable.is_open()) {
+            result.error = "Could not acquire guarded provider bootstrap write lease: " + writable.admission_error();
+            return result;
+        }
+        result.locked_volume_count = writable.locked_volume_count();
+
+        // Reuse the proven payload-first / pointer-last transaction. Here the
+        // plan was produced from verified provider bytes instead of a rescue
+        // artifact, but the disk-safety ordering must remain identical.
+        result.apply = fhdb::apply_bootstrap_restore(writable, plan, options.safety_directory);
+        result.hddmbr_path = result.apply.safety_backup_path;
+        if (!result.apply.ok) {
+            result.partial = result.apply.partial;
+            result.error = "Physical provider bootstrap install failed: " + result.apply.error;
             return result;
         }
     }
-    // For a legacy pointer-only restore there is intentionally no payload write
-    // to verify. Marking this true means every payload obligation of this plan
-    // has been satisfied, not that DriveForge invented bytes absent from HDDMBR.
-    result.cold_payload_verified = true;
+
+    if (!cold_verify_bootstrap(physical_drive_index, plan, result.apply,
+                               result.cold_master_verified,
+                               result.cold_payload_verified,
+                               result.error)) {
+        result.partial = true;
+        return result;
+    }
     result.ok = true;
     return result;
 }
