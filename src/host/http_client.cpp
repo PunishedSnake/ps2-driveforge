@@ -11,6 +11,7 @@
 #endif
 #include <windows.h>
 #include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 #endif
 
 namespace ps2hdd {
@@ -41,53 +42,36 @@ private:
 
 std::wstring utf8_to_wide(std::string_view text)
 {
-    if (text.empty()) {
-        return {};
-    }
-    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        return {};
-    }
+    if (text.empty()) return {};
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return {};
     const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                             text.data(), static_cast<int>(text.size()),
                                             nullptr, 0);
-    if (length <= 0) {
-        return {};
-    }
+    if (length <= 0) return {};
     std::wstring result(static_cast<std::size_t>(length), L'\0');
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                             text.data(), static_cast<int>(text.size()),
-                            result.data(), length) != length) {
-        return {};
-    }
+                            result.data(), length) != length) return {};
     return result;
 }
 
 std::string wide_to_utf8(std::wstring_view text)
 {
-    if (text.empty()) {
-        return {};
-    }
-    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        return {};
-    }
+    if (text.empty()) return {};
+    if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return {};
     const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(),
                                            static_cast<int>(text.size()),
                                            nullptr, 0, nullptr, nullptr);
-    if (length <= 0) {
-        return {};
-    }
+    if (length <= 0) return {};
     std::string result(static_cast<std::size_t>(length), '\0');
     if (WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                            result.data(), length, nullptr, nullptr) != length) {
-        return {};
-    }
+                            result.data(), length, nullptr, nullptr) != length) return {};
     return result;
 }
 
 std::string winhttp_error(const char* operation)
 {
-    return std::string(operation) + " failed with WinHTTP error " +
-           std::to_string(GetLastError());
+    return std::string(operation) + " failed with WinHTTP error " + std::to_string(GetLastError());
 }
 
 class WinHttpClient final : public HttpClient {
@@ -123,15 +107,9 @@ public:
 
         const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
         std::wstring path;
-        if (parts.dwUrlPathLength != 0) {
-            path.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
-        }
-        if (parts.dwExtraInfoLength != 0) {
-            path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
-        }
-        if (path.empty()) {
-            path = L"/";
-        }
+        if (parts.dwUrlPathLength != 0) path.assign(parts.lpszUrlPath, parts.dwUrlPathLength);
+        if (parts.dwExtraInfoLength != 0) path.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+        if (path.empty()) path = L"/";
 
         InternetHandle session(WinHttpOpen(L"PS2 DriveForge/0.6 Frieren",
                                             WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -187,9 +165,7 @@ public:
             if (WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_CONTENT_TYPE,
                                     WINHTTP_HEADER_NAME_BY_INDEX, type.data(), &type_size,
                                     WINHTTP_NO_HEADER_INDEX)) {
-                if (!type.empty() && type.back() == L'\0') {
-                    type.pop_back();
-                }
+                if (!type.empty() && type.back() == L'\0') type.pop_back();
                 response.content_type = wide_to_utf8(type);
             }
         }
@@ -201,9 +177,7 @@ public:
                 response.body.clear();
                 return response;
             }
-            if (available == 0) {
-                break;
-            }
+            if (available == 0) break;
             if (response.body.size() > max_bytes ||
                 static_cast<std::size_t>(available) > max_bytes - response.body.size()) {
                 response.error = "HTTP asset exceeded the configured download size limit";
@@ -220,9 +194,7 @@ public:
                 return response;
             }
             response.body.resize(old_size + read);
-            if (read == 0) {
-                break;
-            }
+            if (read == 0) break;
         }
 
         return response;
