@@ -49,8 +49,10 @@ struct RescueImageResult {
     std::vector<std::byte> payload;
 };
 
-// Exact PS2 HDD Bootstrap Manager HDDRESCUE v1 metadata layout. The emitted
-// bytes are intentionally interoperable with capsule_format.c from that tool.
+// Exact FHDB Manager HDDRESCUE v1 metadata layout. This is the shared
+// PS2HBRC\0 wire format, not a DriveForge-flavored approximation with similar
+// intentions and incompatible bytes. The historical PS2 repository is named
+// fhdb-bootstrap-manager.
 [[nodiscard]] std::array<std::byte, kRescueMetadataBytes>
 encode_rescue_metadata(const RescueCapsuleInfo& info);
 
@@ -62,19 +64,25 @@ encode_rescue_metadata(const RescueCapsuleInfo& info);
     std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
 [[nodiscard]] bool is_hybrid_gpt_master(
     std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
+
+// Disk identity deliberately ignores the APA checksum and osdStart/osdSize.
+// Those fields are expected to change during bootstrap recovery. Everything
+// else participates so a perfectly valid rescue from another HDD stays a
+// perfectly valid file that we still refuse to apply here.
 [[nodiscard]] bool same_disk_identity(
     std::span<const std::byte, kRescueApaHeaderBytes> current,
     std::span<const std::byte, kRescueApaHeaderBytes> saved) noexcept;
 
-// Validate a complete HDDRESCUE.BIN/HDDRESCUE2.BIN image exactly as the PS2
-// manager does: metadata relationships, APA digest/structure, payload digest,
-// and recorded KELF length when VALID_KELF is present.
+// Validate a complete HDDRESCUE.BIN/HDDRESCUE2.BIN exactly as FHDB Manager
+// does: metadata relationships, APA structure/hash, payload hash and recorded
+// KELF length when VALID_KELF is present. Unknown flags and imaginative file
+// sizes are rejected instead of interpreted creatively.
 [[nodiscard]] RescueImageResult validate_rescue_image(std::span<const std::byte> image);
 
-// Build a complete canonical rescue image from exact saved disk bytes. The
-// caller supplies diagnostic strings only; hashes and flags for APA/payload are
-// derived here. VALID_KELF is set only when the sector image structurally
-// contains one valid KELF and its unpadded byte count can be recovered.
+// Build one canonical Rescue Capsule from exact saved disk bytes. Diagnostic
+// strings are supplied by the caller; hashes and validity flags are derived
+// here. VALID_KELF is set only when the sector image structurally contains one
+// valid KELF and its unpadded size can be recovered.
 [[nodiscard]] RescueImageResult build_rescue_image(
     std::span<const std::byte, kRescueApaHeaderBytes> apa_header,
     std::span<const std::byte> payload,
@@ -84,6 +92,9 @@ encode_rescue_metadata(const RescueCapsuleInfo& info);
     std::string family = {},
     std::string confidence = {});
 
+// Serialization is intentionally boring: metadata, exact master, exact
+// optional payload. Boring binary formats are considerably easier to exchange
+// between a PS2 and a PC than clever ones.
 [[nodiscard]] std::vector<std::byte> serialize_rescue_image(const RescueImageResult& image);
 
 } // namespace ps2hdd::fhdb
