@@ -34,6 +34,31 @@ enum class MagicGatePolicy {
     sign_plaintext,
 };
 
+struct ProductStrategy {
+    ProductFamily family{ProductFamily::other};
+    std::string_view name{"Other"};
+    MagicGatePolicy default_magicgate_policy{MagicGatePolicy::none};
+    bool requires_kelf_payload{};
+    bool may_require_product_filesystem_stage{};
+};
+
+[[nodiscard]] constexpr ProductStrategy strategy_for(ProductFamily family) noexcept
+{
+    switch (family) {
+    case ProductFamily::fhdb:
+        return {family, "FHDB", MagicGatePolicy::verify_kelf, true, false};
+    case ProductFamily::hdd_osd:
+        return {family, "HDD-OSD", MagicGatePolicy::verify_kelf, true, true};
+    case ProductFamily::hosd:
+        return {family, "HOSD", MagicGatePolicy::verify_kelf, true, true};
+    case ProductFamily::psbbn:
+        return {family, "PSBBN", MagicGatePolicy::verify_kelf, true, true};
+    case ProductFamily::other:
+    default:
+        return {ProductFamily::other, "Other", MagicGatePolicy::none, false, false};
+    }
+}
+
 struct ProviderArtifact {
     std::string provider_id;
     ProductFamily family{ProductFamily::other};
@@ -124,6 +149,16 @@ namespace detail {
     return value.size() > 8U && value.substr(0, 8U) == "https://";
 }
 
+[[nodiscard]] constexpr bool product_policy_valid(ProductFamily family,
+                                                  MagicGatePolicy policy) noexcept
+{
+    const auto strategy = strategy_for(family);
+    if (!strategy.requires_kelf_payload) return true;
+    return policy == MagicGatePolicy::inspect_kelf ||
+           policy == MagicGatePolicy::verify_kelf ||
+           policy == MagicGatePolicy::sign_plaintext;
+}
+
 } // namespace detail
 
 // Acquire exactly one already-resolved provider artifact. Discovery of "latest"
@@ -151,6 +186,10 @@ namespace detail {
     if (manifest.max_download_bytes == 0U ||
         manifest.max_download_bytes > 256U * 1024U * 1024U) {
         result.error = "Bootstrap provider download bound is invalid";
+        return result;
+    }
+    if (!detail::product_policy_valid(manifest.family, manifest.magicgate_policy)) {
+        result.error = "Named PS2 bootstrap families require an explicit KELF inspect/verify/sign policy";
         return result;
     }
 
@@ -200,6 +239,11 @@ namespace detail {
     result.source_sha256 = acquired.sha256;
     if (!acquired.ok) {
         result.error = acquired.error.empty() ? "Bootstrap artifact was not acquired successfully" : acquired.error;
+        return result;
+    }
+    if (!detail::product_policy_valid(acquired.manifest.family,
+                                      acquired.manifest.magicgate_policy)) {
+        result.error = "Bootstrap product strategy refuses a non-KELF policy for this family";
         return result;
     }
 
