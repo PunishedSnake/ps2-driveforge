@@ -229,15 +229,17 @@ PreparedPfsImport prepare_pfs_import(std::span<const FetchedAsset> assets,
     return result;
 }
 
-PfsImportResult import_fetched_assets(WritableBlockDevice& device,
-                                      const apa::Partition& partition,
-                                      std::span<const FetchedAsset> assets,
-                                      const PfsImportOptions& options)
+PfsImportResult import_prepared_assets(WritableBlockDevice& device,
+                                       const apa::Partition& partition,
+                                       PreparedPfsImport prepared,
+                                       const PfsImportOptions& options)
 {
     PfsImportResult result;
-    result.prepared = prepare_pfs_import(assets, options);
+    result.prepared = std::move(prepared);
     if (!result.prepared.ok) {
-        result.error = result.prepared.error;
+        result.error = result.prepared.error.empty()
+                           ? "Prepared OPL PFS import is invalid"
+                           : result.prepared.error;
         return result;
     }
     if (partition.type != apa::kTypePfs || partition.is_sub()) {
@@ -350,6 +352,15 @@ PfsImportResult import_fetched_assets(WritableBlockDevice& device,
 
     result.ok = true;
     return result;
+}
+
+PfsImportResult import_fetched_assets(WritableBlockDevice& device,
+                                      const apa::Partition& partition,
+                                      std::span<const FetchedAsset> assets,
+                                      const PfsImportOptions& options)
+{
+    return import_prepared_assets(device, partition,
+                                  prepare_pfs_import(assets, options), options);
 }
 
 } // namespace ps2hdd::opl
