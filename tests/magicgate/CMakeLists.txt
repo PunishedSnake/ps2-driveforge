@@ -29,3 +29,4 @@ endfunction()
 # Dokany and half the storage stack to assemble for moral support.
 add_magicgate_test(ps2-driveforge-magicgate-tests ../magicgate_tests.cpp)
 add_magicgate_test(ps2-driveforge-magicgate-sign-tests ../magicgate_sign_tests.cpp)
+add_magicgate_test(ps2-driveforge-magicgate-service-tests ../magicgate_service_tests.cpp)
