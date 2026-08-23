@@ -25,16 +25,18 @@ set(TEXT_FILES ${ROOT_DOCS} ${PROJECT_DOCS} ${PROJECT_CODE})
 set(FAILURES "")
 foreach(FILE_PATH IN LISTS TEXT_FILES)
     file(READ "${FILE_PATH}" CONTENT)
-
     string(FIND "${CONTENT}" "—" EM_DASH_POS)
     if(NOT EM_DASH_POS EQUAL -1)
         list(APPEND FAILURES "${FILE_PATH}: contains an em dash; use a normal hyphen")
     endif()
+endforeach()
 
-    # These were the old Mutation Journal API/file names. Rescue Capsule is a
-    # real FHDB term now, so allowing the old identifier back would recreate the
-    # exact ambiguity the rename removed. Names are cheap; recovering the wrong
-    # bytes is not.
+# These were the old Mutation Journal API/file names. Rescue Capsule is a real
+# FHDB term now, so allowing the identifiers back into code would recreate the
+# exact ambiguity the rename removed. Documentation may mention the retired name
+# when explaining the rule; executable code may not resurrect it.
+foreach(FILE_PATH IN LISTS PROJECT_CODE)
+    file(READ "${FILE_PATH}" CONTENT)
     string(FIND "${CONTENT}" "RecoveryCapsule" OLD_TYPE_POS)
     string(FIND "${CONTENT}" "recovery_capsule" OLD_FILE_POS)
     if(NOT OLD_TYPE_POS EQUAL -1 OR NOT OLD_FILE_POS EQUAL -1)
