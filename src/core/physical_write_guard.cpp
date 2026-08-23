@@ -44,6 +44,37 @@ make_offsets(std::uint64_t size, std::uint64_t window) noexcept
     return offsets;
 }
 
+bool baseline_admission(BlockDevice& device,
+                        LegacyPartitionMapKind& layout_kind,
+                        IdentitySnapshot& identity,
+                        std::string& error)
+{
+    if (device.size_bytes() < kMinimumPs2DiskBytes ||
+        (device.size_bytes() % kSectorBytes) != 0) {
+        error = "physical write requires a sector-aligned PS2-sized device";
+        return false;
+    }
+
+    const auto layout = inspect_disk_layout(device);
+    if (!layout.ok) {
+        error = "PC partition-map admission failed: " + layout.error;
+        return false;
+    }
+    if (!layout.allows_ps2_mutation()) {
+        error = "physical write refused because GPT/protective ownership evidence is present";
+        return false;
+    }
+
+    const auto captured = capture_identity(device);
+    if (!captured.ok) {
+        error = captured.error;
+        return false;
+    }
+    layout_kind = layout.kind;
+    identity = captured.snapshot;
+    return true;
+}
+
 } // namespace
 
 IdentityResult capture_identity(BlockDevice& device)
@@ -113,19 +144,11 @@ bool verify_identity(BlockDevice& device,
 AuthorizationResult authorize(BlockDevice& device)
 {
     AuthorizationResult result;
-    if (device.size_bytes() < kMinimumPs2DiskBytes ||
-        (device.size_bytes() % kSectorBytes) != 0) {
-        result.error = "physical write requires a sector-aligned PS2-sized device";
-        return result;
-    }
-
-    const auto layout = inspect_disk_layout(device);
-    if (!layout.ok) {
-        result.error = "PC partition-map admission failed: " + layout.error;
-        return result;
-    }
-    if (!layout.allows_ps2_mutation()) {
-        result.error = "physical write refused because GPT/protective ownership evidence is present";
+    result.authorization.kind = AuthorizationKind::normal_mutation;
+    if (!baseline_admission(device,
+                            result.authorization.pc_layout,
+                            result.authorization.identity,
+                            result.error)) {
         return result;
     }
 
@@ -136,16 +159,22 @@ AuthorizationResult authorize(BlockDevice& device)
         return result;
     }
 
-    const auto identity = capture_identity(device);
-    if (!identity.ok) {
-        result.error = identity.error;
-        return result;
-    }
-
-    result.authorization.identity = identity.snapshot;
     result.authorization.apa_version = scan.apa_version;
     result.authorization.apa_header_count = scan.partitions.size();
-    result.authorization.pc_layout = layout.kind;
+    result.ok = true;
+    return result;
+}
+
+AuthorizationResult authorize_exceptional_recovery(BlockDevice& device)
+{
+    AuthorizationResult result;
+    result.authorization.kind = AuthorizationKind::exceptional_recovery;
+    if (!baseline_admission(device,
+                            result.authorization.pc_layout,
+                            result.authorization.identity,
+                            result.error)) {
+        return result;
+    }
     result.ok = true;
     return result;
 }
@@ -168,16 +197,18 @@ bool verify_authorization(BlockDevice& device,
         return false;
     }
 
-    apa::Reader reader(device);
-    const auto scan = reader.scan();
-    if (!scan.ok()) {
-        error = "APA recheck failed before opening physical write access";
-        return false;
-    }
-    if (scan.apa_version != expected.apa_version ||
-        scan.partitions.size() != expected.apa_header_count) {
-        error = "APA topology changed since read-only physical-write preflight";
-        return false;
+    if (expected.kind == AuthorizationKind::normal_mutation) {
+        apa::Reader reader(device);
+        const auto scan = reader.scan();
+        if (!scan.ok()) {
+            error = "APA recheck failed before opening normal physical write access";
+            return false;
+        }
+        if (scan.apa_version != expected.apa_version ||
+            scan.partitions.size() != expected.apa_header_count) {
+            error = "APA topology changed since read-only physical-write preflight";
+            return false;
+        }
     }
 
     return verify_identity(device, expected.identity, error);
