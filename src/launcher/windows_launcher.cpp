@@ -92,9 +92,9 @@ int fallback_dialog(const std::filesystem::path& root, std::wstring_view detail)
     }
     content +=
         L"\n\nYour PS2 HDD has not been modified by this startup failure."
-        L"\n\nYes  — Open Win32 fallback"
-        L"\nNo   — Open startup log"
-        L"\nCancel — Exit";
+        L"\n\nYes  - Open Win32 fallback"
+        L"\nNo   - Open startup log"
+        L"\nCancel - Exit";
 
     // Deliberately use USER32 only. RC4 used TaskDialogIndirect, which imports
     // COMCTL32 ordinal 345 at process-load time. Systems that resolve the legacy
@@ -103,7 +103,7 @@ int fallback_dialog(const std::filesystem::path& root, std::wstring_view detail)
     const int pressed = MessageBoxW(
         nullptr,
         content.c_str(),
-        L"PS2 DriveForge — Emilia",
+        L"PS2 DriveForge - Frieren",
         MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON1 | MB_SETFOREGROUND);
 
     if (pressed == IDYES) {
