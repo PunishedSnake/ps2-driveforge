@@ -59,6 +59,16 @@ struct DirectoryEnsureResult {
     std::size_t bitmap_chunks_touched{};
 };
 
+struct FileRemoveResult {
+    bool ok{};
+    std::string error;
+    std::string warning;
+    std::string path;
+    std::uint64_t bytes_freed{};
+    std::size_t metadata_transactions{};
+    std::size_t bitmap_chunks_touched{};
+};
+
 // Image-only PFS mutation session. It deliberately owns a writable APA extent
 // capability and never accepts PhysicalDrive. Regular files use copy-on-write
 // replacement; directory creation allocates and publishes complete `.` / `..`
@@ -66,9 +76,11 @@ struct DirectoryEnsureResult {
 // across the whole session so batch imports do not rebuild filesystem state for
 // every asset.
 //
-// Directory data growth and indirect SEGI creation are still separate bounded
-// milestones. Missing directories can now be created recursively as long as
-// each existing parent has reusable dentry space.
+// The original bounded write_file()/ensure_directory() entry points are kept as
+// regression-friendly primitives. The *_full entry points add directory growth
+// and fragmented direct-extent allocation while preserving the same capability
+// boundary and cold-reader verification rules. Indirect SEGI creation remains a
+// separate milestone and is refused rather than guessed.
 class ImageWriter final {
 public:
     using BitmapKey = std::pair<std::size_t, std::uint32_t>;
@@ -84,9 +96,22 @@ public:
         std::string_view path,
         const DirectoryWriteOptions& options = {});
 
+    [[nodiscard]] DirectoryEnsureResult ensure_directory_full(
+        std::string_view path,
+        const DirectoryWriteOptions& options = {});
+
     [[nodiscard]] FileWriteResult write_file(std::string_view path,
                                              std::span<const std::byte> bytes,
                                              const FileWriteOptions& options = {});
+
+    [[nodiscard]] FileWriteResult write_file_full(std::string_view path,
+                                                  std::span<const std::byte> bytes,
+                                                  const FileWriteOptions& options = {});
+
+    // Fast unlink for regular files. Namespace visibility is removed first;
+    // inode/data bitmap bits are released only afterwards. A cleanup failure can
+    // therefore leak space but cannot leave a live file pointing at free zones.
+    [[nodiscard]] FileRemoveResult remove_file(std::string_view path);
 
 private:
     struct ZoneRun {
@@ -103,6 +128,16 @@ private:
         std::array<std::byte, apa::kSectorSize> sector_bytes{};
     };
 
+    struct DentryLocation {
+        bool ok{};
+        std::string error;
+        std::size_t subpart{};
+        std::uint32_t sector{};
+        std::size_t offset_in_sector{};
+        std::uint16_t allocated{};
+        std::array<std::byte, apa::kSectorSize> sector_bytes{};
+    };
+
     [[nodiscard]] unsigned inode_scale() const noexcept;
     [[nodiscard]] std::uint32_t sectors_per_zone() const noexcept;
     [[nodiscard]] std::uint64_t zones_in_subpart(std::size_t subpart) const noexcept;
@@ -116,11 +151,21 @@ private:
     [[nodiscard]] ZoneRun find_free_run(std::uint32_t count,
                                         std::size_t preferred_subpart,
                                         std::uint32_t preferred_zone);
+    [[nodiscard]] std::vector<ZoneRun> find_free_runs(std::uint32_t count,
+                                                      std::size_t preferred_subpart,
+                                                      std::uint32_t preferred_zone,
+                                                      std::size_t max_runs);
     [[nodiscard]] bool commit_bitmap_changes(const std::vector<BitmapKey>& dirty,
                                              FileWriteResult& result,
                                              std::string_view label);
     void discard_bitmap_cache(const std::vector<BitmapKey>& dirty);
 
+    [[nodiscard]] bool reserve_runs(std::span<const ZoneRun> runs,
+                                    FileWriteResult& result,
+                                    std::string_view label);
+    [[nodiscard]] bool release_runs(std::span<const ZoneRun> runs,
+                                    FileWriteResult& result,
+                                    std::string_view label);
     [[nodiscard]] bool write_payload(const ZoneRun& run,
                                      std::span<const std::byte> bytes,
                                      std::size_t batch_bytes,
@@ -128,6 +173,13 @@ private:
     [[nodiscard]] bool verify_payload(const ZoneRun& run,
                                       std::span<const std::byte> bytes,
                                       std::size_t batch_bytes);
+    [[nodiscard]] bool write_payload_runs(std::span<const ZoneRun> runs,
+                                          std::span<const std::byte> bytes,
+                                          std::size_t batch_bytes,
+                                          FileWriteResult& result);
+    [[nodiscard]] bool verify_payload_runs(std::span<const ZoneRun> runs,
+                                           std::span<const std::byte> bytes,
+                                           std::size_t batch_bytes);
     [[nodiscard]] bool stage_inode(const Inode& inode, std::string_view label,
                                    FileWriteResult& result);
     [[nodiscard]] DirectorySlot plan_dentry_insert(const Node& parent,
@@ -141,6 +193,16 @@ private:
                                       FileWriteResult& result);
     [[nodiscard]] bool verify_file(std::string_view path,
                                    std::span<const std::byte> expected);
+
+    [[nodiscard]] bool grow_directory(Node& directory, FileWriteResult& result);
+    [[nodiscard]] DentryLocation find_dentry(const Node& parent,
+                                             std::string_view name);
+    [[nodiscard]] FileWriteResult create_file_fragmented(
+        Node parent, std::string_view full_path, std::string_view name,
+        std::span<const std::byte> bytes, const FileWriteOptions& options);
+    [[nodiscard]] FileWriteResult replace_file_fragmented(
+        const Node& node, std::string_view full_path,
+        std::span<const std::byte> bytes, const FileWriteOptions& options);
 
     [[nodiscard]] DirectoryEnsureResult create_directory(const Node& parent,
                                                          std::string_view full_path,
