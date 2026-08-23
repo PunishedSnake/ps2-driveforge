@@ -53,12 +53,11 @@ struct RecoveryRestoreResult {
 
 // Persist the complete metadata transaction before the first target write. The
 // capsule contains exact before/after bytes, offsets and target size. Creation
-// first re-reads every protected target range and requires current == before,
-// closing the stage-to-journal stale-snapshot window. Publication uses an atomic
-// temporary-file replacement plus an OS flush boundary.
+// uses an atomic temporary-file replacement plus an OS flush boundary so an
+// interrupted capsule write cannot masquerade as a valid recovery record.
 [[nodiscard]] RecoveryCapsuleResult create_recovery_capsule(
     const std::filesystem::path& path,
-    WritableBlockDevice& device,
+    const WritableBlockDevice& device,
     std::span<const StagedWrite> writes);
 
 // Compare every protected range on the current device against the capsule's
