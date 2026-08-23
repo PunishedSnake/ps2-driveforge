@@ -132,6 +132,15 @@ jobs:
           .\dist\windows-x64\ps2-driveforge-hdl-tools.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Frieren HDL developer tool did not start.' }
 
+      - name: Smoke-test guarded physical developer tool
+        shell: pwsh
+        run: |
+          # --version deliberately exercises only PE loading/linkage. CI must
+          # never guess a runner disk number merely to prove the raw-disk tool
+          # starts; GitHub's system drive did not volunteer for PS2 archaeology.
+          .\dist\windows-x64\ps2-driveforge-physical-tools.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Frieren physical developer tool did not start.' }
+
       - name: Build 0.6.0-dev portable and installer packages
         shell: pwsh
         run: |
