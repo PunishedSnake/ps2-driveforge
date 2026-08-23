@@ -24,10 +24,11 @@ struct ImageInstallOptions {
     apa::Ps2Time created{};
     std::size_t copy_buffer_bytes{4U * 1024U * 1024U};
 
-    // Optional host-side durable journal for the small DEADFEED/APA publication
-    // transaction. Empty keeps pure in-memory/test devices free of filesystem
-    // side effects. Real image-file frontends should provide a sidecar path.
-    std::filesystem::path recovery_capsule_path;
+    // Optional host-side PS2DFRC1 transaction journal for the small
+    // DEADFEED/APA publication transaction. This is NOT an FHDB PS2HBRC Rescue
+    // Capsule. Empty keeps pure in-memory/test devices free of filesystem side
+    // effects. Real image-file frontends should provide a sidecar path.
+    std::filesystem::path mutation_journal_path;
 };
 
 struct ImageInstallProgress {
@@ -49,8 +50,8 @@ struct ImageInstallResult {
     std::uint64_t payload_bytes{};
     std::uint64_t allocated_bytes{};
     std::uint64_t orphan_payload_bytes_on_failure{};
-    bool recovery_capsule_created{};
-    bool recovery_pending{};
+    bool mutation_journal_created{};
+    bool mutation_recovery_pending{};
 };
 
 // Frieren F4 experimental installer for writable *images*. The API accepts a
@@ -62,14 +63,14 @@ struct ImageInstallResult {
 //   2. stream and byte-verify ISO payload into currently free extents;
 //   3. flush payload;
 //   4. stage DEADFEED metadata + new APA headers + old-neighbour link updates;
-//   5. when configured, durably persist exact before/after publication ranges;
+//   5. when configured, durably persist exact before/after ranges in PS2DFRC1;
 //   6. publish them in one WriteTransaction and verify through normal parsers;
-//   7. durably mark the recovery capsule COMMITTED after parser verification.
+//   7. durably mark the mutation journal COMMITTED after parser verification.
 //
 // A failure before publication can leave bytes in free space, but no APA
 // partition is published. A returned publication failure rolls metadata/header
 // before-images back. A process/power interruption is recoverable when the
-// caller supplied recovery_capsule_path; a PREPARED capsule is never silently
+// caller supplied mutation_journal_path; a PREPARED journal is never silently
 // overwritten by a later install.
 [[nodiscard]] ImageInstallResult install_to_image(
     WritableBlockDevice& disk,
