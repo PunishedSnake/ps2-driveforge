@@ -136,6 +136,8 @@ The Windows developer surface is `ps2-driveforge-physical-tools` and exposes:
 preflight
 forensic-scan
 capture-rescue
+stage-provider
+install-provider
 install-hdl
 remove
 restore-bootstrap
@@ -143,7 +145,9 @@ repair-master
 repair-forensic
 ```
 
-Destructive developer commands require both `--apply` and literal `--confirm PhysicalDriveN`. WinUI uses the same literal target-confirmation rule before its physical mutation/recovery paths.
+`stage-provider` performs manifest parsing, immutable HTTPS acquisition, SHA-256 verification, MagicGate verification and target fingerprint freezing while the disk remains read-only. `install-provider` consumes the same staged contract through the guarded bootstrap installer.
+
+Destructive developer commands, including `install-provider`, require both `--apply` and literal `--confirm PhysicalDriveN`. WinUI uses the same literal target-confirmation rule before its physical mutation/recovery paths.
 
 **Release status:** implemented but not yet graduated. Sacrificial real-HDD destructive validation, failure/recovery drills and cross-tool recovery round trips remain release blockers.
 
@@ -209,7 +213,8 @@ Frieren contains:
 - mandatory pre-install Rescue Capsule and HDDMBR before target mutation;
 - reuse of the proven payload-first / pointer-last FHDB transaction instead of a second raw writer;
 - cold read-only master, APA and payload verification after the RW lease closes;
-- WinUI provider staging/preview/install for existing signed KELFs;
+- WinUI provider staging/preview/install for existing signed and successfully verified KELFs;
+- physical developer CLI `stage-provider` / `install-provider` using the same immutable staging and guarded commit contract;
 - dedicated Linux/Windows `MagicGate and bootstrap provider host verification` CI.
 
 PS2SDK obtains ICVPS2 from MechaCon command `0x98`; DriveForge therefore does not invent a software derivation. KELFs requiring ICVPS2 consume explicit trusted hardware/reference evidence and place it at `KELF_header_size - 8`.
@@ -237,7 +242,7 @@ strict local provider manifest
 
 No network provider can hand bytes directly to a raw writer.
 
-The generic WinUI provider surface accepts existing inspectable/verified KELFs. MagicGate signing itself is implemented, but generic `magicgate=sign` manifests remain fail-closed until a typed product strategy supplies the explicit `DiskKelfSignPlan`; the UI never invents signing geometry from a filename. Product-specific filesystem/package stages for HDD-OSD/HOSD/PSBBN likewise require pinned, legally usable real fixtures before they can graduate from shared strategy metadata. Those are integration/fixture gates, not missing raw-disk or MagicGate primitives.
+The generic WinUI and developer-CLI provider surfaces install only payloads that retain successful MagicGate verification evidence for named bootstrap families. MagicGate signing itself is implemented, but generic `magicgate=sign` manifests remain fail-closed until a typed product strategy supplies the explicit `DiskKelfSignPlan`; neither surface invents signing geometry from a filename. Product-specific filesystem/package stages for HDD-OSD/HOSD/PSBBN likewise require pinned, legally usable real fixtures before they can graduate from shared strategy metadata. Those are integration/fixture gates, not missing raw-disk or MagicGate primitives.
 
 ## Recovery UX vocabulary
 
@@ -264,6 +269,7 @@ Platform UI may differ. Artifact meaning must not.
 - writable image tests remain green on MSVC and Linux sanitizers;
 - MagicGate + bootstrap provider host verification is green on Linux and Windows;
 - canonical Windows package verification includes every Frieren regression/developer executable required by the release;
+- the final Portable ZIP is reopened after compression and required launcher, WinUI, HDL and guarded physical-tool entries are verified;
 - HDL install/delete and PFS mutations cold-reopen cleanly;
 - corruption/refusal tests prove malformed layouts are not casually mutated;
 - Rescue Capsule, Mutation Journal and FHDB shared artifacts remain distinct and cross-format rejection is tested;
