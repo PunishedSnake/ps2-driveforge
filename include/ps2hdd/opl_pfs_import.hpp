@@ -6,6 +6,7 @@
 #include "ps2hdd/writable_block_device.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
