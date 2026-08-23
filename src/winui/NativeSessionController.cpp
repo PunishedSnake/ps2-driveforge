@@ -59,10 +59,6 @@ std::uint64_t fetched_asset_bytes(std::span<const ps2hdd::opl::FetchedAsset> ass
     return total;
 }
 
-// Optional OPL data should never turn a valid HDL game plan into an unusable
-// one. Try the rich plan first. If the only thing that prevents it is OPL/PFS
-// placement, preserve the already-staged host assets and fall back to game-only
-// mutation with an explicit warning.
 struct PlannedDeploy {
     ps2hdd::GameDeployPreview preview;
     bool use_assets{};
@@ -109,7 +105,6 @@ bool NativeSessionController::open_source(std::unique_ptr<ps2hdd::BlockDevice> s
         error = "No source device was supplied.";
         return false;
     }
-
     auto session = std::make_shared<ps2hdd::DriveSession>(std::move(source));
     if (!session->scan()) {
         error = session->last_error();
@@ -125,7 +120,6 @@ bool NativeSessionController::open_source(std::unique_ptr<ps2hdd::BlockDevice> s
     const auto catalog_elapsed = std::chrono::duration<double, std::milli>(
         Clock::now() - catalog_started).count();
     auto model = std::make_shared<ps2hdd::ManagementModel>(std::move(catalog));
-
     {
         std::scoped_lock lock(mutex_);
         session_ = std::move(session);
@@ -137,7 +131,6 @@ bool NativeSessionController::open_source(std::unique_ptr<ps2hdd::BlockDevice> s
         storage_ = storage;
         catalog_build_ms_ = catalog_elapsed;
     }
-
     error.clear();
     return true;
 }
@@ -150,7 +143,6 @@ bool NativeSessionController::open_physical(unsigned index, std::string& error)
                 " read-only (Win32 error " + std::to_string(physical->open_error()) + ")";
         return false;
     }
-
     const auto source_name = physical->display_name();
     const auto storage = physical->storage_characteristics();
     return open_source(std::move(physical), source_name, storage,
@@ -164,7 +156,6 @@ bool NativeSessionController::open_image(const std::filesystem::path& path, std:
         error = "Could not open the selected disk image.";
         return false;
     }
-
     const auto source_name = image->display_name();
     const auto storage = image->storage_characteristics();
     return open_source(std::move(image), source_name, storage,
@@ -189,7 +180,6 @@ SessionSnapshot NativeSessionController::snapshot() const
     std::scoped_lock lock(mutex_);
     SessionSnapshot result;
     if (!session_ || !model_) return result;
-
     result.open = true;
     result.source_kind = source_kind_;
     result.source_name = source_name_;
@@ -301,9 +291,7 @@ HdlIsoPreparationSnapshot NativeSessionController::prepare_hdl_iso(
         fetch_options.refresh_catalog = refresh_catalog;
         auto fetched = ps2hdd::opl::fetch_assets(plan, *http, cache_root, fetch_options);
         result.assets = std::move(fetched.assets);
-        for (const auto& issue : fetched.issues) {
-            result.warnings.push_back(issue.message);
-        }
+        for (const auto& issue : fetched.issues) result.warnings.push_back(issue.message);
     }
 
     for (const auto& asset : result.assets) {
@@ -323,6 +311,12 @@ HdlIsoPreparationSnapshot NativeSessionController::prepare_hdl_iso(
     result.rating = metadata.rating;
     result.title_from_database = metadata.title_from_database;
     result.cfg_found = metadata.cfg_found;
+
+    {
+        std::scoped_lock lock(mutex_);
+        prepared_iso_path_ = iso_path;
+        prepared_iso_assets_ = result.assets;
+    }
     result.ok = true;
     return result;
 }
@@ -333,18 +327,20 @@ HdlInstallPreviewSnapshot NativeSessionController::preview_hdl_install(const Hdl
     std::shared_ptr<ps2hdd::DriveSession> session;
     SourceKind kind = SourceKind::none;
     std::string target_name;
+    std::vector<ps2hdd::opl::FetchedAsset> assets = request.assets;
     {
         std::scoped_lock lock(mutex_);
         session = session_;
         kind = source_kind_;
         target_name = source_name_;
+        if (assets.empty() && prepared_iso_path_ == request.iso_path) assets = prepared_iso_assets_;
     }
 
     result.target_kind = kind;
     result.target_name = target_name;
     result.requires_physical_confirmation = kind == SourceKind::physical;
-    result.staged_asset_count = request.assets.size();
-    result.staged_asset_bytes = fetched_asset_bytes(request.assets);
+    result.staged_asset_count = assets.size();
+    result.staged_asset_bytes = fetched_asset_bytes(assets);
     if (!session || kind == SourceKind::none) {
         result.error = "Open a PS2 HDD or disk image before planning an HDL install.";
         return result;
@@ -365,7 +361,7 @@ HdlInstallPreviewSnapshot NativeSessionController::preview_hdl_install(const Hdl
     }
 
     auto options = make_deploy_options(request);
-    const auto planned = plan_with_optional_assets(session->device(), iso, request.assets, options);
+    const auto planned = plan_with_optional_assets(session->device(), iso, assets, options);
     if (!planned.preview.ok) {
         result.error = planned.preview.error;
         return result;
@@ -396,14 +392,18 @@ HdlMutationResultSnapshot NativeSessionController::install_hdl(
     SourceKind kind = SourceKind::none;
     std::optional<unsigned> physical_index;
     std::filesystem::path image_path;
+    std::vector<ps2hdd::opl::FetchedAsset> prepared_assets = request.assets;
     {
         std::scoped_lock lock(mutex_);
         kind = source_kind_;
         physical_index = physical_index_;
         image_path = image_path_;
+        if (prepared_assets.empty() && prepared_iso_path_ == request.iso_path) prepared_assets = prepared_iso_assets_;
     }
 
-    const auto preview = preview_hdl_install(request);
+    HdlInstallRequest frozen_request = request;
+    frozen_request.assets = prepared_assets;
+    const auto preview = preview_hdl_install(frozen_request);
     if (!preview.ok) {
         result.error = preview.error;
         return result;
@@ -420,7 +420,7 @@ HdlMutationResultSnapshot NativeSessionController::install_hdl(
     }
 
     const auto assets = preview.assets_will_install
-        ? std::span<const ps2hdd::opl::FetchedAsset>(request.assets)
+        ? std::span<const ps2hdd::opl::FetchedAsset>(prepared_assets)
         : std::span<const ps2hdd::opl::FetchedAsset>{};
     result.warning = preview.warning;
     auto options = make_deploy_options(request);
@@ -433,7 +433,6 @@ HdlMutationResultSnapshot NativeSessionController::install_hdl(
         if (!request.artifact_directory.empty()) {
             options.hdl.mutation_journal_path = request.artifact_directory / "PS2DFRC1-HDL-INSTALL.BIN";
         }
-
         ps2hdd::WritableFileBlockDevice target(image_path);
         if (!target.is_open()) {
             result.error = "Could not reopen the current disk image for guarded write access.";
@@ -466,7 +465,6 @@ HdlMutationResultSnapshot NativeSessionController::install_hdl(
             result.error = "Physical HDL installation requires a host-side safety artifact directory.";
             return result;
         }
-
         ps2hdd::PhysicalGameDeployOptions physical_options;
         physical_options.game = options;
         physical_options.artifact_directory = request.artifact_directory;
@@ -531,7 +529,6 @@ HdlMutationResultSnapshot NativeSessionController::remove_hdl(
             }
         }
     }
-
     if (!is_hdl_main) {
         result.error = "HDL Tools only removes a selected HDL main partition, never an arbitrary APA partition.";
         return result;
@@ -562,7 +559,6 @@ HdlMutationResultSnapshot NativeSessionController::remove_hdl(
             result.error = "Physical HDL removal requires a host-side safety artifact directory.";
             return result;
         }
-
         ps2hdd::PhysicalPartitionRemoveOptions options;
         options.artifact_directory = artifact_directory;
         const auto removed = ps2hdd::remove_partition_from_physical(*physical_index, main_lba, options);
@@ -578,7 +574,6 @@ HdlMutationResultSnapshot NativeSessionController::remove_hdl(
         result.error = "No writable DriveForge source is open.";
         return result;
     }
-
     if (result.ok) {
         std::string reopen_error;
         if (!cold_reopen(reopen_error)) {
@@ -602,7 +597,6 @@ PhysicalPreflightSnapshot NativeSessionController::physical_write_preflight() co
         }
         index = physical_index_;
     }
-
     ps2hdd::PhysicalDrive disk(*index);
     if (!disk.is_open()) {
         result.error = "Could not reopen PhysicalDrive" + std::to_string(*index) + " read-only.";
@@ -613,7 +607,6 @@ PhysicalPreflightSnapshot NativeSessionController::physical_write_preflight() co
         result.error = admission.error;
         return result;
     }
-
     result.index = *index;
     result.size_bytes = disk.size_bytes();
     result.apa_version = admission.authorization.apa_version;
@@ -667,7 +660,6 @@ void NativeSessionController::enrich_hdl(EnrichmentProgress progress, std::stop_
         model = model_;
     }
     if (!session || !model) return;
-
     (void)ps2hdd::enrich_hdl_catalog(
         session->device(), session->scan_result(),
         [this, model, progress = std::move(progress)](
