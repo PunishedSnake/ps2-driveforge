@@ -40,6 +40,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-opl-asset-pipeline-tests.exe',
     'ps2-driveforge-opl-pfs-import-tests.exe',
     'ps2-driveforge-opl-tar-pfs-import-tests.exe',
+    'ps2-driveforge-image-game-deploy-tests.exe',
     'ps2-driveforge-opl-partition-tests.exe',
     'ps2-driveforge-storage-profile-tests.exe',
     'ps2-driveforge-dokany-open-policy-tests.exe',
