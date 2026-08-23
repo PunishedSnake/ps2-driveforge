@@ -202,7 +202,7 @@ PfsImportResult import_fetched_assets(WritableBlockDevice& device,
 
     result.directories.reserve(result.prepared.directories.size());
     for (const auto& directory : result.prepared.directories) {
-        auto ensured = writer.ensure_directory(directory, options.directory_options);
+        auto ensured = writer.ensure_directory_full(directory, options.directory_options);
         const bool ok = ensured.ok;
         if (!ok && result.error.empty()) {
             result.error = "Could not prepare OPL PFS directory " + directory + ": " + ensured.error;
