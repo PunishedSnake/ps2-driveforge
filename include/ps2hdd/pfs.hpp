@@ -121,6 +121,16 @@ struct Node {
     Inode inode{};
 };
 
+// Canonical logical layout of one inode. `data` contains only payload/directory
+// extents in logical order; `indirect_descriptors` contains the physical SEGI
+// metadata blocks traversed to obtain them. Keeping those two classes separate
+// is important for COW/unlink/recovery: SEGI zones consume allocation bitmap
+// space but are not part of the file's logical payload or number_blocks count.
+struct ExtentMap {
+    std::vector<BlockInfo> data;
+    std::vector<BlockInfo> indirect_descriptors;
+};
+
 [[nodiscard]] bool valid_zone_size(std::uint32_t zone_size) noexcept;
 [[nodiscard]] ProbeResult probe(ApaVolume& volume);
 [[nodiscard]] std::uint32_t inode_checksum(const Inode& inode) noexcept;
@@ -150,6 +160,11 @@ public:
     [[nodiscard]] std::optional<Node> resolve(std::string_view path);
     [[nodiscard]] std::vector<DirectoryEntry> list_directory(const Node& directory,
                                                               bool include_dot_entries = false);
+
+    // Returns the exact direct + SEGI-described extent graph using the same
+    // validation rules as normal reads. Mutation and recovery code should use
+    // this instead of reimplementing SEGI traversal independently.
+    [[nodiscard]] std::optional<ExtentMap> extent_map(const Node& node);
 
     // Reads any byte range described by the inode, following both direct SEGD
     // block descriptors and chained indirect SEGI descriptors.

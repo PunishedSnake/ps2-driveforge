@@ -4,6 +4,7 @@
 
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/version.hpp"
@@ -120,6 +121,11 @@ UINT theme_command(ThemePreference preference)
         return kIdThemeSystem;
     }
 }
+
+struct TreeTarget {
+    std::uint32_t start_lba{};
+    bool is_sub{};
+};
 
 class App {
 public:
@@ -348,8 +354,19 @@ public:
             return;
         }
         const std::size_t index = data - 1;
-        if (index < main_partitions_.size()) {
-            open_partition(main_partitions_[index]);
+        if (index >= tree_targets_.size()) {
+            return;
+        }
+        const auto& target = tree_targets_[index];
+        const auto* partition = partition_at_lba(target.start_lba);
+        if (partition == nullptr) {
+            show_drive_overview();
+            return;
+        }
+        if (target.is_sub) {
+            open_subpartition(*partition);
+        } else {
+            open_partition(*partition);
         }
     }
 
@@ -487,6 +504,7 @@ public:
              << widen(ps2hdd::version::codename) << L")\n\n"
              << L"Native read-only APA/PFS browser and Explorer mount for PlayStation 2 HDDs.\n\n"
              << L"Windows disk devices are enumerated through SetupAPI and classified by the DriveForge APA parser.\n"
+             << L"APA sub-partitions are grouped beneath their authoritative main partition by main_lba.\n"
              << L"Physical drives are opened with GENERIC_READ only.\n"
              << L"Theme: System / Light / Dark with High Contrast passthrough.";
         message(text.str(), MB_ICONINFORMATION);
@@ -610,6 +628,35 @@ private:
         return out.str();
     }
 
+    const ps2hdd::apa::Partition* partition_at_lba(std::uint32_t lba) const noexcept
+    {
+        if (!session_) {
+            return nullptr;
+        }
+        for (const auto& partition : session_->scan_result().partitions) {
+            if (partition.start_lba == lba) {
+                return &partition;
+            }
+        }
+        return nullptr;
+    }
+
+    const ps2hdd::PartitionCatalogGroup* group_at_main_lba(std::uint32_t lba) const noexcept
+    {
+        for (const auto& group : partition_grouping_.groups) {
+            if (group.main.start_lba == lba) {
+                return &group;
+            }
+        }
+        return nullptr;
+    }
+
+    LPARAM add_tree_target(std::uint32_t start_lba, bool is_sub)
+    {
+        tree_targets_.push_back({start_lba, is_sub});
+        return static_cast<LPARAM>(tree_targets_.size());
+    }
+
     bool load_device(std::unique_ptr<ps2hdd::BlockDevice> source)
     {
 #ifdef PS2DF_HAS_DOKANY
@@ -644,10 +691,14 @@ private:
     void populate_tree()
     {
         TreeView_DeleteAllItems(tree_);
-        main_partitions_.clear();
+        partition_grouping_ = {};
+        tree_targets_.clear();
         if (!session_) {
             return;
         }
+
+        partition_grouping_ = ps2hdd::group_partition_catalog(session_->partition_catalog(true));
+
         TVINSERTSTRUCTW root_insert{};
         root_insert.hParent = TVI_ROOT;
         root_insert.hInsertAfter = TVI_LAST;
@@ -657,22 +708,73 @@ private:
         root_insert.item.lParam = 0;
         const HTREEITEM root = TreeView_InsertItem(tree_, &root_insert);
 
-        for (const auto& partition : session_->scan_result().partitions) {
-            if (partition.is_sub()) {
-                continue;
+        for (const auto& group : partition_grouping_.groups) {
+            std::wstring text = widen(group.main.id.empty() ? "<unnamed>" : group.main.id);
+            if (group.is_hdl_game()) {
+                text += L"  [HDL game";
+            } else {
+                text += L"  [" + widen(ps2hdd::apa::type_name(group.main.raw_type));
             }
-            main_partitions_.push_back(partition);
-            const auto index = main_partitions_.size() - 1;
-            std::wstring text = widen(partition.id.empty() ? "<unnamed>" : partition.id);
-            text += L"  [" + widen(ps2hdd::apa::type_name(partition.type)) + L"]";
+            if (!group.sub_partitions.empty()) {
+                text += L", " + std::to_wstring(group.sub_partitions.size() + 1) + L" parts";
+            }
+            text += L"]  " + format_bytes(group.logical_size_bytes);
+            if (!group.complete) {
+                text += L"  [incomplete]";
+            }
+
             TVINSERTSTRUCTW insert{};
             insert.hParent = root;
             insert.hInsertAfter = TVI_LAST;
             insert.item.mask = TVIF_TEXT | TVIF_PARAM;
             insert.item.pszText = text.data();
-            insert.item.lParam = static_cast<LPARAM>(index + 1);
-            TreeView_InsertItem(tree_, &insert);
+            insert.item.lParam = add_tree_target(group.main.start_lba, false);
+            const HTREEITEM parent = TreeView_InsertItem(tree_, &insert);
+
+            for (const auto& child : group.sub_partitions) {
+                std::wstring child_text = L"Sub-partition #" + std::to_wstring(child.number);
+                if (!child.id.empty()) {
+                    child_text += L" — " + widen(child.id);
+                }
+                child_text += L"  [" + widen(ps2hdd::apa::type_name(child.raw_type)) + L"]  ";
+                child_text += format_bytes(child.extent_size_bytes);
+
+                TVINSERTSTRUCTW child_insert{};
+                child_insert.hParent = parent;
+                child_insert.hInsertAfter = TVI_LAST;
+                child_insert.item.mask = TVIF_TEXT | TVIF_PARAM;
+                child_insert.item.pszText = child_text.data();
+                child_insert.item.lParam = add_tree_target(child.start_lba, true);
+                TreeView_InsertItem(tree_, &child_insert);
+            }
         }
+
+        if (!partition_grouping_.orphan_sub_partitions.empty()) {
+            std::wstring orphan_text = L"Orphan sub-partitions (" +
+                                       std::to_wstring(partition_grouping_.orphan_sub_partitions.size()) +
+                                       L") — diagnostic";
+            TVINSERTSTRUCTW orphan_insert{};
+            orphan_insert.hParent = root;
+            orphan_insert.hInsertAfter = TVI_LAST;
+            orphan_insert.item.mask = TVIF_TEXT | TVIF_PARAM;
+            orphan_insert.item.pszText = orphan_text.data();
+            orphan_insert.item.lParam = 0;
+            const HTREEITEM orphan_root = TreeView_InsertItem(tree_, &orphan_insert);
+
+            for (const auto& child : partition_grouping_.orphan_sub_partitions) {
+                std::wstring child_text = L"LBA " + std::to_wstring(child.start_lba) +
+                                          L" — main LBA " + std::to_wstring(child.main_lba) +
+                                          L" — " + format_bytes(child.extent_size_bytes);
+                TVINSERTSTRUCTW child_insert{};
+                child_insert.hParent = orphan_root;
+                child_insert.hInsertAfter = TVI_LAST;
+                child_insert.item.mask = TVIF_TEXT | TVIF_PARAM;
+                child_insert.item.pszText = child_text.data();
+                child_insert.item.lParam = add_tree_target(child.start_lba, true);
+                TreeView_InsertItem(tree_, &child_insert);
+            }
+        }
+
         TreeView_Expand(tree_, root, TVE_EXPAND);
         TreeView_SelectItem(tree_, root);
     }
@@ -689,14 +791,27 @@ private:
             return;
         }
         const auto& scan = session_->scan_result();
+        std::size_t grouped_subs = 0;
+        for (const auto& group : partition_grouping_.groups) {
+            grouped_subs += group.sub_partitions.size();
+        }
         insert_list_row(0, L"PS2 APA HDD", L"Drive", format_bytes(session_->device().size_bytes()), L"", L"");
         insert_list_row(1, L"APA version", L"Metadata", std::to_wstring(scan.apa_version), L"", L"");
-        insert_list_row(2, L"Main partitions", L"Metadata", std::to_wstring(main_partitions_.size()), L"", L"");
-        insert_list_row(3, L"Diagnostics", L"Metadata", scan.ok() ? L"clean" : L"errors", L"", L"");
+        insert_list_row(2, L"Logical/main partitions", L"Metadata",
+                        std::to_wstring(partition_grouping_.groups.size()), L"", L"");
+        insert_list_row(3, L"Grouped sub-partitions", L"Metadata",
+                        std::to_wstring(grouped_subs), L"", L"");
+        insert_list_row(4, L"Orphan sub-partitions", L"Diagnostic",
+                        std::to_wstring(partition_grouping_.orphan_sub_partitions.size()), L"", L"");
+        insert_list_row(5, L"Diagnostics", L"Metadata", scan.ok() ? L"clean" : L"errors", L"", L"");
         std::wostringstream status;
         status << widen(session_->device().display_name()) << L"  |  APA v" << scan.apa_version
-               << L"  |  " << main_partitions_.size() << L" main partitions  |  READ ONLY"
-               << io_suffix();
+               << L"  |  " << partition_grouping_.groups.size() << L" logical partitions"
+               << L"  |  " << grouped_subs << L" grouped sub-partitions";
+        if (!partition_grouping_.orphan_sub_partitions.empty()) {
+            status << L"  |  " << partition_grouping_.orphan_sub_partitions.size() << L" orphan";
+        }
+        status << L"  |  READ ONLY" << io_suffix();
         set_status(status.str());
     }
 
@@ -707,12 +822,66 @@ private:
         visible_entries_.clear();
         ListView_DeleteAllItems(list_);
         if (partition.type != ps2hdd::apa::kTypePfs) {
+            if (const auto* group = group_at_main_lba(partition.start_lba);
+                group != nullptr && !group->sub_partitions.empty()) {
+                const std::wstring display_name = widen(partition.id.empty() ? "<unnamed>" : partition.id);
+                insert_list_row(0, display_name,
+                                group->is_hdl_game() ? L"HDL game" : widen(ps2hdd::apa::type_name(partition.type)),
+                                format_bytes(group->logical_size_bytes),
+                                std::to_wstring(group->sub_partitions.size()), L"");
+                insert_list_row(1, L"Main APA extent", L"Allocation",
+                                format_bytes(group->main.extent_size_bytes), L"0", L"");
+                insert_list_row(2, L"Sub-partition extents", L"Allocation",
+                                format_bytes(group->subpartition_bytes),
+                                std::to_wstring(group->sub_partitions.size()), L"");
+                insert_list_row(3, L"Ownership map", L"Metadata",
+                                group->complete ? L"complete" : L"incomplete", L"", L"");
+                std::wostringstream status;
+                status << display_name << L"  |  " << format_bytes(group->logical_size_bytes)
+                       << L" total  |  " << group->sub_partitions.size() << L" sub-partitions"
+                       << (group->complete ? L"" : L"  |  INCOMPLETE OWNERSHIP MAP")
+                       << L"  |  READ ONLY" << io_suffix();
+                set_status(status.str());
+                return;
+            }
+
             insert_list_row(0, widen(partition.id), widen(ps2hdd::apa::type_name(partition.type)),
                             format_bytes(partition.size_bytes()), L"", L"");
             set_status(widen(partition.id) + L"  |  Not a PFS filesystem  |  READ ONLY" + io_suffix());
             return;
         }
         navigate("");
+    }
+
+    void open_subpartition(const ps2hdd::apa::Partition& partition)
+    {
+        active_partition_.reset();
+        active_path_.clear();
+        visible_entries_.clear();
+        ListView_DeleteAllItems(list_);
+
+        const auto* owner = partition_at_lba(partition.main_lba);
+        const std::wstring owner_name = owner != nullptr
+                                            ? widen(owner->id.empty() ? "<unnamed main>" : owner->id)
+                                            : L"<unresolved main>";
+        const std::wstring child_name = partition.id.empty()
+                                            ? L"Sub-partition #" + std::to_wstring(partition.number)
+                                            : widen(partition.id);
+        const auto extent_bytes =
+            static_cast<std::uint64_t>(partition.length_sectors) * ps2hdd::apa::kSectorSize;
+
+        insert_list_row(0, child_name, widen(ps2hdd::apa::type_name(partition.type)),
+                        format_bytes(extent_bytes), std::to_wstring(partition.number), L"");
+        insert_list_row(1, L"Owned by", L"APA main", owner_name, L"", L"");
+        insert_list_row(2, L"Start LBA", L"Metadata", std::to_wstring(partition.start_lba), L"", L"");
+        insert_list_row(3, L"Main LBA", L"Metadata", std::to_wstring(partition.main_lba), L"", L"");
+
+        std::wostringstream status;
+        status << L"Sub-partition #" << partition.number << L" of " << owner_name
+               << L"  |  " << format_bytes(extent_bytes)
+               << (owner != nullptr ? L"  |  grouped by authoritative main_lba" : L"  |  ORPHAN")
+               << L"  |  READ ONLY" << io_suffix();
+        set_status(status.str());
     }
 
     void navigate(std::string path)
@@ -831,7 +1000,8 @@ private:
 #ifdef PS2DF_HAS_DOKANY
     std::unique_ptr<ps2hdd::DokanyMountController> mount_controller_;
 #endif
-    std::vector<ps2hdd::apa::Partition> main_partitions_;
+    ps2hdd::PartitionCatalogGrouping partition_grouping_;
+    std::vector<TreeTarget> tree_targets_;
     std::optional<ps2hdd::apa::Partition> active_partition_;
     std::string active_path_;
     std::vector<ps2hdd::SessionEntry> visible_entries_;

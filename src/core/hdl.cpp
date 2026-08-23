@@ -1,4 +1,5 @@
 #include "ps2hdd/hdl.hpp"
+#include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,12 @@ namespace {
            (static_cast<std::uint32_t>(std::to_integer<unsigned char>(p[3])) << 24U);
 }
 
+void store_u16_le(std::byte* p, std::uint16_t value) noexcept
+{
+    p[0] = static_cast<std::byte>(value & 0xFFU);
+    p[1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
+}
+
 [[nodiscard]] std::string read_c_string(const std::byte* p, std::size_t storage,
                                         bool& terminated)
 {
@@ -44,6 +51,26 @@ namespace {
                               std::uint64_t size) noexcept
 {
     return offset <= size && bytes <= size - offset;
+}
+
+[[nodiscard]] bool metadata_offset_for(const BlockDevice& device,
+                                       const apa::Partition& partition,
+                                       std::uint64_t& out) noexcept
+{
+    const std::uint64_t main_bytes =
+        static_cast<std::uint64_t>(partition.length_sectors) * apa::kSectorSize;
+    if (!range_fits(kMetadataOffset, kMetadataBytes, main_bytes)) {
+        return false;
+    }
+
+    const std::uint64_t partition_offset =
+        static_cast<std::uint64_t>(partition.start_lba) * apa::kSectorSize;
+    if (partition_offset > std::numeric_limits<std::uint64_t>::max() - kMetadataOffset) {
+        return false;
+    }
+
+    out = partition_offset + kMetadataOffset;
+    return range_fits(out, kMetadataBytes, device.size_bytes());
 }
 
 } // namespace
@@ -92,9 +119,6 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         return result;
     }
 
-    // HDLoader stores a fixed metadata header at main-partition +0x101000. Read
-    // the complete 1536-byte window once so all declared allocation entries can
-    // be validated before any field is exposed to a frontend.
     std::array<std::byte, kMetadataBytes> bytes{};
     if (!device.read(metadata_offset, bytes)) {
         result.error = "Could not read HDL metadata header";
@@ -145,8 +169,6 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         raw_units += load_u32_le(bytes.data() + entry + 8);
     }
 
-    // hdl-dump exposes raw_size_in_kb as sum(length) / 4, therefore one
-    // allocation-table length unit represents 256 bytes on disk.
     if (raw_units <= std::numeric_limits<std::uint64_t>::max() / 256ULL) {
         result.game.raw_size_bytes = raw_units * 256ULL;
     } else {
@@ -161,6 +183,91 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
     return result;
 }
 
+GameResult patch_game_metadata(WritableBlockDevice& device,
+                               const apa::Partition& partition,
+                               const MetadataPatch& patch)
+{
+    if (patch.empty()) {
+        GameResult result;
+        result.error = "No HDL metadata fields were requested for update";
+        return result;
+    }
+    if (patch.title.has_value() && patch.title->size() >= kTitleStorage) {
+        GameResult result;
+        result.error = "HDL title exceeds the 64-byte format limit";
+        return result;
+    }
+
+    const auto current = read_game_info(device, partition);
+    if (!current.ok) {
+        GameResult result;
+        result.error = "Refusing to patch invalid HDL metadata: " + current.error;
+        return result;
+    }
+
+    std::uint64_t metadata_offset = 0;
+    if (!metadata_offset_for(device, partition, metadata_offset)) {
+        GameResult result;
+        result.error = "HDL metadata write range is outside the main APA extent or backing device";
+        return result;
+    }
+
+    std::array<std::byte, kMetadataBytes> original{};
+    if (!device.read(metadata_offset, original)) {
+        GameResult result;
+        result.error = "Could not capture HDL metadata before-image";
+        return result;
+    }
+
+    auto modified = original;
+    if (patch.title.has_value()) {
+        std::fill_n(modified.begin() + static_cast<std::ptrdiff_t>(kTitleOffset),
+                    kTitleStorage, std::byte{0});
+        for (std::size_t i = 0; i < patch.title->size(); ++i) {
+            modified[kTitleOffset + i] =
+                static_cast<std::byte>(static_cast<unsigned char>((*patch.title)[i]));
+        }
+    }
+    if (patch.compat_flags.has_value()) {
+        modified[kCompatOffset] = static_cast<std::byte>(*patch.compat_flags);
+    }
+    if (patch.dma.has_value()) {
+        store_u16_le(modified.data() + kDmaOffset, *patch.dma);
+    }
+
+    WriteTransaction transaction(device);
+    if (!transaction.stage(metadata_offset, modified, "HDL metadata")) {
+        GameResult result;
+        result.error = "Could not stage HDL metadata mutation: " + transaction.stage_error();
+        return result;
+    }
+
+    GameResult verified;
+    const auto commit = transaction.commit([&]() -> std::string {
+        verified = read_game_info(device, partition);
+        if (!verified.ok) {
+            return "normal HDL parser rejected the written header: " + verified.error;
+        }
+        if (patch.title.has_value() && verified.game.title != *patch.title) {
+            return "HDL title did not round-trip";
+        }
+        if (patch.compat_flags.has_value() && verified.game.compat_flags != *patch.compat_flags) {
+            return "HDL compatibility flags did not round-trip";
+        }
+        if (patch.dma.has_value() && verified.game.dma != *patch.dma) {
+            return "HDL DMA mode did not round-trip";
+        }
+        return {};
+    });
+
+    if (!commit.ok) {
+        GameResult result;
+        result.error = commit.error;
+        return result;
+    }
+    return verified;
+}
+
 CatalogResult read_catalog(BlockDevice& device, const apa::ScanResult& scan,
                            ProgressCallback progress, std::stop_token stop)
 {
@@ -171,8 +278,6 @@ CatalogResult read_catalog(BlockDevice& device, const apa::ScanResult& scan,
         }
     }
 
-    // Physical-LBA order is the safe baseline for rotational and unknown media:
-    // it avoids arbitrary head bouncing while remaining harmless for SSDs.
     std::sort(partitions.begin(), partitions.end(), [](const auto* left, const auto* right) {
         return left->start_lba < right->start_lba;
     });

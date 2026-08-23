@@ -8,6 +8,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$RegressionManifest = Join-Path $PSScriptRoot 'frieren-regression-tests.ps1'
+if (-not (Test-Path -LiteralPath $RegressionManifest -PathType Leaf)) {
+    throw "Frieren regression manifest is missing: $RegressionManifest"
+}
+. $RegressionManifest
+
 $Root = [System.IO.Path]::GetFullPath($Root)
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
     throw "Canonical Windows staging directory does not exist: $Root"
@@ -17,6 +23,9 @@ $required = @(
     'PS2-DriveForge.exe',
     'ps2-driveforge-inspect.exe',
     'ps2-driveforge-benchmark.exe',
+    'ps2-driveforge-hdl-tools.exe',
+    'ps2-driveforge-pfs-tools.exe',
+    'ps2-driveforge-physical-tools.exe',
     'README.md',
     'CHANGELOG.md',
     'BUILDING.md',
@@ -26,6 +35,10 @@ $required = @(
     'docs\release-process.md',
     'docs\rc-hardware-checklist.md',
     'docs\REAL_HARDWARE_VALIDATION.md',
+    'docs\frieren-plan.md',
+    'docs\opl-asset-pipeline.md',
+    'docs\frieren-pfs-write.md',
+    'docs\fhdb-bootstrap-parity.md',
     'docs\emilia-benchmark-2026-08-22.md'
 )
 if (-not $WithoutDokany) {
@@ -60,9 +73,6 @@ if (-not $WithoutWinUI) {
         throw "Expected exactly one WinUI executable in canonical staging, found $($duplicateExecutables.Count)."
     }
 
-    # A handful of XBF/WINMD/PDB files is not a self-contained WinUI deployment.
-    # Microsoft.UI.Xaml.dll is the minimum unmistakable runtime payload marker;
-    # the Windows App SDK runtime must also contribute at least one native DLL.
     $xamlRuntime = @(
         Get-ChildItem -LiteralPath $winuiRoot -Recurse -File -Filter 'Microsoft.UI.Xaml.dll'
     )
@@ -83,23 +93,7 @@ if (-not $WithoutWinUI) {
     }
 }
 
-$expectedTests = @(
-    'ps2-driveforge-tests.exe',
-    'ps2-driveforge-pfs-file-tests.exe',
-    'ps2-driveforge-pfs-segi-tests.exe',
-    'ps2-driveforge-host-tests.exe',
-    'ps2-driveforge-e2e-image-tests.exe',
-    'ps2-driveforge-corruption-tests.exe',
-    'ps2-driveforge-session-tests.exe',
-    'ps2-driveforge-read-cache-tests.exe',
-    'ps2-driveforge-read-ahead-tests.exe',
-    'ps2-driveforge-partition-catalog-tests.exe',
-    'ps2-driveforge-hdl-enrichment-tests.exe',
-    'ps2-driveforge-storage-profile-tests.exe',
-    'ps2-driveforge-dokany-open-policy-tests.exe',
-    'ps2-driveforge-darkness-policy-tests.exe'
-)
-
+$expectedTests = @($FrierenRegressionTests)
 $missingTests = @(
     $expectedTests | Where-Object {
         -not (Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf)
@@ -124,11 +118,11 @@ if ($packagedTests.Count -ne $expectedTests.Count) {
 }
 
 $packagedDocs = @(Get-ChildItem -LiteralPath (Join-Path $Root 'docs') -File -Filter '*.md')
-if ($packagedDocs.Count -lt 10) {
+if ($packagedDocs.Count -lt 14) {
     throw "Expected the complete release documentation set, found only $($packagedDocs.Count) Markdown files in staging."
 }
 
-Write-Host "Canonical Windows package staging verified: $Root" -ForegroundColor Green
+Write-Host "Canonical Frieren Windows package staging verified: $Root" -ForegroundColor Green
 Write-Host "Required release files: $($required.Count)"
 Write-Host "Regression executables: $($packagedTests.Count)"
 Write-Host "Packaged Markdown docs: $($packagedDocs.Count)"

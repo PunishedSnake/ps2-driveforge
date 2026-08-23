@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/block_device.hpp"
 #include "ps2hdd/instrumented_block_device.hpp"
 #include "ps2hdd/partition_catalog.hpp"
@@ -93,9 +94,10 @@ struct SessionStats {
 // same validated APA scan.
 //
 // Emilia keeps immutable metadata results across calls because every current
-// source is read-only. The pipeline is parser -> 4 KiB metadata cache -> adaptive
-// sequential read-ahead -> backing instrumentation -> actual device. Backing
-// counters therefore continue to represent real image/HDD I/O after both caches.
+// source is read-only. Frieren adds narrowly-scoped post-commit snapshot updates
+// for mutation coordinators without turning this normal session into a writer.
+// The pipeline is parser -> 4 KiB metadata cache -> adaptive sequential read-ahead
+// -> backing instrumentation -> actual device.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -113,6 +115,14 @@ public:
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
     bool scan();
+
+    // Synchronize this already-open read session after a separate mutation
+    // coordinator successfully commits the exact RemovePlan. This changes only
+    // the cached APA snapshot and invalidates read caches; it performs no device
+    // scan and no HDL/PFS rediscovery. A failed/uncommitted plan must never be
+    // passed here.
+    bool apply_committed_partition_removal(const apa::RemovePlan& plan);
+
     [[nodiscard]] const apa::Partition* find_partition(std::string_view id) const noexcept;
     [[nodiscard]] BrowseResult browse(std::string_view partition, std::string_view path);
     [[nodiscard]] StatResult stat(std::string_view partition, std::string_view path);

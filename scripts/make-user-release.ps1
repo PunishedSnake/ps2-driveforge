@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.0-rc5',
+    [string]$Version = '0.6.0-dev',
+    [string]$Codename = 'Frieren',
     [string]$CanonicalRoot = (Join-Path $PSScriptRoot '..\dist\windows-x64'),
     [string]$BuildBin = (Join-Path $PSScriptRoot '..\build\windows-x64\Release'),
     [string]$InnoCompiler = '',
@@ -30,13 +31,21 @@ function Copy-RequiredFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+if ([string]::IsNullOrWhiteSpace($Version) -or [string]::IsNullOrWhiteSpace($Codename)) {
+    throw 'Version and Codename must both be non-empty.'
+}
+if ($Version.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
+    $Codename.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+    throw 'Version/Codename contains characters that are invalid in package filenames.'
+}
+
 $Root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $CanonicalRoot = [System.IO.Path]::GetFullPath($CanonicalRoot)
 $BuildBin = [System.IO.Path]::GetFullPath($BuildBin)
 $DistRoot = Join-Path $Root 'dist'
 $UserRoot = Join-Path $DistRoot 'user\windows-x64'
-$PortableZip = Join-Path $DistRoot "PS2-DriveForge-$Version-Emilia-Portable-x64.zip"
-$SetupExe = Join-Path $DistRoot "PS2-DriveForge-$Version-Emilia-Setup-x64.exe"
+$PortableZip = Join-Path $DistRoot "PS2-DriveForge-$Version-$Codename-Portable-x64.zip"
+$SetupExe = Join-Path $DistRoot "PS2-DriveForge-$Version-$Codename-Setup-x64.exe"
 
 if (-not (Test-Path -LiteralPath $CanonicalRoot -PathType Container)) {
     throw "Canonical Windows staging was not found: $CanonicalRoot"
@@ -47,14 +56,9 @@ if (Test-Path -LiteralPath $UserRoot) {
 }
 New-Item -ItemType Directory -Force -Path $UserRoot | Out-Null
 
-# One normal entrypoint. WinUI/runtime, fallback frontend and tools stay below
-# their own implementation directories instead of cluttering the user root.
 $Launcher = Join-Path $BuildBin 'PS2-DriveForge-Launcher.exe'
 Copy-RequiredFile $Launcher (Join-Path $UserRoot 'PS2-DriveForge.exe')
 
-# Human-facing project and legal material is required in every user package.
-# README/CHANGELOG come from canonical staging so they match the built source;
-# legal/credits files are project-root inputs and packaging fails if absent.
 foreach ($Doc in @('README.md', 'CHANGELOG.md')) {
     Copy-RequiredFile (Join-Path $CanonicalRoot $Doc) (Join-Path $UserRoot $Doc)
 }
@@ -62,7 +66,6 @@ foreach ($Doc in @('LICENSE', 'CREDITS.md', 'THIRD_PARTY_NOTICES.md')) {
     Copy-RequiredFile (Join-Path $Root $Doc) (Join-Path $UserRoot $Doc)
 }
 
-# Modern frontend and its Windows App SDK payload.
 $CanonicalWinUI = Join-Path $CanonicalRoot 'WinUI'
 if (-not (Test-Path -LiteralPath $CanonicalWinUI -PathType Container)) {
     throw "Canonical WinUI payload is missing: $CanonicalWinUI"
@@ -71,17 +74,17 @@ $WinUIDestination = Join-Path $UserRoot 'app\winui'
 New-Item -ItemType Directory -Force -Path $WinUIDestination | Out-Null
 Copy-Item -Path (Join-Path $CanonicalWinUI '*') -Destination $WinUIDestination -Recurse -Force
 
-# Proven Win32 frontend remains an explicitly supported fallback.
 Copy-RequiredFile (Join-Path $CanonicalRoot 'PS2-DriveForge.exe') `
     (Join-Path $UserRoot 'legacy\PS2-DriveForge-Win32.exe')
 
-# Advanced/diagnostic utilities remain available without cluttering the root.
 $Tools = Join-Path $UserRoot 'tools'
 New-Item -ItemType Directory -Force -Path $Tools | Out-Null
 foreach ($Tool in @(
     'PS2-DriveForge-Mount.exe',
     'ps2-driveforge-inspect.exe',
-    'ps2-driveforge-benchmark.exe'
+    'ps2-driveforge-benchmark.exe',
+    'ps2-driveforge-hdl-tools.exe',
+    'ps2-driveforge-physical-tools.exe'
 )) {
     $Source = Join-Path $CanonicalRoot $Tool
     if (Test-Path -LiteralPath $Source -PathType Leaf) {
@@ -96,13 +99,13 @@ if (Test-Path -LiteralPath $CanonicalDocs -PathType Container) {
     Copy-Item -Path (Join-Path $CanonicalDocs '*') -Destination $DocsDestination -Recurse -Force
 }
 
-# User-layout verification is separate from canonical CI staging because normal
-# users should not receive the regression executable set.
 $requiredUserFiles = @(
     'PS2-DriveForge.exe',
     'legacy\PS2-DriveForge-Win32.exe',
     'app\winui\PS2-DriveForge-WinUI.exe',
     'app\winui\Microsoft.UI.Xaml.dll',
+    'tools\ps2-driveforge-hdl-tools.exe',
+    'tools\ps2-driveforge-physical-tools.exe',
     'README.md',
     'CHANGELOG.md',
     'LICENSE',
@@ -129,9 +132,6 @@ if ($leakedTests.Count -ne 0) {
     throw "User release contains regression test executables: $($leakedTests.Name -join ', ')"
 }
 
-# Execute the exact staged bootstrap. RC4 demonstrated that a successfully
-# linked PE can still die in the Windows loader before wWinMain() due to an
-# unavailable ordinal import. Compilation alone is therefore not a startup test.
 $StagedLauncher = Join-Path $UserRoot 'PS2-DriveForge.exe'
 $LauncherSmoke = Start-Process -FilePath $StagedLauncher -ArgumentList '--self-test' -Wait -PassThru
 if ($LauncherSmoke.ExitCode -ne 0) {
@@ -143,7 +143,30 @@ if (Test-Path -LiteralPath $PortableZip) {
     Remove-Item -LiteralPath $PortableZip -Force
 }
 Compress-Archive -Path (Join-Path $UserRoot '*') -DestinationPath $PortableZip -CompressionLevel Optimal
+
+# Verify the actual archive, not just the directory we intended to archive.
+# Packaging bugs are impressively capable of making a correct staging tree and
+# an incomplete deliverable coexist without technically lying to either one.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::OpenRead($PortableZip)
+try {
+    $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace('/', '\') })
+    foreach ($Relative in @(
+        'PS2-DriveForge.exe',
+        'app\winui\PS2-DriveForge-WinUI.exe',
+        'tools\ps2-driveforge-hdl-tools.exe',
+        'tools\ps2-driveforge-physical-tools.exe'
+    )) {
+        if ($Relative -notin $entryNames) {
+            throw "Portable archive is missing required entry: $Relative"
+        }
+    }
+} finally {
+    $archive.Dispose()
+}
+
 Write-Host "Portable package: $PortableZip" -ForegroundColor Green
+Write-Host "Portable archive required-entry verification: PASS" -ForegroundColor Green
 Write-Host "Portable SHA-256: $((Get-FileHash -LiteralPath $PortableZip -Algorithm SHA256).Hash)"
 
 if ($InnoCompiler) {
@@ -162,7 +185,8 @@ if ($InnoCompiler) {
     $Arguments = @(
         "/DReleaseRoot=$UserRoot",
         "/DOutputDir=$DistRoot",
-        "/DAppVersion=$Version"
+        "/DAppVersion=$Version",
+        "/DAppCodename=$Codename"
     )
     if ($DokanyMsi) {
         $Arguments += "/DDokanyMsi=$([System.IO.Path]::GetFullPath($DokanyMsi))"
@@ -178,5 +202,5 @@ if ($InnoCompiler) {
     Write-Host "Installer SHA-256: $((Get-FileHash -LiteralPath $SetupExe -Algorithm SHA256).Hash)"
 }
 
-Write-Host "User-facing release staging verified: $UserRoot" -ForegroundColor Green
+Write-Host "User-facing $Version $Codename staging verified: $UserRoot" -ForegroundColor Green
 Write-Host "WinUI runtime files hidden under app\\winui: $(@(Get-ChildItem -LiteralPath (Join-Path $UserRoot 'app\winui') -Recurse -File).Count)"

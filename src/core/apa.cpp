@@ -181,6 +181,8 @@ ScanResult Reader::scan(std::size_t max_headers)
         partition.length_sectors = header.length;
         partition.type = header.type;
         partition.flags = header.flags;
+        partition.prev_lba = header.prev;
+        partition.next_lba = header.next;
         partition.main_lba = header.main;
         partition.number = header.number;
         partition.sub_count = std::min<std::uint32_t>(header.nsub, static_cast<std::uint32_t>(kMaxSub));

@@ -2,20 +2,20 @@
 
 This document explains why PS2 DriveForge exists when `pfsshell` already provides mature APA/PFS access.
 
-The goal is not to diminish `pfsshell`. It remains an important compatibility/format reference and its tree also contains `pfsfuse`. DriveForge solves a different host-side problem: a Windows-first, library-first PS2 HDD stack for a native GUI, Explorer filesystem, diagnostics, and eventually carefully gated mutation without exposing PS2SDK/iomanX process state to every frontend.
+The goal is not to diminish `pfsshell`. It remains an important compatibility and format reference, and its tree also contains `pfsfuse`. DriveForge solves a different host-side problem: a Windows-first, library-first PS2 HDD stack for native GUI workflows, Explorer integration, diagnostics, high-throughput HDL/PFS mutation and FHDB Manager-compatible recovery without exposing PS2SDK/iomanX process state to every frontend.
 
 ## Ground rules
 
 Claims are split into:
 
-- **Implemented / observed** — behavior present in DriveForge or directly visible in referenced pfsshell source.
-- **Design target** — an architectural opportunity that must not be described as a measured speedup until benchmarks exist.
+- **Implemented / observed** - behavior present in DriveForge or directly visible in referenced pfsshell source.
+- **Design target** - an architectural opportunity that must not be described as a measured speedup until benchmarks exist.
 
-"Faster than pfsshell" without workload, device, connection, build/version, cache state, and measurements is not an acceptable project claim.
+"Faster than pfsshell" without workload, device, connection, build/version, cache state and measurements is not an acceptable project claim. Computers already generate enough folklore without benchmark fan fiction.
 
 ## pfsshell model
 
-The current pfsshell workflow is naturally shell-oriented:
+The traditional pfsshell workflow is naturally shell-oriented:
 
 ```text
 select device
@@ -25,7 +25,7 @@ select device
  -> unmount
 ```
 
-The shell maintains device/mount/current-path state and routes operations through its host iomanX adapter plus ported APA/PFS/HDL layers. This is a sensible compatibility design because it reuses PS2-side semantics.
+The shell maintains device, mount and current-path state and routes operations through its host iomanX adapter plus ported APA/PFS/HDL layers. This is a sensible compatibility design because it reuses PS2-side semantics.
 
 `pfsfuse` provides a filesystem frontend separately. The pfsshell documentation also describes Windows use through a Dokan FUSE wrapper, mounting a selected PFS partition to a drive letter.
 
@@ -38,162 +38,117 @@ References:
 
 ## DriveForge model
 
-DriveForge keeps host orchestration explicit rather than reproducing shell-global mount/current-directory state:
+DriveForge keeps orchestration explicit rather than reproducing shell-global mount/current-directory state:
 
 ```text
-Native GUI                CLI / mount CLI
-    |                            |
-    +------- shared host/session/mount -------+
-                        |
-                 DokanyMountController
-                        |
-                 ReadOnlyMountView
-                        |
-                   DriveSession
-                        |
-                    PFS Reader
-                        |
-                    ApaVolume
-                        |
-                    APA parser
-                        |
-             InstrumentedBlockDevice
-                        |
-                   BlockDevice
-                 /             \
-           disk image      PhysicalDriveN
+WinUI / Win32 / CLI / Dokany
+             |
+      ps2driveforge_host
+      /       |        \
+DriveSession  |   management/deploy/recovery coordinators
+              |
+       ps2driveforge_core
+ APA / PFS / HDL / writers / recovery formats
+              |
+       BlockDevice capability boundary
+        /                    \
+read-only PhysicalDrive   explicit WritableBlockDevice
+                          /                       \
+writable image      guarded WritablePhysicalDrive
 ```
 
-A `DriveSession` accepts explicit partition/path/range operations. GUI navigation stays in the GUI. Dokany callbacks resolve their paths independently. APA physical placement stays in `ApaVolume`.
+A `DriveSession` accepts explicit partition/path/range operations. Frontend navigation stays in the frontend. APA physical placement stays in `ApaVolume` / `WritableApaVolume`, and recovery artifacts remain format modules rather than UI inventions.
 
 ## Implemented differences useful for our target
 
-These are architecture/functionality statements, not throughput benchmarks.
+These are architecture/functionality statements, not universal throughput claims.
 
-### 1. Read-only safety is structural
+### 1. Read and write capabilities are structurally separate
 
-Current physical disks are `GENERIC_READ` only and `BlockDevice` has no write method. Darkness adds `DOKAN_OPTION_WRITE_PROTECT` and explicit rejection of create/overwrite/mutation callbacks.
+`BlockDevice` remains read-only. The ordinary Windows `PhysicalDrive` remains `GENERIC_READ`.
 
-Write support will require a new explicit capability plus backup/recovery rules rather than widening the reader silently.
+Mutation requires `WritableBlockDevice`. Disk images use `WritableFileBlockDevice`; Frieren also has a separately admitted `WritablePhysicalDrive` that requires a read-only fingerprint/APA/GPT preflight, a fresh RW identity check, Windows volume locking/dismount and another identity check before it becomes usable.
 
-### 2. APA extents are normalized/validated once
+That means adding physical write support did not quietly turn every parser, mount and browser into a writer. A surprisingly low bar, yet storage software has found ways to trip over it historically.
 
-PFS logical `(subpart, address)` access is translated through `ApaVolume`. APA also rejects recorded main/sub extents outside the backing device before PFS receives them.
+### 2. APA extents are normalized and validated centrally
 
-This avoids leaking physical placement assumptions into file/directory code.
+PFS logical `(subpart, address)` access is translated through `ApaVolume` and `WritableApaVolume`. APA rejects recorded main/sub extents outside the backing device before PFS receives them.
 
-### 3. Byte-range reads are first-class
+HDL main plus authoritative subs are also one logical management group, which allows the UI to display and delete one game without exposing allocation bookkeeping as a scavenger hunt.
 
-Mounted Windows reads can begin/end at arbitrary byte offsets. DriveForge's PFS reader presents one logical byte stream across SEGD/SEGI descriptors and APA extents rather than requiring the frontend to emulate PS2-sector-aligned shell operations.
+### 3. Native HDL install/remove does not shell out
 
-### 4. SEGI traversal is hidden behind the reader
+Frieren plans APA allocation in-process, writes/verifies the ISO payload into unpublished extents, builds DEADFEED metadata and publishes APA visibility last. Multipart main/sub layouts have deterministic end-to-end coverage.
 
-Callers do not understand direct/indirect descriptor mechanics. Generated-image E2E validates a real SEGI-backed file and APA main/sub crossing even though the current physical test HDD lacks a suitable large PFS payload.
+Removal unlinks the selected main and its authoritative subs by rewriting only surviving APA neighbour headers. Game payload does not need a ceremonial zero-fill, so delete cost is metadata-sized rather than ISO-sized.
 
-### 5. Host policy is not parser policy
+### 4. Native PFS writes are library operations
 
-Windows reserved names, filename conversion, case-insensitive collisions, recursive host export, SetupAPI discovery, UAC, theme behavior, and Dokany are above `ps2driveforge_core`.
+The writer supports cached bitmap allocation, create/replace, copy-on-write replacement, directory creation/growth, fragmented direct extents, SEGI, tree removal, batch writes and cold-reader verification.
+
+OPL loose files and TAR containers are therefore deployed by the same native storage stack instead of starting a new shell process for every small asset.
+
+### 5. Byte-range reads remain first-class
+
+Mounted Windows reads can begin and end at arbitrary byte offsets. DriveForge's PFS reader presents one logical byte stream across SEGD/SEGI descriptors and APA extents rather than requiring the frontend to emulate PS2-sector-aligned shell operations.
+
+### 6. Host policy is not parser policy
+
+Windows reserved names, filename conversion, case-insensitive collisions, recursive host export, SetupAPI discovery, UAC, theme behavior, Dokany and user confirmation stay above `ps2driveforge_core`.
 
 PS2-visible names and on-disk interpretation remain format concerns.
 
-### 6. Cross-layer behavior is reproducible
+### 7. Recovery is interoperable with FHDB Manager
 
-The test suite generates a real sparse APA/PFS `.img`, reopens it through production `FileBlockDevice`, traverses APA/PFS, recursively exports data, and verifies SHA-256.
+Frieren distinguishes the shared FHDB Rescue Capsule (`PS2HBRC\0`) from DriveForge's private Mutation Journal (`PS2DFRC1`). It also implements the shared `HDDMBR`, `HDDRAW`, `HDDMETA/APAMETA1` and `FORENSIC.TXT` contracts plus image-level guarded restore/APA repair.
 
-Malformed metadata has a deterministic corruption corpus. Frontend contracts such as NT Dokany dispositions and Darkness auto-open/free-letter policy also have portable regressions.
+Physical mutation coordinators preserve an FHDB-compatible master backup before write and use the DriveForge journal for the exact metadata transaction where applicable. Those artifacts solve different problems and therefore remain different formats, which is refreshingly less confusing than naming both of them "recovery.dat".
 
-### 7. Explorer integration now uses the same stack
+### 8. Cross-layer behavior is reproducible
 
-Darkness' real HDD path has hardware-validated:
+The suite contains generated APA/PFS images, corruption cases, fault-oriented writer tests, full HDL/PFS/TAR deployment tests, recovery format tests and sanitizer CI. Real-HDD testing remains a separate release gate because no unit test can convincingly emulate a USB bridge deciding to reinterpret reality.
 
-```text
-PhysicalDrive GENERIC_READ
- -> APA/PFS
- -> DriveSession
- -> ReadOnlyMountView
- -> DokanyMountController
- -> Explorer
-```
+## Performance status
 
-Root/partition browsing works, a known real file copied through Explorer matches its expected SHA-256, write creation is rejected, and unmount is clean.
+Emilia already replaced the earlier shared seek-pointer model with explicit-offset Windows I/O, validated metadata caches, read-ahead and instrumentation. The preserved real-HDD baseline is in [`emilia-benchmark-2026-08-22.md`](emilia-benchmark-2026-08-22.md).
 
-The GUI and standalone mount CLI now share `DokanyMountController`; the CLI is retained for diagnostics/scripts rather than becoming a second implementation.
-
-### 8. Windows disk selection no longer means guessing PhysicalDrive numbers
-
-The Darkness GUI enumerates actual `GUID_DEVINTERFACE_DISK` devices through SetupAPI, maps the device interface to the real raw-disk number, then lets the DriveForge APA parser classify it.
-
-Model/capacity are display metadata only. Windows device discovery is not used as a filesystem-format heuristic.
-
-## Where DriveForge is *not* faster yet
-
-Current physical Windows I/O is still deliberately conservative:
+Frieren additionally removes several architectural sources of write overhead:
 
 ```text
-PFS Reader
- -> ApaVolume
- -> InstrumentedBlockDevice
- -> PhysicalDrive
- -> mutex
- -> SetFilePointerEx
- -> synchronous ReadFile
+no pfsshell subprocess per operation
+no FUSE boundary for native management writes
+one retained PFS writer session for batches
+lazy cached bitmap chunks
+large sequential payload batches
+metadata-only APA deletion
+no mandatory complete HDL-list rebuild after known deletion
 ```
 
-There is currently:
-
-- no inode metadata cache;
-- no directory cache;
-- no block/read-window cache;
-- no read-ahead;
-- no request coalescing beyond current reader batching;
-- no overlapped raw-disk I/O;
-- no benchmark proving throughput superiority over pfsshell/pfsfuse.
-
-Explorer has also demonstrated a highly repetitive open/stat/enumeration workload, so a correct Dokany mount alone is not a performance victory.
-
-## Emilia performance path
-
-0.5 should optimize the preserved Darkness workload rather than replacing Dokany or introducing a custom kernel filesystem.
-
-Planned order:
-
-1. add logical/metadata/payload/timing counters;
-2. cache validated immutable inode metadata;
-3. cache directory results;
-4. add block/read-window caching;
-5. coalesce adjacent validated reads;
-6. adaptive sequential read-ahead;
-7. offset/overlapped Windows physical reads;
-8. safe concurrent scheduling;
-9. repeat Darkness Explorer and export workloads;
-10. compare with pfsshell/pfsfuse only under controlled conditions.
-
-See [`performance.md`](performance.md).
+These properties explain what should be measured. They are not a license to invent an N-times-faster number before comparative testing on the same host and disk.
 
 ## Explorer namespace
 
-Darkness implements the first part of the broader namespace target:
+The read-only Explorer view remains a separate presentation capability:
 
 ```text
-PS2HDD (P:)\
+PS2HDD\
   Partitions\
     __system\
     __common\
     +OPL\
-  Games\              # later, HDL/Guts
-  System\             # later, metadata/recovery
 ```
 
-Only `Partitions` is active in 0.4.
+HDL Tools and recovery operations belong in the application UI rather than being smuggled into arbitrary Explorer write callbacks. Windows Explorer is useful, but it does not need sector-zero privileges merely because someone pressed Delete.
 
 ## Development rule
 
 Whenever a change is called "faster" or "better than pfsshell":
 
-1. identify the specific old UX/bottleneck;
+1. identify the specific old UX or bottleneck;
 2. identify the DriveForge layer that changes it;
-3. add/retain correctness coverage;
-4. use counters and timings for speed claims;
-5. update this document with measured results, not assumptions.
+3. retain correctness and recovery coverage;
+4. measure counters and timings under the same conditions;
+5. record the result rather than the hoped-for result.
 
-That distinction is intended to keep DriveForge understandable after the original implementation context is gone.
+The useful distinction is not old tool versus new tool. It is compatibility reference versus an architecture deliberately designed for a different host workflow.

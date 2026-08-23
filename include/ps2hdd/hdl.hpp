@@ -2,10 +2,12 @@
 
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/block_device.hpp"
+#include "ps2hdd/writable_block_device.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -69,6 +71,21 @@ struct CatalogResult {
     bool cancelled{};
 };
 
+// Frieren's first writable HDL operation is deliberately non-structural: it
+// patches fields inside an already valid HDL metadata header. Partition layout,
+// allocation-table entries, startup ID, media type and payload extents remain
+// untouched. Empty optionals mean "leave the existing value unchanged".
+struct MetadataPatch {
+    std::optional<std::string> title;
+    std::optional<std::uint8_t> compat_flags;
+    std::optional<std::uint16_t> dma;
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return !title.has_value() && !compat_flags.has_value() && !dma.has_value();
+    }
+};
+
 using ProgressCallback =
     std::function<void(std::size_t completed, std::size_t total, const GameResult& game)>;
 
@@ -78,6 +95,14 @@ using ProgressCallback =
 // enrichment policy: it performs one bounded read and never starts HDL.EXE.
 [[nodiscard]] GameResult read_game_info(BlockDevice& device,
                                         const apa::Partition& partition);
+
+// Patch selected user-facing fields in one existing HDL metadata header. The
+// function validates the current header first, performs one fixed-size in-place
+// write, flushes it, reads the bytes back, and finally reparses them through the
+// normal reader before reporting success.
+[[nodiscard]] GameResult patch_game_metadata(WritableBlockDevice& device,
+                                             const apa::Partition& partition,
+                                             const MetadataPatch& patch);
 
 // Build native game metadata from an existing APA scan in ascending physical
 // LBA order. The callback is progressive/cancellable so callers can publish

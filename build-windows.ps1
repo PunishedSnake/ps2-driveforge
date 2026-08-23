@@ -64,6 +64,12 @@ function Resolve-WinUIOutput {
 }
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RegressionManifest = Join-Path $Root 'scripts\frieren-regression-tests.ps1'
+if (-not (Test-Path -LiteralPath $RegressionManifest -PathType Leaf)) {
+    throw "Frieren regression manifest is missing: $RegressionManifest"
+}
+. $RegressionManifest
+
 $BuildDir = Join-Path $Root 'build\windows-x64'
 $DistDir = Join-Path $Root 'dist\windows-x64'
 $WinUIRoot = Join-Path $Root 'src\winui'
@@ -163,9 +169,6 @@ if (-not $SkipWinUI) {
         '/p:Platform=x64'
     )
 
-    # Windows App SDK/MSBuild may introduce a project-name subdirectory below
-    # x64\<Configuration>. Discover the actual payload directory instead of
-    # coupling release staging to one Visual Studio output layout.
     $WinUIExe = Resolve-WinUIOutput -SearchRoot $WinUIOutputRoot -ExecutableName 'PS2-DriveForge-WinUI.exe'
     $WinUIPayloadDir = Split-Path -Parent $WinUIExe.FullName
     Write-Host "WinUI payload: $WinUIPayloadDir"
@@ -174,14 +177,27 @@ if (-not $SkipWinUI) {
     Write-Host "`n[5/6] WinUI build skipped." -ForegroundColor DarkYellow
 }
 
-Write-Host "`n[6/6] Packaging Emilia..." -ForegroundColor Yellow
+Write-Host "`n[6/6] Packaging Frieren development payload..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 $BinDir = Join-Path $BuildDir $Configuration
 $InspectorExe = Join-Path $BinDir 'ps2-driveforge-inspect.exe'
 $BenchmarkExe = Join-Path $BinDir 'ps2-driveforge-benchmark.exe'
+$HdlToolsExe = Join-Path $BinDir 'ps2-driveforge-hdl-tools.exe'
+$PfsToolsExe = Join-Path $BinDir 'ps2-driveforge-pfs-tools.exe'
+$PhysicalToolsExe = Join-Path $BinDir 'ps2-driveforge-physical-tools.exe'
 $GuiExe = Join-Path $BinDir 'PS2-DriveForge.exe'
-$RequiredExecutables = @($InspectorExe, $BenchmarkExe, $GuiExe)
+# Physical mutation is part of the Windows Frieren contract. Keep the developer
+# tool mandatory in staging so a packaging regression cannot silently ship the
+# low-level backend while omitting the only deliberately gated way to exercise it.
+$RequiredExecutables = @(
+    $InspectorExe,
+    $BenchmarkExe,
+    $HdlToolsExe,
+    $PfsToolsExe,
+    $PhysicalToolsExe,
+    $GuiExe
+)
 $MountExe = Join-Path $BinDir 'PS2-DriveForge-Mount.exe'
 if ($WithDokany) {
     $RequiredExecutables += $MountExe
@@ -193,10 +209,6 @@ foreach ($Required in $RequiredExecutables) {
     Copy-Item $Required $DistDir -Force
 }
 
-# WinUI is part of the canonical Emilia release payload from this point forward.
-# Until feature/hardware parity it lives beside, rather than replaces, the legacy
-# Win32 frontend. Once parity is signed off the package entrypoint can be swapped
-# without changing the native core/host build or the release pipeline again.
 if (-not $SkipWinUI) {
     if (-not $WinUIPayloadDir -or -not (Test-Path $WinUIPayloadDir)) {
         throw 'Resolved WinUI payload directory disappeared before packaging.'
@@ -206,7 +218,14 @@ if (-not $SkipWinUI) {
     Copy-Item (Join-Path $WinUIPayloadDir '*') $WinUIDist -Recurse -Force
 }
 
-$PdbNames = @('ps2-driveforge-inspect.pdb', 'ps2-driveforge-benchmark.pdb', 'PS2-DriveForge.pdb')
+$PdbNames = @(
+    'ps2-driveforge-inspect.pdb',
+    'ps2-driveforge-benchmark.pdb',
+    'ps2-driveforge-hdl-tools.pdb',
+    'ps2-driveforge-pfs-tools.pdb',
+    'ps2-driveforge-physical-tools.pdb',
+    'PS2-DriveForge.pdb'
+)
 if ($WithDokany) {
     $PdbNames += 'PS2-DriveForge-Mount.pdb'
 }
@@ -218,31 +237,15 @@ foreach ($PdbName in $PdbNames) {
 }
 
 if (-not $SkipTests) {
-    foreach ($TestName in @(
-        'ps2-driveforge-tests.exe',
-        'ps2-driveforge-pfs-file-tests.exe',
-        'ps2-driveforge-pfs-segi-tests.exe',
-        'ps2-driveforge-host-tests.exe',
-        'ps2-driveforge-e2e-image-tests.exe',
-        'ps2-driveforge-corruption-tests.exe',
-        'ps2-driveforge-session-tests.exe',
-        'ps2-driveforge-read-cache-tests.exe',
-        'ps2-driveforge-read-ahead-tests.exe',
-        'ps2-driveforge-partition-catalog-tests.exe',
-        'ps2-driveforge-hdl-enrichment-tests.exe',
-        'ps2-driveforge-storage-profile-tests.exe',
-        'ps2-driveforge-dokany-open-policy-tests.exe',
-        'ps2-driveforge-darkness-policy-tests.exe'
-    )) {
+    foreach ($TestName in $FrierenRegressionTests) {
         $TestExe = Join-Path $BinDir $TestName
-        if (Test-Path $TestExe) {
-            Copy-Item $TestExe $DistDir -Force
+        if (-not (Test-Path -LiteralPath $TestExe -PathType Leaf)) {
+            throw "Canonical Frieren regression executable was not produced: $TestExe"
         }
+        Copy-Item $TestExe $DistDir -Force
     }
 }
 
-# Root-facing documentation should remain usable when the release ZIP is
-# downloaded without a Git checkout.
 foreach ($Doc in @('README.md', 'CHANGELOG.md', 'BUILDING.md', 'CONTRIBUTING.md')) {
     $Source = Join-Path $Root $Doc
     if (-not (Test-Path $Source -PathType Leaf)) {
@@ -251,9 +254,6 @@ foreach ($Doc in @('README.md', 'CHANGELOG.md', 'BUILDING.md', 'CONTRIBUTING.md'
     Copy-Item $Source $DistDir -Force
 }
 
-# Package the complete Markdown documentation set instead of maintaining a
-# second hand-written allowlist that inevitably goes stale when release gates or
-# format notes are added. This also keeps README links useful inside the ZIP.
 $DocsSource = Join-Path $Root 'docs'
 $ValidationDir = Join-Path $DistDir 'docs'
 if (-not (Test-Path $DocsSource -PathType Container)) {
@@ -268,7 +268,7 @@ foreach ($Doc in $MarkdownDocs) {
     Copy-Item $Doc.FullName $ValidationDir -Force
 }
 
-$ZipName = "PS2-DriveForge-0.5.0-Emilia-$Configuration-windows-x64.zip"
+$ZipName = "PS2-DriveForge-0.6.0-Frieren-$Configuration-windows-x64.zip"
 $ZipPath = Join-Path (Split-Path -Parent $DistDir) $ZipName
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
