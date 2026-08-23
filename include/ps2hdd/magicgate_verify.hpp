@@ -38,9 +38,9 @@ struct KelfHeaderVerifyResult {
 
 namespace verify_detail {
 
-[[nodiscard]] inline bool read_block(std::span<const std::byte> bytes,
-                                     std::size_t offset,
-                                     cipher::Block& block) noexcept
+[[nodiscard]] constexpr bool read_block(std::span<const std::byte> bytes,
+                                        std::size_t offset,
+                                        cipher::Block& block) noexcept
 {
     if (offset > bytes.size() || block.size() > bytes.size() - offset) {
         return false;
@@ -51,7 +51,7 @@ namespace verify_detail {
     return true;
 }
 
-[[nodiscard]] inline std::size_t collect_block_signatures(
+[[nodiscard]] constexpr std::size_t collect_block_signatures(
     const BitTable& table,
     std::uint32_t flag,
     std::array<cipher::Block, kKelfMaxBitBlocks>& out) noexcept
@@ -76,7 +76,7 @@ namespace verify_detail {
 // 8-byte header signature immediately precedes Kbit/Kc. ICVPS2, when requested
 // by KELF header flag bit 1, is the final 8 bytes of KELF_header_size exactly as
 // SECRMAN's get_icvps2/store_icvps2 contract specifies.
-[[nodiscard]] inline KelfHeaderVerifyResult verify_disk_kelf_header(
+[[nodiscard]] constexpr KelfHeaderVerifyResult verify_disk_kelf_header(
     std::span<const std::byte> file,
     const MagicGateKeyset& keyset)
 {
