@@ -25,6 +25,13 @@ struct FileWriteOptions {
     std::size_t io_batch_bytes{256U * 1024U};
 };
 
+struct DirectoryWriteOptions {
+    std::uint16_t mode{static_cast<std::uint16_t>(kModeDirectory | 0x01FFU)};
+    std::uint16_t uid{0xFFFFU};
+    std::uint16_t gid{0xFFFFU};
+    DateTime timestamp{};
+};
+
 enum class FileWriteDisposition {
     created,
     replaced,
@@ -42,21 +49,26 @@ struct FileWriteResult {
     std::size_t bitmap_chunks_touched{};
 };
 
+struct DirectoryEnsureResult {
+    bool ok{};
+    std::string error;
+    std::string warning;
+    std::string path;
+    std::size_t created_components{};
+    std::size_t metadata_transactions{};
+    std::size_t bitmap_chunks_touched{};
+};
+
 // Image-only PFS mutation session. It deliberately owns a writable APA extent
-// capability and never accepts PhysicalDrive. The first implementation targets
-// OPL-sized regular files and is optimized around three properties:
+// capability and never accepts PhysicalDrive. Regular files use copy-on-write
+// replacement; directory creation allocates and publishes complete `.` / `..`
+// directory nodes. One validated PFS probe and lazy bitmap cache are retained
+// across the whole session so batch imports do not rebuild filesystem state for
+// every asset.
 //
-//  * one PFS probe per session instead of shelling out / rebuilding a catalog;
-//  * lazy bitmap chunks cached for the session instead of rescanning the whole FS;
-//  * crash-friendly publication order: reserve zones -> payload -> inode -> dentry.
-//
-// Existing files are replaced copy-on-write. Old data zones are released only
-// after the new inode has been committed and verified, so a failed cleanup can
-// leak space but cannot make the live file point at zones already marked free.
-//
-// Current bounded scope: parent directories must already exist and contain a
-// reusable dentry slot; indirect SEGI file layouts and directory growth are
-// refused rather than guessed. Those become the next writer milestones.
+// Directory data growth and indirect SEGI creation are still separate bounded
+// milestones. Missing directories can now be created recursively as long as
+// each existing parent has reusable dentry space.
 class ImageWriter final {
 public:
     using BitmapKey = std::pair<std::size_t, std::uint32_t>;
@@ -67,6 +79,10 @@ public:
     [[nodiscard]] bool valid() const noexcept { return probe_.valid; }
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
     [[nodiscard]] const ProbeResult& probe_result() const noexcept { return probe_; }
+
+    [[nodiscard]] DirectoryEnsureResult ensure_directory(
+        std::string_view path,
+        const DirectoryWriteOptions& options = {});
 
     [[nodiscard]] FileWriteResult write_file(std::string_view path,
                                              std::span<const std::byte> bytes,
@@ -116,12 +132,17 @@ private:
                                    FileWriteResult& result);
     [[nodiscard]] DirectorySlot plan_dentry_insert(const Node& parent,
                                                    std::string_view name,
-                                                   const BlockInfo& inode_location);
+                                                   const BlockInfo& inode_location,
+                                                   std::uint16_t entry_mode);
     [[nodiscard]] bool publish_dentry(const DirectorySlot& slot,
                                       FileWriteResult& result);
     [[nodiscard]] bool verify_file(std::string_view path,
                                    std::span<const std::byte> expected);
 
+    [[nodiscard]] DirectoryEnsureResult create_directory(const Node& parent,
+                                                         std::string_view full_path,
+                                                         std::string_view name,
+                                                         const DirectoryWriteOptions& options);
     [[nodiscard]] FileWriteResult create_file(const Node& parent,
                                               std::string_view full_path,
                                               std::string_view name,
