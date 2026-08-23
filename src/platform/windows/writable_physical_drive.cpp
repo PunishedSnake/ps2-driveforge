@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <vector>
@@ -51,6 +52,24 @@ bool finish_overlapped(HANDLE handle, OVERLAPPED& overlapped, BOOL started,
         }
     }
     return GetOverlappedResult(handle, &overlapped, &transferred, TRUE) != FALSE;
+}
+
+bool device_io_overlapped(HANDLE handle, DWORD code,
+                          void* output, DWORD output_bytes,
+                          DWORD& returned) noexcept
+{
+    ScopedEvent event;
+    if (!event.valid()) {
+        return false;
+    }
+
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = event.get();
+    const BOOL started = DeviceIoControl(handle, code,
+                                         nullptr, 0,
+                                         output, output_bytes,
+                                         nullptr, &overlapped);
+    return finish_overlapped(handle, overlapped, started, returned);
 }
 
 bool volume_uses_disk(HANDLE volume, unsigned disk_index, bool& uses_target)
@@ -113,8 +132,8 @@ WritablePhysicalDrive::WritablePhysicalDrive(unsigned index,
 
     GET_LENGTH_INFORMATION length{};
     DWORD returned = 0;
-    if (!DeviceIoControl(handle_, IOCTL_DISK_GET_LENGTH_INFO,
-                         nullptr, 0, &length, sizeof(length), &returned, nullptr)) {
+    if (!device_io_overlapped(handle_, IOCTL_DISK_GET_LENGTH_INFO,
+                              &length, sizeof(length), returned)) {
         open_error_ = GetLastError();
         admission_error_ = "could not query physical disk length after RW open";
         close_device();
@@ -124,8 +143,8 @@ WritablePhysicalDrive::WritablePhysicalDrive(unsigned index,
 
     DISK_GEOMETRY geometry{};
     returned = 0;
-    if (!DeviceIoControl(handle_, IOCTL_DISK_GET_DRIVE_GEOMETRY,
-                         nullptr, 0, &geometry, sizeof(geometry), &returned, nullptr)) {
+    if (!device_io_overlapped(handle_, IOCTL_DISK_GET_DRIVE_GEOMETRY,
+                              &geometry, sizeof(geometry), returned)) {
         open_error_ = GetLastError();
         admission_error_ = "could not query physical disk sector geometry";
         close_device();
@@ -329,7 +348,7 @@ bool WritablePhysicalDrive::lock_target_volumes(bool dismount)
         const bool queried = volume_uses_disk(probe, index_, uses_target);
         CloseHandle(probe);
         if (!queried) {
-            open_error_ = GetLastError();
+            open_error_ = ERROR_INVALID_DATA;
             admission_error_ = "could not map a Windows volume to its backing physical disk";
             ok = false;
             break;
