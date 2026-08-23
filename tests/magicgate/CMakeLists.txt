@@ -34,7 +34,8 @@ add_magicgate_test(ps2-driveforge-magicgate-service-tests ../magicgate_service_t
 
 # Provider staging is header-only apart from the shared SHA-256 primitive. Keep
 # it in the fast cross-platform security gate together with strict local manifest
-# parsing so trust-boundary regressions do not wait for a full Windows package.
+# parsing and immutable-plan validation so trust-boundary regressions do not
+# wait for a full Windows package.
 add_executable(ps2-driveforge-bootstrap-provider-tests
     ../bootstrap_provider_tests.cpp
     ../../src/core/sha256.cpp
@@ -46,3 +47,9 @@ add_executable(ps2-driveforge-bootstrap-manifest-tests
     ../../src/core/sha256.cpp
 )
 configure_magicgate_target(ps2-driveforge-bootstrap-manifest-tests)
+
+add_executable(ps2-driveforge-bootstrap-frozen-tests
+    ../bootstrap_frozen_tests.cpp
+    ../../src/core/sha256.cpp
+)
+configure_magicgate_target(ps2-driveforge-bootstrap-frozen-tests)
