@@ -28,18 +28,21 @@ function(add_magicgate_test target source)
     configure_magicgate_target(${target})
 endfunction()
 
-# Keep the crypto harness independent from the full DriveForge graph. A broken
-# KELF byte invariant should take seconds to diagnose, not require WinUI,
-# Dokany and half the storage stack to assemble for moral support.
 add_magicgate_test(ps2-driveforge-magicgate-tests ../magicgate_tests.cpp)
 add_magicgate_test(ps2-driveforge-magicgate-sign-tests ../magicgate_sign_tests.cpp)
 add_magicgate_test(ps2-driveforge-magicgate-service-tests ../magicgate_service_tests.cpp)
 
-# Provider staging is header-only apart from the shared SHA-256 primitive. It
-# belongs in this fast gate because the important property is the trust-domain
-# boundary: bounded immutable acquisition -> MagicGate transform -> frozen plan.
+# Provider staging is header-only apart from the shared SHA-256 primitive. Keep
+# it in the fast cross-platform security gate together with strict local manifest
+# parsing so trust-boundary regressions do not wait for a full Windows package.
 add_executable(ps2-driveforge-bootstrap-provider-tests
     ../bootstrap_provider_tests.cpp
     ../../src/core/sha256.cpp
 )
 configure_magicgate_target(ps2-driveforge-bootstrap-provider-tests)
+
+add_executable(ps2-driveforge-bootstrap-manifest-tests
+    ../bootstrap_manifest_tests.cpp
+    ../../src/core/sha256.cpp
+)
+configure_magicgate_target(ps2-driveforge-bootstrap-manifest-tests)
