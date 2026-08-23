@@ -39,6 +39,7 @@ public:
         }
         std::memcpy(bytes_.data() + static_cast<std::size_t>(offset), in.data(), in.size());
         ++writes;
+        written_bytes += in.size();
         return true;
     }
     bool flush() override { ++flushes; return true; }
@@ -51,8 +52,16 @@ public:
               "fixture header write");
     }
 
+    void reset_counters()
+    {
+        writes = 0;
+        flushes = 0;
+        written_bytes = 0;
+    }
+
     std::size_t writes{};
     std::size_t flushes{};
+    std::uint64_t written_bytes{};
 
 private:
     std::vector<std::byte> bytes_;
@@ -118,10 +127,16 @@ void remove_main_and_sub_without_touching_payload()
     check(plan.freed_bytes == 2ULL * extent * ps2hdd::apa::kSectorSize,
           "freed byte accounting");
 
+    disk.reset_counters();
     const auto result = ps2hdd::apa::remove_main_partition_from_image(disk, game);
     check(result.ok, "transactional APA removal succeeds");
     check(result.removed_headers == 2 && result.rewritten_headers == 2,
           "removal result counts");
+    check(disk.writes == plan.link_rewrites.size(),
+          "fast removal writes only surviving headers whose links change");
+    check(disk.written_bytes == plan.link_rewrites.size() * sizeof(ps2hdd::apa::Header),
+          "fast removal write volume is independent of removed payload size");
+    check(disk.flushes == 1, "fast removal uses one transaction flush");
 
     const auto after = reader.scan();
     check(after.ok() && after.partitions.size() == 2, "chain contains only MBR + +OPL");
@@ -158,8 +173,11 @@ void remove_tail_updates_mbr_prev()
     disk.put(first, a);
     disk.put(tail, b);
 
+    disk.reset_counters();
     const auto result = ps2hdd::apa::remove_main_partition_from_image(disk, tail);
     check(result.ok, "tail removal succeeds");
+    check(disk.writes == 2 && disk.written_bytes == 2 * sizeof(ps2hdd::apa::Header),
+          "tail removal remains two-header metadata work");
 
     ps2hdd::apa::Reader reader(disk);
     const auto scan = reader.scan();
