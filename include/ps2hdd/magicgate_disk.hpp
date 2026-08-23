@@ -6,3 +6,4 @@
 #include "ps2hdd/magicgate_disk_keys.hpp"
 #include "ps2hdd/magicgate_known_vectors.hpp"
 #include "ps2hdd/magicgate_verify.hpp"
+#include "ps2hdd/magicgate_verify_known_vectors.hpp"
