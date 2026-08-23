@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace ps2hdd::hdl {
@@ -83,12 +84,10 @@ MetadataBuildResult build_install_metadata(const apa::AllocationPlan& allocation
     store_u32_le(result.metadata.data(), kMagic);
     // Native HDLoader headers observed in existing tooling set this format byte.
     result.metadata[6] = std::byte{0x01};
-    std::copy(request.title.begin(), request.title.end(),
-              result.metadata.begin() + static_cast<std::ptrdiff_t>(kTitleOffset));
+    std::memcpy(result.metadata.data() + kTitleOffset, request.title.data(), request.title.size());
     result.metadata[kCompatOffset] = static_cast<std::byte>(request.compat_flags);
     store_u16_le(result.metadata.data() + kDmaOffset, request.dma);
-    std::copy(request.startup.begin(), request.startup.end(),
-              result.metadata.begin() + static_cast<std::ptrdiff_t>(kStartupOffset));
+    std::memcpy(result.metadata.data() + kStartupOffset, request.startup.data(), request.startup.size());
     store_u32_le(result.metadata.data() + kLayerBreakOffset, request.layer_break);
     store_u32_le(result.metadata.data() + kMediaOffset,
                  request.media == MediaType::dvd ? 0x14U : 0x12U);
