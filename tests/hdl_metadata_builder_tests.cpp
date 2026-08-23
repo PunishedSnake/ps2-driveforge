@@ -171,6 +171,12 @@ void test_invalid_requests_are_refused()
     request.payload_bytes = 12345;
     check(!ps2hdd::hdl::build_install_metadata(plan, request).ok,
           "non-2048-aligned ISO payload must be refused");
+
+    request.media = ps2hdd::hdl::MediaType::dvd;
+    request.payload_bytes = mib(64);
+    const auto unused_sub = ps2hdd::hdl::build_install_metadata(plan, request);
+    check(!unused_sub.ok && unused_sub.error.find("unused main/sub extent") != std::string::npos,
+          "metadata builder must refuse an APA sub extent that receives no payload entry");
 }
 
 } // namespace
