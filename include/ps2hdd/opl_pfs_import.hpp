@@ -30,6 +30,7 @@ struct PfsImportIssue {
 
 struct PreparedTarArchive {
     std::string path;
+    AssetKind representative_kind{};
     std::vector<tar::MemberPatch> members;
 };
 
