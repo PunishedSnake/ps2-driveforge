@@ -26,7 +26,7 @@ add_library(ps2driveforge_core
     src/core/disk_layout_guard.cpp
     src/core/writable_apa_volume.cpp
     src/core/write_transaction.cpp
-    src/core/recovery_capsule.cpp
+    src/core/mutation_journal.cpp
     src/core/sha256.cpp
     src/core/fhdb_rescue.cpp
     src/core/fhdb_artifacts.cpp
@@ -301,6 +301,11 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-partition-catalog-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-partition-catalog-tests COMMAND ps2-driveforge-partition-catalog-tests)
 
+    add_executable(ps2-driveforge-partition-grouping-tests tests/partition_grouping_tests.cpp)
+    target_link_libraries(ps2-driveforge-partition-grouping-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-partition-grouping-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-partition-grouping-tests COMMAND ps2-driveforge-partition-grouping-tests)
+
     add_executable(ps2-driveforge-hdl-enrichment-tests tests/hdl_enrichment_tests.cpp)
     target_link_libraries(ps2-driveforge-hdl-enrichment-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-hdl-enrichment-tests PRIVATE cxx_std_20)
@@ -316,10 +321,10 @@ if(PS2DF_BUILD_TESTS)
     target_compile_features(ps2-driveforge-write-transaction-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-write-transaction-tests COMMAND ps2-driveforge-write-transaction-tests)
 
-    add_executable(ps2-driveforge-recovery-capsule-tests tests/recovery_capsule_tests.cpp)
-    target_link_libraries(ps2-driveforge-recovery-capsule-tests PRIVATE ps2driveforge_core)
-    target_compile_features(ps2-driveforge-recovery-capsule-tests PRIVATE cxx_std_20)
-    add_test(NAME ps2-driveforge-recovery-capsule-tests COMMAND ps2-driveforge-recovery-capsule-tests)
+    add_executable(ps2-driveforge-mutation-journal-tests tests/mutation_journal_tests.cpp)
+    target_link_libraries(ps2-driveforge-mutation-journal-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-mutation-journal-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-mutation-journal-tests COMMAND ps2-driveforge-mutation-journal-tests)
 
     add_executable(ps2-driveforge-fhdb-rescue-tests tests/fhdb_rescue_tests.cpp)
     target_link_libraries(ps2-driveforge-fhdb-rescue-tests PRIVATE ps2driveforge_core)
