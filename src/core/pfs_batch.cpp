@@ -23,7 +23,11 @@ BatchWriteResult write_batch(ImageWriter& writer,
         item.index = index;
         item.path = file.path;
         item.required = file.required;
-        item.write = writer.write_file(file.path, file.bytes, file.options);
+
+        // Batch users get the complete image-only path: existing fast contiguous
+        // writes stay fast, while packed directories and fragmented free space
+        // transparently fall back to the advanced bounded writer.
+        item.write = writer.write_file_full(file.path, file.bytes, file.options);
 
         ++result.attempted;
         result.metadata_transactions += item.write.metadata_transactions;
