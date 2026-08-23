@@ -2,6 +2,7 @@
 
 #include "ps2hdd/magicgate_cipher.hpp"
 #include "ps2hdd/magicgate_kelf.hpp"
+#include "ps2hdd/magicgate_known_vectors.hpp"
 
 #include <algorithm>
 #include <array>
