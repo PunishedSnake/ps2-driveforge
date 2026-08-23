@@ -86,6 +86,8 @@ struct FrozenInstallInput {
     std::string source_sha256;
     std::string payload_sha256;
     std::vector<std::byte> payload;
+    bool magicgate_verified{};
+    bool magicgate_signed{};
     std::uint32_t program_start_sector{fhdb::kBootstrapProgramStartSector};
     std::uint32_t payload_sector_count{};
     std::string target_fingerprint;
@@ -196,6 +198,13 @@ namespace detail {
     if (!prepared.ok) { result.error = prepared.error.empty() ? "Bootstrap input is not prepared" : prepared.error; return result; }
     if (target_fingerprint.empty()) { result.error = "Bootstrap install input requires a frozen target fingerprint"; return result; }
     if (prepared.payload.size() > fhdb::kBootstrapPayloadMaxBytes) { result.error = "Bootstrap payload exceeds the reserved __mbr program area"; return result; }
+
+    const auto strategy = strategy_for(prepared.manifest.family);
+    if (strategy.requires_kelf_payload && !prepared.magicgate_verified) {
+        result.error = "Installable named bootstrap plans require successful MagicGate verification; structural inspection alone is not sufficient";
+        return result;
+    }
+
     const auto sectors64 = (prepared.payload.size() + 511U) / 512U;
     if (sectors64 == 0U || sectors64 > std::numeric_limits<std::uint32_t>::max()) { result.error = "Bootstrap payload sector geometry is invalid"; return result; }
     result.family = prepared.manifest.family;
@@ -205,6 +214,8 @@ namespace detail {
     result.source_sha256 = prepared.source_sha256;
     result.payload_sha256 = prepared.payload_sha256;
     result.payload = prepared.payload;
+    result.magicgate_verified = prepared.magicgate_verified;
+    result.magicgate_signed = prepared.magicgate_signed;
     result.payload_sector_count = static_cast<std::uint32_t>(sectors64);
     result.target_fingerprint = std::move(target_fingerprint);
     result.ok = true;
@@ -223,6 +234,7 @@ namespace detail {
     const auto required_sectors = static_cast<std::uint64_t>((input.payload.size() + 511U) / 512U);
     if (required_sectors == 0U || required_sectors != input.payload_sector_count) { error = "Provider bootstrap sector geometry no longer matches the frozen payload"; return false; }
     if (strategy_for(input.family).requires_kelf_payload) {
+        if (!input.magicgate_verified) { error = "Frozen named bootstrap payload has no retained successful MagicGate verification evidence"; return false; }
         const auto layout = magicgate::inspect_kelf(input.payload);
         if (!layout.ok || layout.file_bytes != input.payload.size()) {
             error = layout.ok ? "Provider bootstrap KELF contains unexpected trailing bytes" : "Provider bootstrap is not a structurally valid KELF: " + layout.error; return false;
