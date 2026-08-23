@@ -1,5 +1,7 @@
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 
+#include "ps2hdd/disk_layout_guard.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -43,16 +45,30 @@ RescueImageResult capture_rescue_image(BlockDevice& disk,
         return result;
     }
 
+    // Rescue capture is read-only, but an artifact still carries authority: a
+    // future restore may use it to justify writes. Check both conventional PC
+    // admission sectors before creating that evidence so a GPT-owned disk never
+    // acquires a DriveForge/FHDB backup that looks blessed for PS2 mutation.
+    const auto layout = inspect_disk_layout(disk);
+    if (!layout.ok) {
+        result.error = "Could not validate PC partition-map ownership before Rescue Capsule capture: " +
+                       layout.error;
+        return result;
+    }
+    if (!layout.allows_ps2_mutation()) {
+        result.error = "Refusing Rescue Capsule capture because GPT/protective ownership evidence is present";
+        return result;
+    }
+
     std::array<std::byte, kRescueApaHeaderBytes> master{};
     if (!disk.read(0, master)) {
         result.error = "Could not read the live 1024-byte APA master for Rescue Capsule capture";
         return result;
     }
 
-    // Check PC ownership before interpreting osdStart/osdSize. A perfectly
-    // parseable PS2-looking header embedded in a dual-owned disk is not evidence
-    // that DriveForge owns sector zero. Recovery artifacts must never bless a
-    // layout that the normal write gate would refuse later.
+    // Keep the raw-master check too. It mirrors the shared FHDB artifact policy
+    // and catches a conventional MBR signature inside sector zero even when no
+    // complete GPT header survived in sector one.
     if (is_hybrid_gpt_master(master)) {
         result.error = "Refusing Rescue Capsule capture because the live master contains PC MBR/GPT evidence";
         return result;
