@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -63,19 +64,21 @@ namespace payload_detail {
 
 } // namespace payload_detail
 
-// Verify and decrypt the payload only after the header envelope has selected an
-// unambiguous signed-bit interpretation. Public PS2 references disagree on the
-// names of BIT flag 0x01 and 0x02, while the root signature tells us which one
-// actually contributes block signatures for this file. Evidence beats comments.
+// Verify and decrypt a disk KELF payload after the envelope has resolved the
+// signed/encrypted BIT flag interpretation.
 //
-// The opposite flag is then treated as the encrypted selector. Each encrypted
-// BIT block starts with the configured content IV, matching the host KELF
-// behavioral reference. CBC state does not leak from one descriptor into the
-// next merely because doing so would look tidier in a generic crypto API.
+// ICVPS2 is not derived from the ordinary host MagicGate keyset. PS2SDK obtains
+// the eight-byte value from MechaCon command 0x98 and stores it at
+// KELF_header_size - 8 when header flag bit 1 requests it. Host verification
+// therefore accepts ICVPS2 only as explicit trusted hardware/reference evidence.
+// A KELF that requests ICVPS2 fails closed when the caller cannot supply that
+// evidence; inventing a host-side formula would be less implementation and more
+// séance.
 [[nodiscard]] inline KelfPayloadVerifyResult verify_and_decrypt_disk_kelf_payload(
     std::span<const std::byte> file,
     const KelfHeaderVerifyResult& envelope,
-    const MagicGateKeyset& keyset)
+    const MagicGateKeyset& keyset,
+    std::optional<cipher::Block> expected_icvps2 = std::nullopt)
 {
     KelfPayloadVerifyResult result;
     if (!envelope.ok) {
@@ -96,9 +99,21 @@ namespace payload_detail {
 
     result.content_key_count = (envelope.layout.header.flags >> 4U) & 0x03U;
     result.icvps2_present = envelope.uses_icvps2;
-    // ICVPS2 generation/verification is a separate MechaCon-derived invariant.
-    // Do not turn presence into fake verification just because the bytes parse.
-    result.icvps2_verified = !result.icvps2_present;
+    if (result.icvps2_present) {
+        if (!expected_icvps2) {
+            result.error = "MagicGate KELF requires ICVPS2 evidence from MechaCon/reference hardware";
+            return result;
+        }
+        result.icvps2_verified = envelope.icvps2 == *expected_icvps2;
+        if (!result.icvps2_verified) {
+            result.error = "MagicGate KELF ICVPS2 does not match the supplied MechaCon/reference evidence";
+            return result;
+        }
+    } else {
+        // No ICVPS2 is required for this KELF, so the invariant is satisfied
+        // without consulting a hardware capability.
+        result.icvps2_verified = true;
+    }
 
     const auto payload_offset = static_cast<std::size_t>(envelope.layout.header.header_size);
     const auto payload_bytes = static_cast<std::size_t>(envelope.layout.header.elf_size);
@@ -174,11 +189,6 @@ namespace payload_detail {
 
     if (cursor != result.plaintext.size()) {
         result.error = "MagicGate BIT block sizes do not consume the complete payload";
-        return result;
-    }
-
-    if (result.icvps2_present) {
-        result.error = "MagicGate payload signatures verify, but ICVPS2 verification is not implemented yet";
         return result;
     }
 
