@@ -23,9 +23,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check documentation and recovery terminology style
-        run: cmake -DPS2DF_SOURCE_DIR="$PWD" -P scripts/check-text-style.cmake
-
       - name: Configure
         run: >-
           cmake -S . -B build/sanitizers
@@ -38,3 +35,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/sanitizers --output-on-failure
+
+      - name: Check documentation and recovery terminology style
+        run: cmake -DPS2DF_SOURCE_DIR="$PWD" -P scripts/check-text-style.cmake
