@@ -26,6 +26,7 @@ add_library(ps2driveforge_core
     src/core/disk_layout_guard.cpp
     src/core/writable_apa_volume.cpp
     src/core/write_transaction.cpp
+    src/core/recovery_capsule.cpp
     src/core/apa.cpp
     src/core/apa_allocation.cpp
     src/core/apa_hdl_headers.cpp
@@ -308,6 +309,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-write-transaction-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-write-transaction-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-write-transaction-tests COMMAND ps2-driveforge-write-transaction-tests)
+
+    add_executable(ps2-driveforge-recovery-capsule-tests tests/recovery_capsule_tests.cpp)
+    target_link_libraries(ps2-driveforge-recovery-capsule-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-recovery-capsule-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-recovery-capsule-tests COMMAND ps2-driveforge-recovery-capsule-tests)
 
     add_executable(ps2-driveforge-writable-apa-volume-tests tests/writable_apa_volume_tests.cpp)
     target_link_libraries(ps2-driveforge-writable-apa-volume-tests PRIVATE ps2driveforge_core)
