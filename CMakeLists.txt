@@ -142,6 +142,13 @@ target_link_libraries(ps2-driveforge-pfs-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-pfs-tools PRIVATE cxx_std_20)
 
 if(WIN32)
+    # Keep raw physical mutation in a separate developer executable. The normal
+    # inspector and image tools must not gain write behavior merely because a
+    # Windows build happens to expose WritablePhysicalDrive below them.
+    add_executable(ps2-driveforge-physical-tools src/cli/physical_tools.cpp)
+    target_link_libraries(ps2-driveforge-physical-tools PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-physical-tools PRIVATE cxx_std_20)
+
     add_executable(ps2-driveforge-gui WIN32
         src/gui/windows_main.cpp
         src/gui/windows_theme.cpp
