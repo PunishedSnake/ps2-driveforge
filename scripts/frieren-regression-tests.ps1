@@ -1,9 +1,10 @@
 # Canonical native Frieren regression executable manifest.
 #
-# Keep build staging and package verification on one source of truth. New CMake
-# regression targets should be added here in the same change that wires them,
-# otherwise the Windows development artifact is intentionally considered
-# incomplete instead of silently omitting the new test.
+# Build staging and package verification share one list because maintaining two
+# almost-identical manifests is how harmless packaging scripts eventually grow
+# folklore. New CMake regression targets belong here in the same change that
+# wires them, otherwise the Windows development artifact is deliberately
+# incomplete instead of quietly forgetting the inconvenient new test.
 $FrierenRegressionTests = @(
     'ps2-driveforge-tests.exe',
     'ps2-driveforge-disk-layout-guard-tests.exe',
@@ -31,6 +32,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-mutation-journal-tests.exe',
     'ps2-driveforge-fhdb-rescue-tests.exe',
     'ps2-driveforge-fhdb-artifacts-tests.exe',
+    'ps2-driveforge-fhdb-restore-tests.exe',
     'ps2-driveforge-apa-repair-tests.exe',
     'ps2-driveforge-apa-forensic-tests.exe',
     'ps2-driveforge-apa-recovery-apply-tests.exe',
