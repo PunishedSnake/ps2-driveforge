@@ -1,0 +1,45 @@
+name: MagicGate host verification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'include/ps2hdd/magicgate_*.hpp'
+      - 'tests/magicgate_tests.cpp'
+      - 'tests/magicgate/**'
+      - '.github/workflows/magicgate.yml'
+  push:
+    branches: [ main, 'release/**' ]
+    paths:
+      - 'include/ps2hdd/magicgate_*.hpp'
+      - 'tests/magicgate_tests.cpp'
+      - 'tests/magicgate/**'
+      - '.github/workflows/magicgate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  magicgate-host:
+    name: ${{ matrix.os }} / header-only crypto core
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure standalone MagicGate tests
+        run: cmake -S tests/magicgate -B build/magicgate -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build standalone MagicGate tests
+        run: cmake --build build/magicgate --config Debug --parallel
+
+      - name: Run standalone MagicGate tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/magicgate -C Debug --output-on-failure
