@@ -92,13 +92,13 @@ template <std::size_t N>
     return true;
 }
 
-[[nodiscard]] inline bool assign_key(std::string_view name,
-                                     std::string_view value,
-                                     MagicGateKeyset& keyset,
-                                     std::array<bool, 10>& seen,
-                                     std::string& error)
+[[nodiscard]] constexpr bool assign_key(std::string_view name,
+                                        std::string_view value,
+                                        MagicGateKeyset& keyset,
+                                        std::array<bool, 10>& seen,
+                                        std::string& error)
 {
-    const auto duplicate = [&](std::size_t index) {
+    const auto duplicate = [&](std::size_t index) constexpr {
         if (seen[index]) {
             error = "duplicate MagicGate keyset entry";
             return true;
@@ -198,7 +198,7 @@ template <std::size_t N>
 // intentionally kept outside this routine so callers can impose their own
 // bounded-read and provenance policy. Blank lines and lines beginning with '#'
 // or ';' are ignored. Every required capability must appear exactly once.
-[[nodiscard]] inline KeysetParseResult parse_magicgate_keyset(std::string_view text)
+[[nodiscard]] constexpr KeysetParseResult parse_magicgate_keyset(std::string_view text)
 {
     KeysetParseResult result;
     std::array<bool, 10> seen{};
