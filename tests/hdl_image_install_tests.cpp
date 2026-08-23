@@ -1,11 +1,14 @@
 #include "ps2hdd/hdl_image_install.hpp"
 
 #include "ps2hdd/apa_allocation.hpp"
+#include "ps2hdd/recovery_capsule.hpp"
+#include "ps2hdd/write_transaction.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <span>
@@ -218,6 +221,18 @@ ps2hdd::hdl::ImageInstallOptions options()
     return value;
 }
 
+std::filesystem::path recovery_path(std::string_view name)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      "ps2-driveforge-hdl-image-install-tests";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    check(!ec, "create HDL install recovery test directory");
+    const auto path = root / std::string(name);
+    std::filesystem::remove(path, ec);
+    return path;
+}
+
 void test_full_install_publishes_verified_hdl_partition()
 {
     auto disk = make_disk();
@@ -254,6 +269,56 @@ void test_full_install_publishes_verified_hdl_partition()
     check(game.ok, "installed DEADFEED metadata should parse normally");
     check(game.game.title == "Frieren Full Install", "installed title mismatch");
     check(game.game.raw_size_bytes == iso.size_bytes(), "installed raw size mismatch");
+}
+
+void test_recovery_capsule_commits_after_verified_publication()
+{
+    auto disk = make_disk();
+    auto iso = make_game_iso();
+    auto install_options = options();
+    const auto capsule = recovery_path("successful.rcap");
+    install_options.recovery_capsule_path = capsule;
+
+    const auto result = ps2hdd::hdl::install_to_image(disk, iso, install_options);
+    check(result.ok, "recoverable HDL install should succeed");
+    check(result.recovery_capsule_created && !result.recovery_pending,
+          "successful recoverable install should create and finalize its capsule");
+    check(result.warning.empty(), "successful recovery lifecycle should not warn");
+
+    const auto inspection = ps2hdd::inspect_recovery_capsule(capsule, disk);
+    check(inspection.ok &&
+              inspection.capsule_state == ps2hdd::RecoveryCapsuleState::committed &&
+              inspection.device_state == ps2hdd::RecoveryDeviceState::all_after,
+          "verified HDL publication should leave a COMMITTED all-after capsule");
+
+    std::error_code ec;
+    std::filesystem::remove(capsule, ec);
+}
+
+void test_unresolved_prepared_capsule_refuses_before_payload_copy()
+{
+    auto disk = make_disk();
+    auto iso = make_game_iso();
+    const auto capsule = recovery_path("unresolved.rcap");
+
+    std::array<std::byte, ps2hdd::apa::kHeaderSize> replacement{};
+    ps2hdd::WriteTransaction pending(disk);
+    check(pending.stage(0, replacement, "synthetic unresolved APA mutation"),
+          "stage unresolved recovery fixture");
+    check(ps2hdd::create_recovery_capsule(capsule, disk, pending.staged_writes()).ok,
+          "create unresolved PREPARED recovery capsule");
+
+    auto install_options = options();
+    install_options.recovery_capsule_path = capsule;
+    const auto writes_before = disk.write_calls;
+    const auto result = ps2hdd::hdl::install_to_image(disk, iso, install_options);
+    check(!result.ok && result.error.find("unresolved PREPARED") != std::string::npos,
+          "new install should refuse an unresolved PREPARED recovery capsule");
+    check(disk.write_calls == writes_before,
+          "unresolved recovery refusal must happen before any ISO payload write");
+
+    std::error_code ec;
+    std::filesystem::remove(capsule, ec);
 }
 
 void test_failed_publication_leaves_old_chain_and_reports_orphan_payload()
@@ -299,6 +364,8 @@ int main()
 {
     try {
         test_full_install_publishes_verified_hdl_partition();
+        test_recovery_capsule_commits_after_verified_publication();
+        test_unresolved_prepared_capsule_refuses_before_payload_copy();
         test_failed_publication_leaves_old_chain_and_reports_orphan_payload();
         test_duplicate_partition_id_refuses_before_payload_write();
         std::cout << "HDL image install tests passed\n";
