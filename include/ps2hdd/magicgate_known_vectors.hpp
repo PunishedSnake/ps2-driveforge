@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <string_view>
 
 namespace ps2hdd::magicgate::known_vectors {
 
@@ -38,6 +39,28 @@ namespace ps2hdd::magicgate::known_vectors {
     return keyset;
 }
 
+[[nodiscard]] constexpr DiskKeyset synthetic_disk_keyset() noexcept
+{
+    DiskKeyset keyset;
+    keyset.kbit_master = {
+        std::byte{0x00}, std::byte{0x11}, std::byte{0x22}, std::byte{0x33},
+        std::byte{0x44}, std::byte{0x55}, std::byte{0x66}, std::byte{0x77},
+        std::byte{0x88}, std::byte{0x99}, std::byte{0xaa}, std::byte{0xbb},
+        std::byte{0xcc}, std::byte{0xdd}, std::byte{0xee}, std::byte{0xff}};
+    keyset.kbit_material = {
+        std::byte{0x10}, std::byte{0x11}, std::byte{0x12}, std::byte{0x13},
+        std::byte{0x14}, std::byte{0x15}, std::byte{0x16}, std::byte{0x17}};
+    keyset.kc_master = {
+        std::byte{0xff}, std::byte{0xee}, std::byte{0xdd}, std::byte{0xcc},
+        std::byte{0xbb}, std::byte{0xaa}, std::byte{0x99}, std::byte{0x88},
+        std::byte{0x77}, std::byte{0x66}, std::byte{0x55}, std::byte{0x44},
+        std::byte{0x33}, std::byte{0x22}, std::byte{0x11}, std::byte{0x00}};
+    keyset.kc_material = {
+        std::byte{0x20}, std::byte{0x21}, std::byte{0x22}, std::byte{0x23},
+        std::byte{0x24}, std::byte{0x25}, std::byte{0x26}, std::byte{0x27}};
+    return keyset;
+}
+
 [[nodiscard]] constexpr KelfHeader synthetic_header() noexcept
 {
     KelfHeader header;
@@ -54,13 +77,13 @@ namespace ps2hdd::magicgate::known_vectors {
 }
 
 inline constexpr auto kSigningKeyset = synthetic_signing_keyset();
+inline constexpr auto kDiskKeyset = synthetic_disk_keyset();
+inline constexpr MagicGateKeyset kSyntheticKeyset{kDiskKeyset, kSigningKeyset};
 inline constexpr auto kHeader = synthetic_header();
+
 inline constexpr cipher::Block kExpectedHeaderSignature{
     std::byte{0x54}, std::byte{0x0f}, std::byte{0xb0}, std::byte{0x0a},
     std::byte{0x19}, std::byte{0x44}, std::byte{0x27}, std::byte{0x0b}};
-inline constexpr auto kHeaderSignature = header_signature(kHeader, kSigningKeyset);
-static_assert(kHeaderSignature.ok);
-static_assert(kHeaderSignature.value == kExpectedHeaderSignature);
 
 inline constexpr std::array<std::byte, 40> kPlainBitTable{
     std::byte{0x90}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
@@ -110,10 +133,6 @@ static_assert(kEncryptedBitTable == kExpectedEncryptedBitTable);
 inline constexpr cipher::Block kExpectedBitTableSignature{
     std::byte{0xf7}, std::byte{0x8e}, std::byte{0x13}, std::byte{0x62},
     std::byte{0x02}, std::byte{0x3e}, std::byte{0xef}, std::byte{0xcd}};
-inline constexpr auto kBitTableSignature = bit_table_signature(
-    kPlainBitTable, kSyntheticKbit, kSyntheticKc, kSigningKeyset);
-static_assert(kBitTableSignature.ok);
-static_assert(kBitTableSignature.value == kExpectedBitTableSignature);
 
 inline constexpr std::array<cipher::Block, 2> kSignedBlockSignatures{
     cipher::Block{
@@ -125,13 +144,6 @@ inline constexpr std::array<cipher::Block, 2> kSignedBlockSignatures{
 inline constexpr cipher::Block kExpectedRootSignature{
     std::byte{0xc2}, std::byte{0x55}, std::byte{0xcc}, std::byte{0x4a},
     std::byte{0x4d}, std::byte{0xd5}, std::byte{0x86}, std::byte{0x59}};
-inline constexpr auto kRootSignature = root_signature(
-    kExpectedHeaderSignature,
-    kExpectedBitTableSignature,
-    kSignedBlockSignatures,
-    kSigningKeyset);
-static_assert(kRootSignature.ok);
-static_assert(kRootSignature.value == kExpectedRootSignature);
 
 inline constexpr std::array<std::byte, 32> kPlainContent{
     std::byte{0x30}, std::byte{0x31}, std::byte{0x32}, std::byte{0x33},
@@ -148,14 +160,6 @@ inline constexpr cipher::Block kExpectedEncryptedStyleContentSignature{
 inline constexpr cipher::Block kExpectedPlainStyleContentSignature{
     std::byte{0xbe}, std::byte{0x16}, std::byte{0x82}, std::byte{0xe3},
     std::byte{0xbe}, std::byte{0x22}, std::byte{0xb6}, std::byte{0xca}};
-inline constexpr auto kEncryptedStyleContentSignature = content_block_signature(
-    kPlainContent, ContentSignatureMode::encrypted_signed, kSigningKeyset);
-inline constexpr auto kPlainStyleContentSignature = content_block_signature(
-    kPlainContent, ContentSignatureMode::plain_signed, kSigningKeyset);
-static_assert(kEncryptedStyleContentSignature.ok);
-static_assert(kPlainStyleContentSignature.ok);
-static_assert(kEncryptedStyleContentSignature.value == kExpectedEncryptedStyleContentSignature);
-static_assert(kPlainStyleContentSignature.value == kExpectedPlainStyleContentSignature);
 
 inline constexpr std::string_view kSyntheticKeysetText =
     "# DriveForge synthetic MagicGate regression keyset\n"
@@ -170,10 +174,10 @@ inline constexpr std::string_view kSyntheticKeysetText =
     "MG_ROOTSIG_HASH_KEY=0123456789abcdef23456789abcdef01\n"
     "MG_CONTENT_TABLE_IV=1011121314151617\n"
     "MG_CONTENT_IV=2021222324252627\n";
-inline constexpr auto kParsedSyntheticKeyset = parse_magicgate_keyset(kSyntheticKeysetText);
-static_assert(kParsedSyntheticKeyset.ok);
-static_assert(kParsedSyntheticKeyset.keyset.signing.signature_master == kSigningKeyset.signature_master);
-static_assert(kParsedSyntheticKeyset.keyset.signing.root_signature_hash == kSigningKeyset.root_signature_hash);
-static_assert(kParsedSyntheticKeyset.keyset.disk.kbit_material == kSigningKeyset.content_table_iv);
+
+// SignatureResult and KeysetParseResult intentionally contain diagnostic
+// strings. Their known-answer comparisons therefore live in runtime tests
+// instead of forcing library-specific constexpr std::string behavior. The
+// expected byte arrays above remain independent immutable vectors.
 
 } // namespace ps2hdd::magicgate::known_vectors
