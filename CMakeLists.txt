@@ -27,6 +27,9 @@ add_library(ps2driveforge_core
     src/core/writable_apa_volume.cpp
     src/core/write_transaction.cpp
     src/core/recovery_capsule.cpp
+    src/core/sha256.cpp
+    src/core/fhdb_rescue.cpp
+    src/core/apa_repair.cpp
     src/core/apa.cpp
     src/core/apa_allocation.cpp
     src/core/apa_hdl_headers.cpp
@@ -314,6 +317,16 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-recovery-capsule-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-recovery-capsule-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-recovery-capsule-tests COMMAND ps2-driveforge-recovery-capsule-tests)
+
+    add_executable(ps2-driveforge-fhdb-rescue-tests tests/fhdb_rescue_tests.cpp)
+    target_link_libraries(ps2-driveforge-fhdb-rescue-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-fhdb-rescue-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-fhdb-rescue-tests COMMAND ps2-driveforge-fhdb-rescue-tests)
+
+    add_executable(ps2-driveforge-apa-repair-tests tests/apa_repair_tests.cpp)
+    target_link_libraries(ps2-driveforge-apa-repair-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-apa-repair-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-apa-repair-tests COMMAND ps2-driveforge-apa-repair-tests)
 
     add_executable(ps2-driveforge-writable-apa-volume-tests tests/writable_apa_volume_tests.cpp)
     target_link_libraries(ps2-driveforge-writable-apa-volume-tests PRIVATE ps2driveforge_core)
