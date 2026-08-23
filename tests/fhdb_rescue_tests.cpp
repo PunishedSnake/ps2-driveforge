@@ -1,4 +1,5 @@
 #include "ps2hdd/fhdb_rescue.hpp"
+#include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/sha256.hpp"
 
 #include <algorithm>
@@ -52,14 +53,20 @@ std::uint32_t apa_checksum(std::span<const std::byte, 1024> header)
     return sum;
 }
 
-std::array<std::byte, 1024> make_standard_apa_header()
+std::array<std::byte, 1024> make_standard_apa_header(
+    std::uint32_t osd_start = 0x2000U,
+    std::uint32_t osd_sectors = 1U)
 {
     std::array<std::byte, 1024> header{};
     std::memcpy(header.data() + 0x004, "APA\0", 4);
     std::memcpy(header.data() + 0x010, "__mbr", 5);
+    // The master partition starts at LBA 0 and this synthetic fixture gives the
+    // reserved area enough room to cover the normal 0x2000 bootstrap location.
+    store_u32(header.data() + 0x040, 0);
+    store_u32(header.data() + 0x044, 0x4000U);
     std::memcpy(header.data() + 0x100, "Sony Computer Entertainment Inc.", 32);
-    store_u32(header.data() + 0x130, 0x2000U);
-    store_u32(header.data() + 0x134, 1U);
+    store_u32(header.data() + 0x130, osd_start);
+    store_u32(header.data() + 0x134, osd_sectors);
     store_u32(header.data(), apa_checksum(header));
     return header;
 }
@@ -80,6 +87,39 @@ std::vector<std::byte> make_sector_padded_kelf()
     }
     return payload;
 }
+
+class MemoryDisk final : public ps2hdd::BlockDevice {
+public:
+    explicit MemoryDisk(std::size_t bytes) : bytes_(bytes) {}
+
+    std::uint64_t size_bytes() const override { return bytes_.size(); }
+    std::string display_name() const override { return "fhdb-rescue-capture-fixture"; }
+
+    bool read(std::uint64_t offset, std::span<std::byte> out) override
+    {
+        if (offset > bytes_.size() || out.size() > bytes_.size() - static_cast<std::size_t>(offset)) {
+            return false;
+        }
+        std::memcpy(out.data(), bytes_.data() + static_cast<std::size_t>(offset), out.size());
+        return true;
+    }
+
+    void set_master(const std::array<std::byte, 1024>& master)
+    {
+        std::memcpy(bytes_.data(), master.data(), master.size());
+    }
+
+    void set_payload(std::uint32_t start_sector, std::span<const std::byte> payload)
+    {
+        const auto offset = static_cast<std::size_t>(start_sector) * 512U;
+        check(offset <= bytes_.size() && payload.size() <= bytes_.size() - offset,
+              "test payload must fit memory disk");
+        std::memcpy(bytes_.data() + offset, payload.data(), payload.size());
+    }
+
+private:
+    std::vector<std::byte> bytes_;
+};
 
 void test_sha256_vectors_from_bootstrap_manager()
 {
@@ -181,6 +221,60 @@ void test_complete_capsule_interop_and_kelf_validation()
           "payload corruption must be rejected by canonical SHA-256 validation");
 }
 
+void test_live_capture_reads_exact_published_payload()
+{
+    MemoryDisk disk(16U * 1024U * 1024U);
+    const auto master = make_standard_apa_header();
+    const auto payload = make_sector_padded_kelf();
+    disk.set_master(master);
+    disk.set_payload(0x2000U, payload);
+
+    ps2hdd::fhdb::RescueCaptureOptions options;
+    options.romver = "0220JC20060905";
+    options.family = "fixture";
+    options.confidence = "high";
+    const auto captured = ps2hdd::fhdb::capture_rescue_image(disk, options);
+    check(captured.ok, "live bootstrap capture should succeed for valid __mbr geometry");
+    check(captured.payload == payload, "capture must preserve the exact published payload sectors");
+    check(captured.info.payload_start == 0x2000U && captured.info.payload_sectors == 1U,
+          "capture must preserve live osdStart/osdSize");
+    check((captured.info.flags & ps2hdd::fhdb::kRescueFlagValidKelf) != 0,
+          "captured structural KELF should retain VALID_KELF evidence");
+    check(captured.info.family == "fixture" && captured.info.confidence == "high",
+          "capture diagnostics should be copied without affecting geometry");
+}
+
+void test_live_capture_supports_header_only_bootstrap_state()
+{
+    MemoryDisk disk(16U * 1024U * 1024U);
+    disk.set_master(make_standard_apa_header(0, 0));
+
+    const auto captured = ps2hdd::fhdb::capture_rescue_image(disk);
+    check(captured.ok, "zero/zero OSD pointer should produce a valid header-only capsule");
+    check(captured.payload.empty(), "header-only capture must not invent payload bytes");
+    check(captured.info.flags == ps2hdd::fhdb::kRescueFlagValidApa,
+          "header-only capture should contain only VALID_APA");
+}
+
+void test_live_capture_rejects_ambiguous_or_out_of_range_pointer()
+{
+    MemoryDisk half_pointer(16U * 1024U * 1024U);
+    half_pointer.set_master(make_standard_apa_header(0x2000U, 0));
+    check(!ps2hdd::fhdb::capture_rescue_image(half_pointer).ok,
+          "half-empty OSD pointer must be rejected");
+
+    MemoryDisk before_program_area(16U * 1024U * 1024U);
+    before_program_area.set_master(make_standard_apa_header(0x1000U, 1));
+    check(!ps2hdd::fhdb::capture_rescue_image(before_program_area).ok,
+          "payload before reserved __mbr program area must be rejected");
+
+    MemoryDisk too_large(16U * 1024U * 1024U);
+    too_large.set_master(make_standard_apa_header(
+        0x2000U, ps2hdd::fhdb::kBootstrapPayloadMaxBytes / 512U + 1U));
+    check(!ps2hdd::fhdb::capture_rescue_image(too_large).ok,
+          "payload above FHDB 4 MiB limit must be rejected before read");
+}
+
 void test_canonical_rejections()
 {
     ps2hdd::fhdb::RescueCapsuleInfo info;
@@ -210,6 +304,9 @@ int main()
         test_exact_v1_metadata_layout();
         test_same_disk_identity_policy();
         test_complete_capsule_interop_and_kelf_validation();
+        test_live_capture_reads_exact_published_payload();
+        test_live_capture_supports_header_only_bootstrap_state();
+        test_live_capture_rejects_ambiguous_or_out_of_range_pointer();
         test_canonical_rejections();
         std::cout << "FHDB rescue interoperability tests passed\n";
         return 0;
