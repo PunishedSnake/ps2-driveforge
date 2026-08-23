@@ -144,6 +144,11 @@ MetadataBuildResult build_install_metadata(const apa::AllocationPlan& allocation
         result.payload_extents.clear();
         return result;
     }
+    if (result.payload_extents.size() != allocation.extents.size()) {
+        result.error = "HDL allocation contains an unused main/sub extent without a DEADFEED entry";
+        result.payload_extents.clear();
+        return result;
+    }
     result.metadata[kPartCountOffset] =
         static_cast<std::byte>(result.payload_extents.size());
 
