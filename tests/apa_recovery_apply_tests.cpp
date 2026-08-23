@@ -156,11 +156,14 @@ void test_forensic_repair_saves_artifacts_and_writes_master_last()
 {
     SparseWritableDisk disk(0x100000);
     auto master = make_master(0x80000, 0x40000);
-    // Corrupt master's prev while retaining its old checksum. Geometry/reverse
-    // evidence can reconstruct it, giving us a two-header plan that proves LBA0-last.
+    // Two physical link corruptions retain the original checksums. The still
+    // valid master->A link, B->A reciprocal link and geometry reconstruct the
+    // same M,A,B chain, while each exact correction restores its stale checksum.
+    // This produces two corroborated automatic patches and exercises LBA0-last.
     store_u32(master.data() + 0x00c, 0x90000);
     disk.put(0, master);
-    auto a = make_header(0x40000, 0x40000, 0, 0x90000, "A", 0x0100);
+    auto a = make_header(0x40000, 0x40000, 0, 0x80000, "A", 0x0100);
+    store_u32(a.data() + 0x008, 0x90000); // do NOT recompute checksum
     disk.put(0x40000, a);
     disk.put(0x80000, make_header(0x80000, 0x40000, 0x40000, 0, "B", 0x0100));
 
@@ -177,6 +180,8 @@ void test_forensic_repair_saves_artifacts_and_writes_master_last()
         }
     }
     check(selected < scan.maps.size(), "fixture should produce automatic multi-header repair plan");
+    check(plan.corroborated_count == plan.patches.size() && plan.speculative_count == 0,
+          "automatic multi-header fixture must be checksum-corroborated, not heuristic");
 
     const auto root = temp_root("forensic");
     const auto result = ps2hdd::recovery::repair_forensic_topology(disk, scan, plan, root);
