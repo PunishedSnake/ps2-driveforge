@@ -129,3 +129,5 @@ jobs:
           name: PS2-DriveForge-0.5.0-Emilia-WinUI-x64
           path: src/winui/x64/Release/**
           if-no-files-found: error
+
+          retention-days: 3
