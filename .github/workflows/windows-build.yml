@@ -154,3 +154,5 @@ jobs:
             dist/PS2-DriveForge-0.5.0-Emilia-Portable-x64.zip
             dist/PS2-DriveForge-0.5.0-Emilia-Setup-x64.exe
           if-no-files-found: error
+
+          retention-days: 3
