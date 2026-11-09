@@ -1326,12 +1326,12 @@ public:
             message(L"This does not look like a PS2 game image:\n\n" + widen(info.error), MB_ICONERROR);
             return;
         }
-        const bool small = info.game.image_bytes <= 750ULL * 1024ULL * 1024ULL;
+        const bool cd_sized = info.game.image_bytes <= 750ULL * 1024ULL * 1024ULL;
         const auto media = MessageBoxW(window_,
             (L"Install " + iso_path.filename().wstring() + L" [" + widen(info.game.startup) + L"] (" +
              format_bytes(info.game.image_bytes) + L") into this disk image?\n\n"
-             L"Yes: install as DVD\nNo: install as CD\n\nSuggested: " + (small ? L"CD" : L"DVD")).c_str(),
-            L"PS2 DriveForge - install game", MB_YESNOCANCEL | MB_ICONQUESTION | (small ? MB_DEFBUTTON2 : MB_DEFBUTTON1));
+             L"Yes: install as DVD\nNo: install as CD\n\nSuggested: " + (cd_sized ? L"CD" : L"DVD")).c_str(),
+            L"PS2 DriveForge - install game", MB_YESNOCANCEL | MB_ICONQUESTION | (cd_sized ? MB_DEFBUTTON2 : MB_DEFBUTTON1));
         if (media == IDCANCEL) return;
 
         ps2hdd::ImageGameDeployOptions options;
