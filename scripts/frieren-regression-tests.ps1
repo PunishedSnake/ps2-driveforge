@@ -39,6 +39,8 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-fhdb-rescue-tests.exe',
     'ps2-driveforge-fhdb-artifacts-tests.exe',
     'ps2-driveforge-fhdb-restore-tests.exe',
+    'ps2-driveforge-structure-health-tests.exe',
+    'ps2-driveforge-recovery-service-tests.exe',
     'ps2-driveforge-apa-repair-tests.exe',
     'ps2-driveforge-apa-forensic-tests.exe',
     'ps2-driveforge-apa-recovery-apply-tests.exe',

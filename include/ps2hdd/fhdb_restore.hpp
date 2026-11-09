@@ -78,6 +78,35 @@ struct BootstrapRestoreResult {
     const BootstrapRestorePlan& plan,
     const std::filesystem::path& safety_directory);
 
+struct BootstrapDisableResult {
+    bool ok{};
+    bool already_disabled{};   // pointer was 0/0; nothing was written
+    bool partial{};
+    bool rollback_attempted{};
+    bool rollback_ok{};
+    std::string error;
+    std::string warning;
+    std::uint32_t previous_start{};
+    std::uint32_t previous_sectors{};
+    std::filesystem::path hddmbr_path;      // mandatory, saved before any write
+    std::filesystem::path rescue_path;      // best effort; empty when capture refused
+    std::array<std::byte, kRescueApaHeaderBytes> source_master{};
+    bool pointer_cleared{};
+    bool final_apa_verified{};
+};
+
+// FHDB Manager "disable active bootstrap" parity: persist HDDMBR (mandatory)
+// and, independently, try a full Rescue Capsule of whatever the pointer
+// currently publishes; then clear only osdStart/osdSize, recompute the APA
+// checksum, flush, read back exactly and run a normal APA parse. Partitions,
+// games and the payload sectors themselves are untouched, so the pointer can be
+// restored later from HDDMBR/HDDRESCUE. A broken or half-written bootstrap is
+// the main reason this exists, which is why a failed rescue capture never
+// blocks it.
+[[nodiscard]] BootstrapDisableResult disable_bootstrap(
+    WritableBlockDevice& disk,
+    const std::filesystem::path& safety_directory);
+
 [[nodiscard]] BootstrapRestoreResult restore_bootstrap_from_directory_to_image(
     WritableBlockDevice& disk,
     const std::filesystem::path& artifact_directory,

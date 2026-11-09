@@ -300,6 +300,30 @@ bool is_hybrid_gpt_master(
            header[kPcMbrSignatureOffset + 1] == std::byte{0xaa};
 }
 
+bool is_apa_jail_master(
+    std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept
+{
+    constexpr std::size_t kJailSignature = 0xe0;
+    constexpr std::size_t kTable = 0x1be;
+    if (!is_hybrid_gpt_master(header) ||
+        std::memcmp(header.data() + kJailSignature, "APAJ-", 5) != 0) {
+        return false;
+    }
+    bool apa_entry = false;
+    for (std::size_t entry = 0; entry < 4; ++entry) {
+        const auto type = std::to_integer<unsigned char>(header[kTable + entry * 16 + 4]);
+        if (type == 0xee) return false;
+        if (type == 0x17) apa_entry = true;
+    }
+    return apa_entry;
+}
+
+bool is_pc_owned_master(
+    std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept
+{
+    return is_hybrid_gpt_master(header) && !is_apa_jail_master(header);
+}
+
 bool same_disk_identity(
     std::span<const std::byte, kRescueApaHeaderBytes> current,
     std::span<const std::byte, kRescueApaHeaderBytes> saved) noexcept

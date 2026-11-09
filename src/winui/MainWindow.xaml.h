@@ -4,7 +4,7 @@
 #include "MainWindow.g.h"
 #include "NativeSessionController.hpp"
 #include "WinUIBootstrapProvider.hpp"
-#include "WinUIRecoveryActions.hpp"
+#include "ps2hdd/recovery_service.hpp"
 
 #include <commdlg.h>
 
@@ -20,6 +20,18 @@
 
 namespace winrt::PS2DriveForge::WinUI::implementation
 {
+// UTF-8 -> UTF-16 for core error/summary strings (paths and game titles may be
+// non-ASCII; byte-wise widening would mangle them).
+inline std::wstring widen_text(std::string_view text)
+{
+    if (text.empty()) return {};
+    const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (count <= 0) return std::wstring(text.begin(), text.end());
+    std::wstring out(static_cast<std::size_t>(count), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), count);
+    return out;
+}
+
 struct MainWindow : MainWindowT<MainWindow>
 {
     MainWindow();
@@ -55,125 +67,171 @@ struct MainWindow : MainWindowT<MainWindow>
         start_hdl_metadata_prepare(true);
     }
 
+    [[nodiscard]] ps2hdd::recovery_service::Source recovery_source() const
+    {
+        ps2hdd::recovery_service::Source source;
+        source.physical = current_physical_;
+        if (!current_physical_) source.image = current_image_;
+        return source;
+    }
+
+    // Every recovery action runs off the UI thread, then reopens the read-only
+    // session (when it wrote) so the catalog never shows pre-repair caches.
+    void run_recovery(std::wstring title, bool writes,
+                      std::function<ps2hdd::recovery_service::Outcome()> action)
+    {
+        if (mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        set_status(title + L"...");
+        RecoveryHealthText().Text(title + L" running...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, title, writes, action = std::move(action)](std::stop_token) {
+            auto outcome = action();
+            dispatcher.TryEnqueue([weak, title, writes, outcome = std::move(outcome)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                std::wstring text = widen_text(outcome.ok ? outcome.summary : outcome.error);
+                if (!outcome.warning.empty()) text += L"\n" + widen_text(outcome.warning);
+                for (const auto& artifact : outcome.artifacts) text += L"\n" + artifact.wstring();
+                if (!outcome.ok) {
+                    self->RecoveryHealthText().Text(title + L" failed" + (outcome.partial ? L" (partially applied)" : L"") + L"\n" + text);
+                    self->show_error(title, text);
+                    return;
+                }
+                if (writes && !outcome.nothing_to_do) {
+                    std::string reopen_error;
+                    const bool reopened = self->current_physical_
+                        ? self->controller_.open_physical(*self->current_physical_, reopen_error)
+                        : self->controller_.open_image(self->current_image_, reopen_error);
+                    if (!reopened) text += L"\nCommitted, but the read-only session could not reopen: " + widen_text(reopen_error);
+                    self->refresh_all_from_snapshot();
+                    self->refresh_hdl_tools();
+                }
+                self->RecoveryHealthText().Text(text);
+                self->show_recovery_success(title, text);
+                self->set_status(title + L" complete");
+            });
+        });
+    }
+
+    void confirm_recovery_action(std::wstring_view action, std::function<void()> continuation)
+    {
+        if (current_physical_) {
+            confirm_physical_action(action, std::move(continuation));
+            return;
+        }
+        Microsoft::UI::Xaml::Controls::ContentDialog dialog;
+        dialog.XamlRoot(RootGrid().XamlRoot());
+        dialog.Title(winrt::box_value(winrt::hstring(std::wstring(action))));
+        dialog.Content(winrt::box_value(winrt::hstring(
+            L"This writes to " + current_image_.filename().wstring() +
+            L". Safety artifacts are saved to the chosen directory first.")));
+        dialog.PrimaryButtonText(L"Apply to image");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(Microsoft::UI::Xaml::Controls::ContentDialogButton::Close);
+        auto weak = get_weak();
+        dialog.ShowAsync().Completed([weak, continuation = std::move(continuation)](auto const& async, Windows::Foundation::AsyncStatus status) {
+            if (status != Windows::Foundation::AsyncStatus::Completed ||
+                async.GetResults() != Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary) return;
+            if (weak.get()) continuation();
+        });
+    }
+
+    [[nodiscard]] bool recovery_ready(std::wstring_view title, bool needs_directory)
+    {
+        if (mutation_busy_.load()) return false;
+        if (!current_physical_ && current_image_.empty()) {
+            show_error(title, L"Open a PS2 HDD or disk image first.");
+            return false;
+        }
+        if (needs_directory && hdl_artifact_directory_.empty()) {
+            show_error(title, L"Choose a safety/artifact directory first (HDL Tools > Advanced).");
+            return false;
+        }
+        return true;
+    }
+
+    void on_health_check(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Structure health", false) || mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        RecoveryHealthText().Text(L"Checking APA master, chain and bootstrap pointer (read-only)...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, source = recovery_source()](std::stop_token) {
+            auto health = ps2hdd::recovery_service::assess(source);
+            dispatcher.TryEnqueue([weak, health = std::move(health)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                self->RecoveryHealthText().Text(widen_text(health.ok ? health.text : health.error));
+                self->set_status(health.ok ? L"Structure health: " + widen_text(ps2hdd::health::verdict_name(health.report.verdict))
+                                           : std::wstring(L"Structure health check failed"));
+            });
+        });
+    }
+
     void on_capture_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        if (mutation_busy_.load()) return;
-        if (!current_physical_) {
-            show_error(L"Create Rescue Capsule", L"Open a physical PS2 HDD first. Disk images do not have a live FHDB bootstrap pointer to capture.");
-            return;
-        }
-        if (hdl_artifact_directory_.empty()) {
-            show_error(L"Create Rescue Capsule", L"Choose a safety/artifact directory first.");
-            return;
-        }
-        const auto result = controller_.capture_rescue_capsule(hdl_artifact_directory_);
-        if (!result.ok) {
-            show_error(L"Create Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
-            return;
-        }
-        show_recovery_success(L"Rescue Capsule created", result.artifact_path.wstring());
-        set_status(L"Canonical PS2HBRC Rescue Capsule captured read-only");
+        if (!recovery_ready(L"Create Rescue Capsule", true)) return;
+        run_recovery(L"Create Rescue Capsule", false,
+                     [source = recovery_source(), dir = hdl_artifact_directory_] {
+                         return ps2hdd::recovery_service::capture_rescue(source, dir);
+                     });
     }
 
     void on_restore_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        if (mutation_busy_.load()) return;
-        if (!current_physical_) {
-            show_error(L"Restore Rescue Capsule", L"Bootstrap restore is available only for a physical PS2 HDD.");
-            return;
-        }
-        if (hdl_artifact_directory_.empty()) {
-            show_error(L"Restore Rescue Capsule", L"Choose the directory containing HDDRESCUE/HDDMBR/FHDBMBR inputs first.");
-            return;
-        }
-        confirm_physical_action(L"restore bootstrap/recovery artifacts", [this] {
-            mutation_busy_.store(true);
-            const auto result = controller_.restore_bootstrap(hdl_artifact_directory_, hdl_artifact_directory_, true);
-            mutation_busy_.store(false);
-            if (!result.ok) {
-                show_error(L"Restore Rescue Capsule", std::wstring(result.error.begin(), result.error.end()));
-                return;
-            }
-            show_recovery_success(
-                L"Bootstrap restored",
-                result.cold_payload_verified
-                    ? L"Payload and master pointer were cold-verified through a fresh read-only PhysicalDrive."
-                    : L"Master pointer was cold-verified through a fresh read-only PhysicalDrive.");
-            refresh_all_from_snapshot();
-            refresh_hdl_tools();
-            set_status(L"Bootstrap recovery completed and cold-verified");
+        if (!recovery_ready(L"Restore bootstrap", true)) return;
+        confirm_recovery_action(L"Restore bootstrap from HDDRESCUE / HDDMBR", [this] {
+            run_recovery(L"Restore bootstrap", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::restore_bootstrap(source, dir, dir / L"pre-restore");
+                         });
+        });
+    }
+
+    void on_disable_bootstrap(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Disable bootstrap", true)) return;
+        confirm_recovery_action(L"Disable HDD bootstrap (only the MBR program pointer is cleared)", [this] {
+            run_recovery(L"Disable bootstrap", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::disable_bootstrap(source, dir);
+                         });
         });
     }
 
     void on_forensic_analyze(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        if (!current_physical_) {
-            show_error(L"Forensic APA analysis", L"Open a physical PS2 HDD first.");
-            return;
-        }
-        if (hdl_artifact_directory_.empty()) {
-            show_error(L"Forensic APA analysis", L"Choose a safety/artifact directory first.");
-            return;
-        }
-        const auto result = ps2df::winui::analyze_physical_apa(*current_physical_, hdl_artifact_directory_);
-        if (!result.ok) {
-            show_error(L"Forensic APA analysis", std::wstring(result.error.begin(), result.error.end()));
-            return;
-        }
-        std::wstring message = L"FORENSIC.TXT: " + result.report_path.wstring();
-        if (result.automatic_safe) message += L"\nAutomatic-safe topology repair evidence is available.";
-        else message += L"\nNo automatic-safe topology repair was found; no write is offered.";
-        show_recovery_success(L"Forensic analysis complete", message);
-        set_status(L"Forensic APA analysis completed read-only");
+        if (!recovery_ready(L"Forensic APA analysis", true)) return;
+        run_recovery(L"Forensic APA analysis", false,
+                     [source = recovery_source(), dir = hdl_artifact_directory_] {
+                         return ps2hdd::recovery_service::forensic_report(source, dir);
+                     });
     }
 
     void on_repair_master(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        if (!current_physical_ || hdl_artifact_directory_.empty()) {
-            show_error(L"Repair APA master", L"Open a physical PS2 HDD and choose a safety/artifact directory first.");
-            return;
-        }
-        confirm_physical_action(L"apply conservative APA master repair", [this] {
-            mutation_busy_.store(true);
-            const auto result = ps2df::winui::repair_physical_master(*current_physical_, hdl_artifact_directory_);
-            mutation_busy_.store(false);
-            if (!result.ok) {
-                show_error(L"Repair APA master", std::wstring(result.error.begin(), result.error.end()));
-                return;
-            }
-            show_recovery_success(L"APA master repaired", L"The conservative repair was cold-verified through a fresh read-only scan.");
-            std::string reopen_error;
-            if (!controller_.open_physical(*current_physical_, reopen_error)) {
-                show_error(L"Repair APA master", L"Repair committed, but the WinUI read-only session could not reopen the disk.");
-                return;
-            }
-            refresh_all_from_snapshot();
-            refresh_hdl_tools();
+        if (!recovery_ready(L"Repair APA master", true)) return;
+        confirm_recovery_action(L"Apply conservative APA master repair", [this] {
+            run_recovery(L"Repair APA master", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::repair_master(source, dir);
+                         });
         });
     }
 
     void on_repair_forensic(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
-        if (!current_physical_ || hdl_artifact_directory_.empty()) {
-            show_error(L"Forensic APA repair", L"Open a physical PS2 HDD and choose a safety/artifact directory first.");
-            return;
-        }
-        confirm_physical_action(L"apply automatic-safe forensic APA topology repair", [this] {
-            mutation_busy_.store(true);
-            const auto result = ps2df::winui::repair_physical_apa_automatic(*current_physical_, hdl_artifact_directory_);
-            mutation_busy_.store(false);
-            if (!result.ok) {
-                show_error(L"Forensic APA repair", std::wstring(result.error.begin(), result.error.end()));
-                return;
-            }
-            show_recovery_success(L"Forensic APA repair complete", L"Only an automatic-safe evidence map was accepted; touched headers and the final APA scan were cold-verified.");
-            std::string reopen_error;
-            if (!controller_.open_physical(*current_physical_, reopen_error)) {
-                show_error(L"Forensic APA repair", L"Repair committed, but the WinUI read-only session could not reopen the disk.");
-                return;
-            }
-            refresh_all_from_snapshot();
-            refresh_hdl_tools();
+        if (!recovery_ready(L"Forensic APA repair", true)) return;
+        confirm_recovery_action(L"Apply automatic-safe forensic APA topology repair", [this] {
+            run_recovery(L"Forensic APA repair", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::repair_forensic_automatic(source, dir);
+                         });
         });
     }
 
@@ -546,6 +604,7 @@ private:
     std::jthread iso_export_thread_;
     std::jthread opl_sync_thread_;
     std::jthread bdm_thread_;
+    std::jthread recovery_thread_;
     std::atomic_bool bdm_busy_{false};
     std::filesystem::path bdm_root_;
     void set_bdm_root(const std::filesystem::path& root);

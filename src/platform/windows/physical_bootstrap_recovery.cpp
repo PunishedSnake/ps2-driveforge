@@ -276,6 +276,77 @@ PhysicalBootstrapInstallResult install_bootstrap_to_physical(
     return result;
 }
 
+PhysicalBootstrapDisableResult disable_bootstrap_on_physical(
+    unsigned physical_drive_index,
+    const std::filesystem::path& safety_directory,
+    bool lock_mounted_volumes,
+    bool dismount_locked_volumes)
+{
+    PhysicalBootstrapDisableResult result;
+    if (safety_directory.empty()) {
+        result.error = "Disabling the bootstrap requires a host-side safety directory";
+        return result;
+    }
+    PhysicalDrive read_only(physical_drive_index);
+    if (!read_only.is_open()) {
+        result.error = "Could not open the selected PhysicalDrive read-only before bootstrap disable";
+        return result;
+    }
+    std::array<std::byte, fhdb::kRescueApaHeaderBytes> before{};
+    if (!read_only.read(0, before)) {
+        result.error = "Could not read the APA master before bootstrap disable";
+        return result;
+    }
+    if (load_u32(before.data() + kApaOsdStartOffset) == 0 && load_u32(before.data() + kApaOsdSizeOffset) == 0) {
+        result.disable.already_disabled = true;
+        result.disable.ok = true;
+        result.ok = true;
+        return result;
+    }
+    const auto authorization = physical_write::authorize(read_only);
+    if (!authorization.ok) {
+        result.error = "Physical bootstrap disable admission failed: " + authorization.error;
+        return result;
+    }
+    {
+        WritablePhysicalDriveOptions writable_options;
+        writable_options.authorization = authorization.authorization;
+        writable_options.lock_mounted_volumes = lock_mounted_volumes;
+        writable_options.dismount_locked_volumes = dismount_locked_volumes;
+        WritablePhysicalDrive writable(physical_drive_index, writable_options);
+        if (!writable.is_open()) {
+            result.error = "Could not acquire guarded bootstrap disable lease: " + writable.admission_error();
+            return result;
+        }
+        result.locked_volume_count = writable.locked_volume_count();
+        result.disable = fhdb::disable_bootstrap(writable, safety_directory);
+        if (!result.disable.ok) {
+            result.partial = result.disable.partial;
+            result.error = "Physical bootstrap disable failed: " + result.disable.error;
+            return result;
+        }
+    }
+
+    PhysicalDrive cold(physical_drive_index);
+    std::array<std::byte, fhdb::kRescueApaHeaderBytes> master{};
+    if (!cold.is_open() || !cold.read(0, master) || !fhdb::is_standard_apa_master(master) ||
+        !fhdb::same_disk_identity(master, result.disable.source_master) ||
+        load_u32(master.data() + kApaOsdStartOffset) != 0 || load_u32(master.data() + kApaOsdSizeOffset) != 0) {
+        result.partial = true;
+        result.error = "Bootstrap pointer was cleared, but cold read-only verification of the APA master failed";
+        return result;
+    }
+    apa::Reader reader(cold);
+    if (!reader.scan().ok()) {
+        result.partial = true;
+        result.error = "Bootstrap pointer was cleared, but the cold APA chain failed verification";
+        return result;
+    }
+    result.cold_master_verified = true;
+    result.ok = true;
+    return result;
+}
+
 } // namespace ps2hdd
 
 #endif

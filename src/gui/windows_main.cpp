@@ -4,6 +4,7 @@
 
 #include "ps2hdd/bdm_library.hpp"
 #include "ps2hdd/drive_session.hpp"
+#include "ps2hdd/recovery_service.hpp"
 #include "ps2hdd/windows_partition_volume.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/apa_remove.hpp"
@@ -73,6 +74,13 @@ constexpr UINT kIdBdmInstall = 118;
 constexpr UINT kIdBdmScan = 119;
 constexpr UINT kIdBdmSync = 120;
 constexpr UINT kIdBdmChooseRoot = 121;
+constexpr UINT kIdRecoveryHealth = 122;
+constexpr UINT kIdRecoveryCapture = 123;
+constexpr UINT kIdRecoveryForensic = 124;
+constexpr UINT kIdRecoveryRepairMaster = 125;
+constexpr UINT kIdRecoveryRepairTopology = 126;
+constexpr UINT kIdRecoveryDisable = 127;
+constexpr UINT kIdRecoveryRestore = 128;
 constexpr UINT kIdPhysicalBase = 300;
 constexpr UINT kMaxPhysicalMenuEntries = 512;
 constexpr UINT kMountTimerId = 1;
@@ -634,6 +642,13 @@ private:
         EnableMenuItem(menu, kIdDeleteGame, MF_BYCOMMAND | (image_writable && hdl_selected ? MF_ENABLED : MF_GRAYED));
         for (const UINT id : {kIdBdmInstall, kIdBdmScan, kIdBdmSync, kIdBdmChooseRoot})
             EnableMenuItem(menu, id, MF_BYCOMMAND | (!job_running_ ? MF_ENABLED : MF_GRAYED));
+        const bool has_source = (current_image_.has_value() || current_physical_.has_value()) && !job_running_;
+        for (const UINT id : {kIdRecoveryHealth, kIdRecoveryCapture, kIdRecoveryForensic})
+            EnableMenuItem(menu, id, MF_BYCOMMAND | (has_source ? MF_ENABLED : MF_GRAYED));
+        // Physical recovery writes stay in WinUI (typed PhysicalDriveN gate);
+        // the items stay enabled so the click can say where to go.
+        for (const UINT id : {kIdRecoveryRepairMaster, kIdRecoveryRepairTopology, kIdRecoveryDisable, kIdRecoveryRestore})
+            EnableMenuItem(menu, id, MF_BYCOMMAND | (has_source && !mount_active() ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdRestartElevated, MF_BYCOMMAND |
                        (!ps2driveforge::gui::is_process_elevated() ? MF_ENABLED : MF_GRAYED));
         DrawMenuBar(window_);
@@ -1365,6 +1380,86 @@ public:
         reopen_after_job_ = true;
     }
 
+    // ---- Recovery (FHDB Manager parity) ----------------------------------------
+    [[nodiscard]] ps2hdd::recovery_service::Source recovery_source() const
+    {
+        ps2hdd::recovery_service::Source source;
+        source.physical = current_physical_;
+        if (!current_physical_ && current_image_) source.image = *current_image_;
+        return source;
+    }
+
+    void recovery_health()
+    {
+        const auto source = recovery_source();
+        if (job_running_ || !source.valid()) return;
+        begin_job();
+        set_status(L"Checking structure health (read-only)...");
+        job_thread_ = std::jthread([this, source](std::stop_token) {
+            const auto health = ps2hdd::recovery_service::assess(source);
+            if (!health.ok) {
+                post_done(false, L"Health check failed:\n\n" + widen(health.error));
+                return;
+            }
+            post_done(health.report.verdict == ps2hdd::health::Verdict::healthy,
+                      widen(source.name()) + L"\n\n" + widen(health.text));
+        });
+    }
+
+    void recovery_action(UINT id)
+    {
+        const auto source = recovery_source();
+        if (job_running_ || !source.valid()) return;
+        const bool writes = id != kIdRecoveryCapture && id != kIdRecoveryForensic;
+        if (writes && source.physical) {
+            message(L"Recovery writes to a physical PS2 HDD require the typed PhysicalDriveN confirmation in the modern (WinUI) frontend.\n\n"
+                    L"Open PS2-DriveForge.exe without --legacy, then HDL Tools > Advanced > FHDB and APA recovery. "
+                    L"Health checks, Rescue Capsules and forensic reports work here read-only.",
+                    MB_ICONINFORMATION);
+            return;
+        }
+        if (writes && mount_active()) {
+            message(L"Unmount the volume first: only one writer may own the image.", MB_ICONINFORMATION);
+            return;
+        }
+        const auto directory = pick_folder(id == kIdRecoveryRestore
+            ? L"Folder that holds HDDRESCUE.BIN / HDDMBR.BIN (a pre-restore backup goes into a subfolder)"
+            : L"Safety / artifact folder (HDDMBR, HDDRAW, HDDMETA, HDDRESCUE, FORENSIC.TXT)");
+        if (!directory) return;
+        if (writes) {
+            const wchar_t* what = id == kIdRecoveryRepairMaster ? L"repair the APA master (sectors 0-1)"
+                                : id == kIdRecoveryRepairTopology ? L"apply the automatic-safe APA topology repair"
+                                : id == kIdRecoveryDisable ? L"clear the HDD bootstrap pointer (partitions and games are not touched)"
+                                                           : L"restore the HDD bootstrap pointer";
+            if (MessageBoxW(window_, (L"DriveForge will " + std::wstring(what) + L" in\n\n" + current_image_->wstring() +
+                                     L"\n\nSafety artifacts are saved to the chosen folder first. Continue?").c_str(),
+                            L"PS2 DriveForge - recovery", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK) {
+                return;
+            }
+        }
+        const auto dir = *directory;
+        begin_job();
+        set_status(L"Recovery job running...");
+        job_thread_ = std::jthread([this, id, source, dir](std::stop_token) {
+            namespace rs = ps2hdd::recovery_service;
+            rs::Outcome outcome;
+            switch (id) {
+            case kIdRecoveryCapture: outcome = rs::capture_rescue(source, dir); break;
+            case kIdRecoveryForensic: outcome = rs::forensic_report(source, dir); break;
+            case kIdRecoveryRepairMaster: outcome = rs::repair_master(source, dir); break;
+            case kIdRecoveryRepairTopology: outcome = rs::repair_forensic_automatic(source, dir); break;
+            case kIdRecoveryDisable: outcome = rs::disable_bootstrap(source, dir); break;
+            default: outcome = rs::restore_bootstrap(source, dir, dir / L"pre-restore"); break;
+            }
+            std::wstring text = widen(outcome.ok ? outcome.summary : outcome.error);
+            if (outcome.partial) text += L"\n\nThe operation was PARTIALLY applied. Keep the safety artifacts.";
+            if (!outcome.warning.empty()) text += L"\n\n" + widen(outcome.warning);
+            for (const auto& artifact : outcome.artifacts) text += L"\n" + artifact.wstring();
+            post_done(outcome.ok, text);
+        });
+        if (writes) reopen_after_job_ = true;
+    }
+
     // ---- exFAT / BDM library (APA-Jail exFAT side, USB, MX4SIO) -------------
     // Windows owns the exFAT filesystem; DriveForge only finds the volume and
     // writes through the normal filesystem with OPL naming + preallocation.
@@ -1636,6 +1731,18 @@ HMENU create_menu()
     AppendMenuW(games, MF_POPUP, reinterpret_cast<UINT_PTR>(bdm), L"exFAT / &BDM library (APA-Jail, USB, MX4SIO)");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(games), L"&Games");
 
+    HMENU recovery = CreatePopupMenu();
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryHealth, L"Check structure &health (read-only)");
+    AppendMenuW(recovery, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryCapture, L"Create &Rescue Capsule...");
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryForensic, L"&Forensic APA analysis (FORENSIC.TXT)...");
+    AppendMenuW(recovery, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryRepairMaster, L"Repair APA &master (image)...");
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryRepairTopology, L"Apply automatic-safe &topology repair (image)...");
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryDisable, L"&Disable bootstrap (image)...");
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryRestore, L"Restore &bootstrap from HDDRESCUE/HDDMBR (image)...");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(recovery), L"&Recovery");
+
     HMENU view = CreatePopupMenu();
     HMENU theme = CreatePopupMenu();
     AppendMenuW(theme, MF_STRING, kIdThemeSystem, L"&System");
@@ -1747,6 +1854,17 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             return 0;
         case kIdDeleteGame:
             app->delete_game();
+            return 0;
+        case kIdRecoveryHealth:
+            app->recovery_health();
+            return 0;
+        case kIdRecoveryCapture:
+        case kIdRecoveryForensic:
+        case kIdRecoveryRepairMaster:
+        case kIdRecoveryRepairTopology:
+        case kIdRecoveryDisable:
+        case kIdRecoveryRestore:
+            app->recovery_action(LOWORD(wparam));
             return 0;
         case kIdBdmChooseRoot:
             app->choose_bdm_root(true);

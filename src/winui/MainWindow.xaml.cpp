@@ -285,6 +285,7 @@ MainWindow::~MainWindow()
     if (export_thread_.joinable()) export_thread_.request_stop();
     if (mutation_thread_.joinable()) mutation_thread_.request_stop();
     if (bdm_thread_.joinable()) bdm_thread_.request_stop();
+    if (recovery_thread_.joinable()) recovery_thread_.request_stop();
     if (mount_process_) CloseHandle(mount_process_);
 }
 

@@ -64,6 +64,18 @@ encode_rescue_metadata(const RescueCapsuleInfo& info);
     std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
 [[nodiscard]] bool is_hybrid_gpt_master(
     std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
+// Signed APA-Jail hybrid (PSBBN Definitive Project): "APAJ-" at 0xE0, a 0x55AA
+// PC MBR table at 0x1BE and no 0xEE protective entry. Its PC table lives inside
+// the APA checksum and is preserved byte-for-byte by pointer-only writes, so it
+// is APA-owned for bootstrap pointer work. FHDB Manager on the console still
+// refuses these masters; DriveForge accepts them only for capture, restore and
+// disable, never for master field repair.
+[[nodiscard]] bool is_apa_jail_master(
+    std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
+// True when sector zero carries PC partition-map ownership that bootstrap
+// pointer writes must refuse (any 0x55AA master that is not a signed jail).
+[[nodiscard]] bool is_pc_owned_master(
+    std::span<const std::byte, kRescueApaHeaderBytes> header) noexcept;
 
 // Disk identity deliberately ignores the APA checksum and osdStart/osdSize.
 // Those fields are expected to change during bootstrap recovery. Everything

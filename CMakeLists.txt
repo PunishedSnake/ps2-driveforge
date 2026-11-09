@@ -33,6 +33,7 @@ add_library(ps2driveforge_core
     src/core/fhdb_rescue_capture.cpp
     src/core/fhdb_artifacts.cpp
     src/core/fhdb_restore.cpp
+    src/core/structure_health.cpp
     src/core/apa_repair.cpp
     src/core/apa_forensic.cpp
     src/core/apa_recovery_apply.cpp
@@ -102,6 +103,7 @@ add_library(ps2driveforge_host
     src/host/opl_asset_pipeline.cpp
     src/host/opl_library_sync.cpp
     src/host/bdm_library.cpp
+    src/host/recovery_service.cpp
     src/host/pfs_write_back.cpp
     src/host/writable_mount_view.cpp
     src/host/opl_partition.cpp
@@ -151,6 +153,10 @@ target_compile_features(ps2-driveforge-hdl-tools PRIVATE cxx_std_20)
 add_executable(ps2-driveforge-pfs-tools src/cli/pfs_tools.cpp)
 target_link_libraries(ps2-driveforge-pfs-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-pfs-tools PRIVATE cxx_std_20)
+
+add_executable(ps2-driveforge-repair-tools src/cli/repair_tools.cpp)
+target_link_libraries(ps2-driveforge-repair-tools PRIVATE ps2driveforge_core)
+target_compile_features(ps2-driveforge-repair-tools PRIVATE cxx_std_20)
 
 if(WIN32)
     # Keep raw physical mutation in a separate developer executable. The normal
@@ -376,6 +382,10 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-fhdb-restore-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-fhdb-restore-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-fhdb-restore-tests COMMAND ps2-driveforge-fhdb-restore-tests)
+    add_executable(ps2-driveforge-structure-health-tests tests/structure_health_tests.cpp)
+    target_link_libraries(ps2-driveforge-structure-health-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-structure-health-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-structure-health-tests COMMAND ps2-driveforge-structure-health-tests)
 
     add_executable(ps2-driveforge-apa-repair-tests tests/apa_repair_tests.cpp)
     target_link_libraries(ps2-driveforge-apa-repair-tests PRIVATE ps2driveforge_core)
@@ -475,6 +485,10 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-bdm-library-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-bdm-library-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-bdm-library-tests COMMAND ps2-driveforge-bdm-library-tests)
+    add_executable(ps2-driveforge-recovery-service-tests tests/recovery_service_tests.cpp)
+    target_link_libraries(ps2-driveforge-recovery-service-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-recovery-service-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-recovery-service-tests COMMAND ps2-driveforge-recovery-service-tests)
 
     add_executable(ps2-driveforge-apa-jail-tests tests/apa_jail_tests.cpp)
     target_link_libraries(ps2-driveforge-apa-jail-tests PRIVATE ps2driveforge_host)

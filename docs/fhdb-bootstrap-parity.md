@@ -69,10 +69,13 @@ Readers fail closed on the wrong format. A Mutation Journal parser rejects `PS2H
 | MagicGate signing/verification of installable KELF | Planned | separate signing provider/service boundary |
 | Automated FHDB/HDD-OSD/HOSD/PSBBN acquisition | Planned | provider pipeline, host cache only |
 | Automated bootstrap installation from frozen provider inputs | Planned | bootstrap installer |
-| Physical forensic APA repair | In progress | exceptional recovery coordinator over existing planners |
+| Physical forensic APA repair | Frieren / Windows | `repair_forensic_topology_on_physical`, WinUI recovery card, `physical-tools repair-forensic` |
 | Boot-chain evidence report | Planned parity | bootstrap evidence service |
 | FMCB HDD-skip / downstream boot evidence inspection | Planned parity | host evidence scanners |
-| Deterministic unified structure-health verdict | Partial | APA/PFS/forensic diagnostics |
+| Deterministic unified structure-health verdict | Frieren | `health::assess` (master defects + pointer bounds + payload KELF + chain + PC ownership + APA-Jail), `repair-tools health`, `physical-tools health`, WinUI/Win32 |
+| Disable active bootstrap (backup + pointer clear) | Frieren | `fhdb::disable_bootstrap`, `disable_bootstrap_on_physical`; HDDMBR mandatory, Rescue Capsule best effort and never blocking |
+| Recovery on disk images from GUI/CLI | Frieren (DriveForge extension) | `recovery_service`, `repair-tools`, WinUI recovery card, Win32 *Recovery* menu |
+| APA-Jail masters in bootstrap capture/restore/disable | Frieren (DriveForge extension) | `is_apa_jail_master`; FHDB Manager still refuses 0x55AA masters; master field repair stays refused on jail |
 | Read-only shadow forensic APA map browsing | Planned UI | immutable forensic snapshot |
 | Hardware fault injection against images | Planned | recovery fault-injection tests |
 | Hardware fault injection against sacrificial physical HDD | Required before normal GUI exposure | hardware validation tooling |
@@ -311,3 +314,27 @@ Before physical recovery/install controls become ordinary UI actions, require:
 8. forensic physical repair after the exceptional recovery coordinator is finished.
 
 The target is not merely feature parity. The target is that FHDB Manager and DriveForge agree on the bytes, evidence, artifacts, operation order and reasons to refuse. Then the user can choose console or PC based on convenience instead of choosing which recovery philosophy they trust today.
+
+## Structure health verdict
+
+`health::assess()` is the host twin of FHDB Manager's *Deterministic structure
+health / repair* screen. It is read-only and produces one verdict
+(`healthy`, `attention`, `repairable`, `damaged`, `blocked`) plus an ordered
+action list. The order matters: a damaged master is repaired first and the
+pointer is judged only once the master is canonical again, because a pointer
+read through a damaged header is not evidence.
+
+| Evidence | Recommendation |
+| --- | --- |
+| GPT / protective / foreign MBR in sector 0 | `blocked`, no actions |
+| Single corroborated master field defect | `repair_master` |
+| Master damage the checksum cannot explain | `forensic_scan` (`damaged`) |
+| Canonical master, broken chain | `forensic_scan` (`damaged`) |
+| Pointer half-empty, outside `__mbr`, before 0x2000, > 4 MiB, unreadable or not a KELF | `disable_bootstrap` |
+| Everything consistent with a valid KELF published | `capture_rescue` (suggested backup) |
+
+`disable_bootstrap` mirrors FHDB `bootstrap_controller_disable`: HDDMBR first
+(mandatory), then an optional Rescue Capsule that is allowed to fail, then only
+`osdStart`/`osdSize` and the checksum change. A capsule whose payload is not a
+valid KELF is saved for evidence but restore refuses to republish it, so
+disabling a broken bootstrap can never be "undone" back into a boot loop.

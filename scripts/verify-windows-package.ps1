@@ -26,6 +26,7 @@ $required = @(
     'ps2-driveforge-hdl-tools.exe',
     'ps2-driveforge-pfs-tools.exe',
     'ps2-driveforge-physical-tools.exe',
+    'ps2-driveforge-repair-tools.exe',
     'README.md',
     'CHANGELOG.md',
     'BUILDING.md',

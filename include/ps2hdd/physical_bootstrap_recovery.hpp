@@ -48,6 +48,15 @@ struct PhysicalBootstrapInstallResult {
     fhdb::BootstrapRestoreResult apply;
 };
 
+struct PhysicalBootstrapDisableResult {
+    bool ok{};
+    bool partial{};
+    std::string error;
+    std::size_t locked_volume_count{};
+    bool cold_master_verified{};
+    fhdb::BootstrapDisableResult disable;
+};
+
 [[nodiscard]] PhysicalBootstrapRestoreResult restore_bootstrap_to_physical(
     unsigned physical_drive_index,
     const PhysicalBootstrapRestoreOptions& options);
@@ -60,6 +69,15 @@ struct PhysicalBootstrapInstallResult {
     unsigned physical_drive_index,
     const bootstrap::FrozenInstallInput& input,
     const PhysicalBootstrapInstallOptions& options);
+
+// FHDB "disable active bootstrap" on a physical HDD: normal admission, guarded
+// lease, fhdb::disable_bootstrap, then a cold reopen proving the pointer is 0/0,
+// nothing else in the master moved and the APA chain still parses.
+[[nodiscard]] PhysicalBootstrapDisableResult disable_bootstrap_on_physical(
+    unsigned physical_drive_index,
+    const std::filesystem::path& safety_directory,
+    bool lock_mounted_volumes = true,
+    bool dismount_locked_volumes = true);
 
 } // namespace ps2hdd
 

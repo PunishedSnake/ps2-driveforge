@@ -140,6 +140,12 @@ jobs:
           .\dist\windows-x64\ps2-driveforge-hdl-tools.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Frieren HDL developer tool did not start.' }
 
+      - name: Smoke-test image repair tool
+        shell: pwsh
+        run: |
+          .\dist\windows-x64\ps2-driveforge-repair-tools.exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'Repair tool did not start.' }
+
       - name: Smoke-test guarded physical developer tool
         shell: pwsh
         run: |

@@ -15,6 +15,7 @@
 #include "ps2hdd/physical_game_deploy.hpp"
 #include "ps2hdd/physical_partition_remove.hpp"
 #include "ps2hdd/physical_write_guard.hpp"
+#include "ps2hdd/structure_health.hpp"
 #include "ps2hdd/version.hpp"
 
 #include <array>
@@ -40,6 +41,7 @@ void usage()
         << "ps2-driveforge-physical-tools " << ps2hdd::version::string << "\n\n"
         << "Read-only admission and recovery inspection:\n"
         << "  ps2-driveforge-physical-tools preflight <index>\n"
+        << "  ps2-driveforge-physical-tools health <index>\n"
         << "  ps2-driveforge-physical-tools forensic-scan <index>\n"
         << "  ps2-driveforge-physical-tools capture-rescue <index> <artifact-dir>\n"
         << "      [--romver <text>] [--family <text>] [--confidence <text>]\n\n"
@@ -57,7 +59,9 @@ void usage()
         << "      --apply --confirm PhysicalDriveN\n\n"
         << "FHDB/bootstrap restore:\n"
         << "  ps2-driveforge-physical-tools restore-bootstrap <index> <artifact-dir>\n"
-        << "      --apply --confirm PhysicalDriveN [--safety-dir <dir>]\n\n"
+        << "      --apply --confirm PhysicalDriveN [--safety-dir <dir>]\n"
+        << "  ps2-driveforge-physical-tools disable-bootstrap <index> <safety-dir>\n"
+        << "      --apply --confirm PhysicalDriveN   (HDDMBR + Rescue Capsule, then clear osdStart/osdSize)\n\n"
         << "Exceptional APA recovery:\n"
         << "  ps2-driveforge-physical-tools repair-master <index> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN\n"
@@ -686,6 +690,58 @@ int repair_master(std::span<char*> args)
     return 0;
 }
 
+int health(unsigned index)
+{
+    ps2hdd::PhysicalDrive disk(index);
+    if (!disk.is_open()) {
+        std::cerr << "Could not open PhysicalDrive" << index
+                  << " read-only, Win32 error " << disk.open_error() << "\n";
+        return 1;
+    }
+    const auto report = ps2hdd::health::assess(disk);
+    std::cout << "Structure health for PhysicalDrive" << index << " (read-only)\n"
+              << ps2hdd::health::render(report);
+    return report.verdict == ps2hdd::health::Verdict::healthy ? 0 : 4;
+}
+
+int disable_bootstrap(std::span<char*> args)
+{
+    if (args.size() < 6) {
+        usage();
+        return 2;
+    }
+    unsigned index = 0;
+    if (!parse_unsigned(args[2], index)) {
+        std::cerr << "Invalid physical drive index\n";
+        return 2;
+    }
+    std::string confirmation_error;
+    if (!confirm_target(args, index, confirmation_error)) {
+        std::cerr << confirmation_error << "\n";
+        return 2;
+    }
+    const auto result = ps2hdd::disable_bootstrap_on_physical(index, std::filesystem::path(args[3]));
+    if (!result.ok) {
+        std::cerr << result.error << "\n";
+        if (!result.disable.hddmbr_path.empty()) std::cerr << "HDDMBR: " << result.disable.hddmbr_path.string() << "\n";
+        if (!result.disable.warning.empty()) std::cerr << "[WARN] " << result.disable.warning << "\n";
+        return result.partial ? 3 : 1;
+    }
+    if (result.disable.already_disabled) {
+        std::cout << "Bootstrap pointer is already disabled; nothing was written\n";
+        return 0;
+    }
+    std::cout << "Bootstrap disabled and cold-verified\n"
+              << "  previous pointer: start 0x" << std::hex << result.disable.previous_start << ", size 0x"
+              << result.disable.previous_sectors << std::dec << "\n"
+              << "  HDDMBR:  " << result.disable.hddmbr_path.string() << "\n"
+              << "  rescue:  " << (result.disable.rescue_path.empty() ? std::string("not available")
+                                                                       : result.disable.rescue_path.string()) << "\n"
+              << "  locked Windows volumes: " << result.locked_volume_count << "\n";
+    if (!result.disable.warning.empty()) std::cout << "[WARN] " << result.disable.warning << "\n";
+    return 0;
+}
+
 int repair_forensic(std::span<char*> args)
 {
     if (args.size() < 7) {
@@ -781,6 +837,17 @@ int main(int argc, char** argv)
             return 2;
         }
         return preflight(index);
+    }
+    if (command == "health") {
+        unsigned index = 0;
+        if (argc != 3 || !parse_unsigned(argv[2], index)) {
+            usage();
+            return 2;
+        }
+        return health(index);
+    }
+    if (command == "disable-bootstrap") {
+        return disable_bootstrap(args);
     }
     if (command == "forensic-scan") {
         if (argc != 3) {

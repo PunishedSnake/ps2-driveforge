@@ -69,7 +69,7 @@ RescueImageResult capture_rescue_image(BlockDevice& disk,
     // Keep the raw-master check too. It mirrors the shared FHDB artifact policy
     // and catches a conventional MBR signature inside sector zero even when no
     // complete GPT header survived in sector one.
-    if (is_hybrid_gpt_master(master)) {
+    if (is_pc_owned_master(master)) {
         result.error = "Refusing Rescue Capsule capture because the live master contains PC MBR/GPT evidence";
         return result;
     }

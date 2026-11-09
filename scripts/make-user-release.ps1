@@ -84,7 +84,8 @@ foreach ($Tool in @(
     'ps2-driveforge-inspect.exe',
     'ps2-driveforge-benchmark.exe',
     'ps2-driveforge-hdl-tools.exe',
-    'ps2-driveforge-physical-tools.exe'
+    'ps2-driveforge-physical-tools.exe',
+    'ps2-driveforge-repair-tools.exe'
 )) {
     $Source = Join-Path $CanonicalRoot $Tool
     if (Test-Path -LiteralPath $Source -PathType Leaf) {
@@ -106,6 +107,7 @@ $requiredUserFiles = @(
     'app\winui\Microsoft.UI.Xaml.dll',
     'tools\ps2-driveforge-hdl-tools.exe',
     'tools\ps2-driveforge-physical-tools.exe',
+    'tools\ps2-driveforge-repair-tools.exe',
     'README.md',
     'CHANGELOG.md',
     'LICENSE',

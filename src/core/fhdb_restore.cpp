@@ -1,4 +1,5 @@
 #include "ps2hdd/fhdb_restore.hpp"
+#include "ps2hdd/fhdb_rescue_capture.hpp"
 
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/fhdb_artifacts.hpp"
@@ -64,7 +65,7 @@ void store_u32(std::byte* p, std::uint32_t value) noexcept
         error = "Could not read the live 1024-byte APA master";
         return false;
     }
-    if (is_hybrid_gpt_master(master)) {
+    if (is_pc_owned_master(master)) {
         error = "Refusing bootstrap restore because the live master contains PC MBR/GPT evidence";
         return false;
     }
@@ -438,6 +439,75 @@ BootstrapRestoreResult apply_bootstrap_restore(
         if (!result.rollback_ok) {
             result.warning = "Final APA verification failed and exact master rollback failed. Keep the mandatory HDDMBR safety backup.";
         }
+        return result;
+    }
+    result.final_apa_verified = true;
+    result.ok = true;
+    return result;
+}
+
+BootstrapDisableResult disable_bootstrap(
+    WritableBlockDevice& disk,
+    const std::filesystem::path& safety_directory)
+{
+    BootstrapDisableResult result;
+    if (safety_directory.empty()) {
+        result.error = "Disabling the bootstrap requires a host-side safety directory";
+        return result;
+    }
+    if (!read_current_master(disk, result.source_master, result.error)) {
+        if (result.error.find("canonical") != std::string::npos) {
+            result.error += ". Repair the APA master first, then disable the bootstrap.";
+        }
+        return result;
+    }
+    const auto& current = result.source_master;
+    result.previous_start = load_u32(current.data() + kApaOsdStartOffset);
+    result.previous_sectors = load_u32(current.data() + kApaOsdSizeOffset);
+    if (result.previous_start == 0 && result.previous_sectors == 0) {
+        result.already_disabled = true;
+        result.ok = true;
+        return result;
+    }
+
+    const auto safety = save_hddmbr(safety_directory, current);
+    if (!safety.ok) {
+        result.error = "Mandatory HDDMBR safety backup failed; no target write was performed: " + safety.error;
+        return result;
+    }
+    result.hddmbr_path = safety.path;
+
+    // Optional and independent: a damaged payload is the usual reason to
+    // disable, so its capture failing must not keep the console from booting.
+    const auto rescue = capture_rescue_image(disk);
+    if (rescue.ok) {
+        const auto saved = save_hddrescue(safety_directory, rescue);
+        if (saved.ok) result.rescue_path = saved.path;
+        else result.warning = "Rescue Capsule could not be saved (" + saved.error + "); HDDMBR still holds the pointer.";
+    } else {
+        result.warning = "No Rescue Capsule for the current payload (" + rescue.error + "); HDDMBR still holds the pointer.";
+    }
+
+    std::array<std::byte, kRescueApaHeaderBytes> published{};
+    if (!publish_pointer(disk, current, 0, 0, published, result.error)) {
+        result.rollback_attempted = true;
+        result.rollback_ok = rollback_master(disk, current);
+        if (!result.rollback_ok) {
+            result.partial = true;
+            result.warning = "Pointer clear failed and exact master rollback also failed. Keep the HDDMBR safety backup.";
+        }
+        return result;
+    }
+    result.pointer_cleared = true;
+
+    apa::Reader reader(disk);
+    const auto scan = reader.scan();
+    if (!scan.ok()) {
+        result.error = "Bootstrap pointer was cleared but the normal APA parser rejected the resulting disk";
+        result.rollback_attempted = true;
+        result.rollback_ok = rollback_master(disk, current);
+        result.pointer_cleared = !result.rollback_ok;
+        result.partial = !result.rollback_ok;
         return result;
     }
     result.final_apa_verified = true;
