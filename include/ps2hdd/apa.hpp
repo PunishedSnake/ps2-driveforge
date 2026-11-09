@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -84,6 +85,8 @@ struct Partition {
     std::uint64_t total_sectors{};
     std::uint16_t type{};
     std::uint16_t flags{};
+    std::uint32_t prev_lba{};
+    std::uint32_t next_lba{};
     std::uint32_t main_lba{};
     std::uint32_t number{};
     std::uint32_t sub_count{};
@@ -102,11 +105,39 @@ struct Issue {
     std::string message;
 };
 
+// APA-Jail (Berion; used by the PSBBN Definitive Project): a PC partition
+// table shares sector 0 with the APA __mbr header so APA and exFAT coexist on
+// one drive. Type A2 writes "APAJ-A2" at 0xE0 and an MBR table at 0x1BE:
+//   #1 type 0x17  the APA region (APA partitions must stay inside it)
+//   #2            32 MiB ext2 RECOVERY (APA index + GPT tail backups)
+//   #3 type 0x07  exFAT "OPL" for games and apps
+// The APA header checksum covers these bytes, so every APA header rewrite
+// must preserve them (DriveForge rewrites whole headers read from disk).
+struct HybridMbrEntry {
+    std::uint8_t type{};
+    std::uint32_t start_lba{};
+    std::uint32_t sectors{};
+};
+
+inline constexpr std::size_t kJailSignatureOffset = 0xE0;
+inline constexpr std::size_t kMbrTableOffset = 0x1BE;
+
+struct JailInfo {
+    std::string signature;                 // e.g. "APAJ-A2"; empty for an unsigned hybrid
+    std::vector<HybridMbrEntry> entries;   // non-empty MBR entries in table order
+    bool gpt_protective{};                 // GPT-based variant (0xEE)
+    // First LBA APA may not use. 0 = unknown -> APA allocation fails closed.
+    std::uint64_t apa_limit_lba{};
+    std::optional<HybridMbrEntry> exfat;
+    std::optional<HybridMbrEntry> recovery;
+};
+
 struct ScanResult {
     bool mbr_valid{};
     std::uint32_t apa_version{};
     std::vector<Partition> partitions;
     std::vector<Issue> issues;
+    std::optional<JailInfo> jail;
 
     [[nodiscard]] bool ok() const noexcept;
 };

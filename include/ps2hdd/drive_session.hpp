@@ -1,7 +1,10 @@
 #pragma once
 
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/block_device.hpp"
+#include "ps2hdd/hdl.hpp"
+#include "ps2hdd/hdl_export.hpp"
 #include "ps2hdd/instrumented_block_device.hpp"
 #include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/pfs.hpp"
@@ -16,6 +19,7 @@
 #include <memory>
 #include <shared_mutex>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -93,9 +97,10 @@ struct SessionStats {
 // same validated APA scan.
 //
 // Emilia keeps immutable metadata results across calls because every current
-// source is read-only. The pipeline is parser -> 4 KiB metadata cache -> adaptive
-// sequential read-ahead -> backing instrumentation -> actual device. Backing
-// counters therefore continue to represent real image/HDD I/O after both caches.
+// source is read-only. Frieren adds narrowly-scoped post-commit snapshot updates
+// for mutation coordinators without turning this normal session into a writer.
+// The pipeline is parser -> 4 KiB metadata cache -> adaptive sequential read-ahead
+// -> backing instrumentation -> actual device.
 class DriveSession {
 public:
     explicit DriveSession(std::unique_ptr<BlockDevice> source);
@@ -113,6 +118,14 @@ public:
     [[nodiscard]] const std::string& last_error() const noexcept { return last_error_; }
 
     bool scan();
+
+    // Synchronize this already-open read session after a separate mutation
+    // coordinator successfully commits the exact RemovePlan. This changes only
+    // the cached APA snapshot and invalidates read caches; it performs no device
+    // scan and no HDL/PFS rediscovery. A failed/uncommitted plan must never be
+    // passed here.
+    bool apply_committed_partition_removal(const apa::RemovePlan& plan);
+
     [[nodiscard]] const apa::Partition* find_partition(std::string_view id) const noexcept;
     [[nodiscard]] BrowseResult browse(std::string_view partition, std::string_view path);
     [[nodiscard]] StatResult stat(std::string_view partition, std::string_view path);
@@ -122,6 +135,21 @@ public:
                                                    std::string_view path,
                                                    const std::filesystem::path& destination,
                                                    pfs::ExportProgress progress = {});
+
+    // HDL game images. Layouts are validated once and cached for the session;
+    // read_hdl_iso serves random-offset reads (Explorer mount), while
+    // export_hdl_iso streams bulk data directly to the instrumented backing
+    // device so multi-GiB copies neither evict metadata pages nor pay for
+    // read-ahead windows they would immediately outrun.
+    [[nodiscard]] hdl::LayoutResult hdl_layout(std::string_view partition);
+    [[nodiscard]] std::vector<hdl::LayoutResult> hdl_layouts();
+    [[nodiscard]] ReadResult read_hdl_iso(std::string_view partition, std::uint64_t offset,
+                                          std::span<std::byte> out);
+    [[nodiscard]] HdlIsoExportResult export_hdl_iso(std::string_view partition,
+                                                    const std::filesystem::path& destination,
+                                                    const HdlIsoExportOptions& options = {},
+                                                    HdlIsoExportProgress progress = {},
+                                                    std::stop_token stop = {});
 
     [[nodiscard]] SessionStats stats() const noexcept;
     void reset_stats() noexcept;
@@ -133,6 +161,7 @@ private:
     static constexpr std::size_t kMaxStatCacheEntries = 8192;
     static constexpr std::size_t kMaxNodeCacheEntries = 8192;
 
+    [[nodiscard]] std::shared_ptr<const hdl::LayoutResult> cached_hdl_layout(std::string_view partition);
     [[nodiscard]] pfs::ProbeResult probe_for(std::string_view partition, ApaVolume& volume);
 
     std::unique_ptr<BlockDevice> source_;
@@ -147,6 +176,7 @@ private:
     std::unordered_map<std::string, BrowseResult> browse_cache_;
     std::unordered_map<std::string, StatResult> stat_cache_;
     std::unordered_map<std::string, pfs::Node> node_cache_;
+    std::unordered_map<std::string, std::shared_ptr<const hdl::LayoutResult>> hdl_layout_cache_;
 
     std::atomic<std::uint64_t> apa_scans_{};
     std::atomic<std::uint64_t> browse_operations_{};

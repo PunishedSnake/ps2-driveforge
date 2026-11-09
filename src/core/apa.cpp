@@ -99,6 +99,88 @@ bool Reader::read_header(std::uint32_t lba, Header& out)
     return device_.read(offset, std::as_writable_bytes(std::span{&out, 1}));
 }
 
+namespace {
+
+std::uint32_t le32(const unsigned char* p)
+{
+    return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8U) |
+           (static_cast<std::uint32_t>(p[2]) << 16U) | (static_cast<std::uint32_t>(p[3]) << 24U);
+}
+
+std::optional<JailInfo> parse_jail(const Header& header)
+{
+    const auto* raw = reinterpret_cast<const unsigned char*>(&header);
+    const bool boot_signature = raw[0x1FE] == 0x55 && raw[0x1FF] == 0xAA;
+    std::string signature;
+    for (std::size_t i = 0; i < 8 && raw[kJailSignatureOffset + i] >= 0x20 && raw[kJailSignatureOffset + i] < 0x7F; ++i) {
+        signature.push_back(static_cast<char>(raw[kJailSignatureOffset + i]));
+    }
+    const bool signed_jail = signature.rfind("APAJ-", 0) == 0;
+    if (!boot_signature && !signed_jail) return std::nullopt;
+
+    JailInfo jail;
+    jail.signature = signed_jail ? signature : std::string{};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto* entry = raw + kMbrTableOffset + i * 16U;
+        HybridMbrEntry e{entry[4], le32(entry + 8), le32(entry + 12)};
+        if (e.type == 0 || e.sectors == 0) continue;
+        if (e.type == 0xEE) jail.gpt_protective = true;
+        jail.entries.push_back(e);
+    }
+    if (!boot_signature && jail.entries.empty()) return jail; // signature only: limit unknown
+
+    // The first 0x17 entry is the APA region (Berion's script also marks the
+    // RECOVERY partition 0x17, so "every 0x17" would be wrong). Every other
+    // entry is PC territory and bounds the region from above.
+    std::uint64_t limit = 0;
+    bool region_seen = false;
+    for (const auto& e : jail.entries) {
+        if (e.type == 0xEE) continue;
+        if (e.type == 0x17 && !region_seen) {
+            region_seen = true;
+            const auto end = static_cast<std::uint64_t>(e.start_lba) + e.sectors;
+            limit = limit == 0 ? end : std::min(limit, end);
+            continue;
+        }
+        if (e.type == 0x07 && !jail.exfat) jail.exfat = e;
+        else if (!jail.recovery) jail.recovery = e;
+        limit = limit == 0 ? e.start_lba : std::min<std::uint64_t>(limit, e.start_lba);
+    }
+    jail.apa_limit_lba = jail.gpt_protective ? 0 : limit;
+    return jail;
+}
+
+void validate_jail(ScanResult& result)
+{
+    if (!result.jail) return;
+    auto& jail = *result.jail;
+    if (jail.gpt_protective || jail.apa_limit_lba == 0) {
+        result.issues.push_back({IssueSeverity::warning, 0,
+                                 "APA-Jail hybrid layout with an unknown APA boundary (GPT variant or empty table); "
+                                 "DriveForge will not allocate APA space on it"});
+        return;
+    }
+    for (const auto& partition : result.partitions) {
+        const auto end = static_cast<std::uint64_t>(partition.start_lba) + partition.length_sectors;
+        if (end > jail.apa_limit_lba) {
+            result.issues.push_back({IssueSeverity::error, partition.start_lba,
+                                     "APA partition " + partition.id + " crosses the APA-Jail boundary into PC partitions"});
+        }
+    }
+    for (std::size_t i = 0; i < jail.entries.size(); ++i) {
+        const auto& e = jail.entries[i];
+        const bool apa_region = e.type == 0x17 &&
+            std::none_of(jail.entries.begin(), jail.entries.begin() + static_cast<std::ptrdiff_t>(i),
+                         [](const HybridMbrEntry& prior) { return prior.type == 0x17; });
+        if (!apa_region && e.start_lba < jail.apa_limit_lba) {
+            result.issues.push_back({IssueSeverity::error, e.start_lba,
+                                     "APA-Jail PC partition overlaps the APA region"});
+        }
+    }
+}
+
+} // namespace
+
 ScanResult Reader::scan(std::size_t max_headers)
 {
     ScanResult result;
@@ -128,6 +210,7 @@ ScanResult Reader::scan(std::size_t max_headers)
 
     result.mbr_valid = true;
     result.apa_version = header.mbr.version;
+    result.jail = parse_jail(header);
 
     // APA is a linked list of headers, not a flat table at fixed offsets. Keep
     // both explicit visited-LBA state and a hard header limit: corrupted `next`
@@ -181,6 +264,8 @@ ScanResult Reader::scan(std::size_t max_headers)
         partition.length_sectors = header.length;
         partition.type = header.type;
         partition.flags = header.flags;
+        partition.prev_lba = header.prev;
+        partition.next_lba = header.next;
         partition.main_lba = header.main;
         partition.number = header.number;
         partition.sub_count = std::min<std::uint32_t>(header.nsub, static_cast<std::uint32_t>(kMaxSub));
@@ -221,6 +306,7 @@ ScanResult Reader::scan(std::size_t max_headers)
         }
     }
 
+    validate_jail(result);
     return result;
 }
 

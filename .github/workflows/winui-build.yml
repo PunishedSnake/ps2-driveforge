@@ -1,4 +1,4 @@
-name: Windows x64 — Emilia WinUI
+name: Windows x64 — Frieren WinUI
 
 on:
   workflow_dispatch:
@@ -23,6 +23,12 @@ on:
       - 'CMakeLists.txt'
       - 'build-windows.ps1'
       - '.github/workflows/winui-build.yml'
+
+concurrency:
+  # A newer push to the same branch/PR supersedes the older run; release and
+  # main pushes are never cancelled so every published commit stays verified.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -126,7 +132,7 @@ jobs:
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.5.0-Emilia-WinUI-x64
+          name: PS2-DriveForge-0.6.0-beta.1-Frieren-WinUI-x64
           path: src/winui/x64/Release/**
           if-no-files-found: error
 

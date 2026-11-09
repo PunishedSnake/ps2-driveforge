@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <iomanip>
@@ -60,21 +61,28 @@ void usage()
                  "  ps2-driveforge-inspect [--stats] <disk-image>\n"
                  "  ps2-driveforge-inspect [--stats] <disk-image> --browse <partition> [path]\n"
                  "  ps2-driveforge-inspect [--stats] <disk-image> --extract <partition> <pfs-path> <output>\n"
+                 "  ps2-driveforge-inspect [--stats] <disk-image> --games\n"
+                 "  ps2-driveforge-inspect [--stats] <disk-image> --extract-iso <hdl-partition|--all> <output>\n"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
                  "  ps2-driveforge-inspect [--stats] --physical <index>\n"
                  "  ps2-driveforge-inspect [--stats] --physical <index> --browse <partition> [path]\n"
                  "  ps2-driveforge-inspect [--stats] --physical <index> --extract <partition> <pfs-path> <output>\n"
+                 "  ps2-driveforge-inspect [--stats] --physical <index> --games\n"
+                 "  ps2-driveforge-inspect [--stats] --physical <index> --extract-iso <hdl-partition|--all> <output>\n"
                  "  ps2-driveforge-inspect --detect-physical [max-index]\n"
 #endif
                  "  ps2-driveforge-inspect --version\n\n"
                  "Examples:\n"
                  "  ps2-driveforge-inspect --stats ps2.img --browse +OPL\n"
+                 "  ps2-driveforge-inspect ps2.img --extract-iso --all D:\\PS2-Backups\n"
 #ifdef PS2DF_HAS_WINDOWS_PHYSICAL_DRIVE
                  "  ps2-driveforge-inspect --detect-physical\n"
                  "  ps2-driveforge-inspect --stats --physical 3 --browse +OPL CFG\n"
                  "  ps2-driveforge-inspect --stats --physical 3 --extract +OPL / exported-OPL\n"
 #endif
-                 "\nSource access is read-only. --extract may recursively create host files/directories.\n";
+                 "\nSource access is read-only. --extract may recursively create host files/directories.\n"
+                 "--extract-iso writes <output> (or <output>/<title> [<startup>].iso when <output> is a\n"
+                 "directory or --all is used) and never overwrites an existing file.\n";
 }
 
 struct BrowseRequest {
@@ -85,6 +93,11 @@ struct BrowseRequest {
 struct ExtractRequest {
     std::string partition;
     std::string path;
+    std::filesystem::path output;
+};
+
+struct IsoRequest {
+    std::string partition; // empty = all games
     std::filesystem::path output;
 };
 
@@ -169,6 +182,20 @@ void print_overview(ps2hdd::DriveSession& session)
         return;
     }
 
+    if (result.jail) {
+        const auto& jail = *result.jail;
+        std::cout << "Layout: APA-Jail hybrid" << (jail.signature.empty() ? "" : " (" + jail.signature + ")");
+        if (jail.apa_limit_lba != 0) {
+            std::cout << ", APA region " << format_bytes(jail.apa_limit_lba * ps2hdd::apa::kSectorSize);
+        } else {
+            std::cout << ", APA boundary unknown (allocation disabled)";
+        }
+        if (jail.exfat) {
+            std::cout << ", exFAT " << format_bytes(static_cast<std::uint64_t>(jail.exfat->sectors) *
+                                                    ps2hdd::apa::kSectorSize);
+        }
+        std::cout << '\n';
+    }
     std::cout << "Version: " << result.apa_version << "\n\n"
               << std::left << std::setw(34) << "Partition"
               << std::setw(12) << "Type"
@@ -272,6 +299,112 @@ bool extract(ps2hdd::DriveSession& session, const ExtractRequest& request)
     return true;
 }
 
+bool list_games(ps2hdd::DriveSession& session)
+{
+    const auto layouts = session.hdl_layouts();
+    std::cout << "\nHDLoader games\n"
+              << std::left << std::setw(34) << "Partition"
+              << std::setw(14) << "Startup"
+              << std::setw(7) << "Media"
+              << std::setw(13) << "ISO size"
+              << std::setw(8) << "Slices"
+              << "Title / status\n"
+              << std::string(110, '-') << '\n';
+    std::size_t ok = 0;
+    for (const auto& layout : layouts) {
+        const auto& game = layout.layout.game;
+        std::cout << std::left << std::setw(34) << game.partition_id;
+        if (layout.ok) {
+            ++ok;
+            std::cout << std::setw(14) << game.startup
+                      << std::setw(7) << ps2hdd::hdl::media_type_name(game.media)
+                      << std::setw(13) << format_bytes(layout.layout.iso_size_bytes)
+                      << std::setw(8) << layout.layout.extents.size()
+                      << game.title << '\n';
+        } else {
+            std::cout << std::setw(42) << "-" << "[UNREADABLE] " << layout.error << '\n';
+        }
+    }
+    std::cout << layouts.size() << " game partition(s), " << ok << " exportable\n";
+    return ok == layouts.size();
+}
+
+enum class IsoOutcome { exported, skipped, failed };
+
+IsoOutcome extract_one_iso(ps2hdd::DriveSession& session, const ps2hdd::hdl::LayoutResult& layout,
+                           std::filesystem::path output, bool skip_existing)
+{
+    const auto& game = layout.layout.game;
+    if (!layout.ok) {
+        std::cerr << game.partition_id << ": " << layout.error << '\n';
+        return IsoOutcome::failed;
+    }
+    std::error_code ec;
+    if (std::filesystem::is_directory(output, ec)) {
+        output /= ps2hdd::default_hdl_iso_filename(game);
+    }
+    if (skip_existing && std::filesystem::exists(output, ec)) {
+        std::cout << "\n" << output.string() << " already exists; skipping\n";
+        return IsoOutcome::skipped;
+    }
+    std::cout << "\n" << game.title << " [" << game.startup << "] -> " << output.string() << '\n';
+
+    const auto started = std::chrono::steady_clock::now();
+    std::uint64_t last_reported = 0;
+    const auto report = [&](std::uint64_t done, std::uint64_t total) {
+        if (done != total && done < last_reported + 256ULL * 1024ULL * 1024ULL) {
+            return;
+        }
+        last_reported = done;
+        const double seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
+        const double rate = seconds > 0 ? static_cast<double>(done) / seconds : 0.0;
+        std::cout << "  " << format_bytes(done) << " / " << format_bytes(total)
+                  << " (" << std::fixed << std::setprecision(1)
+                  << (total == 0 ? 100.0 : 100.0 * static_cast<double>(done) / static_cast<double>(total))
+                  << "%, " << format_bytes(static_cast<std::uint64_t>(rate)) << "/s)\n";
+    };
+    const auto result = session.export_hdl_iso(game.partition_id, output, {}, report);
+    if (!result.ok) {
+        std::cerr << "  ISO export failed: " << result.error << '\n';
+        return IsoOutcome::failed;
+    }
+    for (const auto& warning : result.warnings) {
+        std::cout << "  [EXPORT WARN] " << warning << '\n';
+    }
+    return IsoOutcome::exported;
+}
+
+bool extract_iso(ps2hdd::DriveSession& session, const IsoRequest& request)
+{
+    if (!request.partition.empty()) {
+        return extract_one_iso(session, session.hdl_layout(request.partition), request.output,
+                               false) == IsoOutcome::exported;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(request.output, ec);
+    if (!std::filesystem::is_directory(request.output, ec)) {
+        std::cerr << "--extract-iso --all needs an output directory\n";
+        return false;
+    }
+    // Batch mode is resumable: re-running it after an interruption skips the
+    // games that were already completed (partial files never use final names).
+    std::size_t exported = 0;
+    std::size_t skipped = 0;
+    std::size_t failed = 0;
+    const auto layouts = session.hdl_layouts();
+    for (const auto& layout : layouts) {
+        switch (extract_one_iso(session, layout, request.output, true)) {
+        case IsoOutcome::exported: ++exported; break;
+        case IsoOutcome::skipped: ++skipped; break;
+        case IsoOutcome::failed: ++failed; break;
+        }
+    }
+    std::cout << "\nExported " << exported << ", skipped " << skipped << ", failed " << failed
+              << " of " << layouts.size() << " game(s)\n";
+    return failed == 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -345,6 +478,8 @@ int main(int argc, char** argv)
 
     std::optional<BrowseRequest> browse_request;
     std::optional<ExtractRequest> extract_request;
+    std::optional<IsoRequest> iso_request;
+    bool games_request = false;
     if (arg < argc) {
         const std::string_view command = argv[arg];
         if (command == "--browse") {
@@ -364,6 +499,20 @@ int main(int argc, char** argv)
                 return 2;
             }
             extract_request = ExtractRequest{argv[arg + 1], argv[arg + 2], argv[arg + 3]};
+        } else if (command == "--games") {
+            if (arg + 1 != argc) {
+                usage();
+                return 2;
+            }
+            games_request = true;
+        } else if (command == "--extract-iso") {
+            if (arg + 3 != argc) {
+                usage();
+                return 2;
+            }
+            const std::string_view which = argv[arg + 1];
+            iso_request = IsoRequest{which == "--all" ? std::string{} : std::string(which),
+                                     argv[arg + 2]};
         } else {
             usage();
             return 2;
@@ -375,12 +524,16 @@ int main(int argc, char** argv)
     print_overview(session);
 
     int exit_code = session.scan_result().ok() ? 0 : 1;
-    if (!clean_scan && (browse_request || extract_request)) {
-        std::cerr << "Refusing PFS operation because APA diagnostics contain fatal errors.\n";
+    if (!clean_scan && (browse_request || extract_request || games_request || iso_request)) {
+        std::cerr << "Refusing PFS/HDL operation because APA diagnostics contain fatal errors.\n";
     } else if (browse_request) {
         exit_code = browse(session, *browse_request) ? 0 : 1;
     } else if (extract_request) {
         exit_code = extract(session, *extract_request) ? 0 : 1;
+    } else if (games_request) {
+        exit_code = list_games(session) ? 0 : 1;
+    } else if (iso_request) {
+        exit_code = extract_iso(session, *iso_request) ? 0 : 1;
     }
 
     if (show_stats) {

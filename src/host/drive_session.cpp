@@ -406,6 +406,95 @@ pfs::ExportResult DriveSession::export_to_host(std::string_view partition_id,
     return pfs::export_to_host(reader, path, destination, std::move(progress));
 }
 
+std::shared_ptr<const hdl::LayoutResult> DriveSession::cached_hdl_layout(std::string_view partition_id)
+{
+    const std::string key(partition_id);
+    {
+        std::shared_lock lock(cache_mutex_);
+        const auto cached = hdl_layout_cache_.find(key);
+        if (cached != hdl_layout_cache_.end()) {
+            return cached->second;
+        }
+    }
+
+    auto result = std::make_shared<hdl::LayoutResult>();
+    const auto* partition = find_partition(partition_id);
+    if (!partition) {
+        result->error = "Partition not found: " + key;
+        return result; // not cached: unknown IDs must not grow the cache
+    }
+    if (partition->type != apa::kTypeHdl) {
+        result->error = "Partition is not an HDLoader game: " + key;
+        return result;
+    }
+    *result = hdl::read_game_layout(read_cache_, *partition);
+
+    std::unique_lock lock(cache_mutex_);
+    // A concurrent caller may have won the race; keep the first immutable copy.
+    return hdl_layout_cache_.emplace(key, std::move(result)).first->second;
+}
+
+hdl::LayoutResult DriveSession::hdl_layout(std::string_view partition_id)
+{
+    return *cached_hdl_layout(partition_id);
+}
+
+std::vector<hdl::LayoutResult> DriveSession::hdl_layouts()
+{
+    std::vector<const apa::Partition*> games;
+    for (const auto& partition : scan_.partitions) {
+        if (!partition.is_sub() && partition.type == apa::kTypeHdl) {
+            games.push_back(&partition);
+        }
+    }
+    // Physical order keeps a cold listing friendly to rotational media.
+    std::sort(games.begin(), games.end(), [](const auto* left, const auto* right) {
+        return left->start_lba < right->start_lba;
+    });
+    std::vector<hdl::LayoutResult> layouts;
+    layouts.reserve(games.size());
+    for (const auto* game : games) {
+        layouts.push_back(hdl_layout(game->id));
+    }
+    return layouts;
+}
+
+ReadResult DriveSession::read_hdl_iso(std::string_view partition_id, std::uint64_t offset,
+                                      std::span<std::byte> out)
+{
+    AtomicTimer timer(read_time_ns_);
+    read_operations_.fetch_add(1, std::memory_order_relaxed);
+    ReadResult result;
+    const auto layout = cached_hdl_layout(partition_id);
+    if (!layout->ok) {
+        result.error = layout->error;
+        return result;
+    }
+    const auto read = hdl::read_iso(read_cache_, layout->layout, offset, out);
+    result.ok = read.ok;
+    result.error = read.error;
+    result.bytes_read = read.bytes_read;
+    return result;
+}
+
+HdlIsoExportResult DriveSession::export_hdl_iso(std::string_view partition_id,
+                                                const std::filesystem::path& destination,
+                                                const HdlIsoExportOptions& options,
+                                                HdlIsoExportProgress progress,
+                                                std::stop_token stop)
+{
+    AtomicTimer timer(export_time_ns_);
+    export_operations_.fetch_add(1, std::memory_order_relaxed);
+    const auto layout = cached_hdl_layout(partition_id);
+    if (!layout->ok) {
+        HdlIsoExportResult result;
+        result.error = layout->error;
+        return result;
+    }
+    return ps2hdd::export_hdl_iso(instrumented_, layout->layout, destination, options,
+                                  std::move(progress), std::move(stop));
+}
+
 SessionStats DriveSession::stats() const noexcept
 {
     return {
@@ -471,6 +560,7 @@ void DriveSession::clear_caches()
     browse_cache_.clear();
     stat_cache_.clear();
     node_cache_.clear();
+    hdl_layout_cache_.clear();
 }
 
 } // namespace ps2hdd

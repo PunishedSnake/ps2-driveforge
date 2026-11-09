@@ -1,15 +1,19 @@
 #include "ps2hdd/dokany_mount.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/physical_drive.hpp"
+#include "ps2hdd/physical_mount_writer.hpp"
 #include "ps2hdd/version.hpp"
+#include "ps2hdd/writable_file_block_device.hpp"
 
 #include <windows.h>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -66,9 +70,15 @@ void usage()
                   L"Usage:\n"
                   L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:> [--debug]\n"
                   L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> [--debug]\n"
+                  L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:> --writable\n"
+                  L"      [--allow <partition>]... [--replay-journal] [--debug]\n"
+                  L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> --writable\n"
+                  L"      --confirm PhysicalDrive<index> [--allow <partition>]... [--replay-journal]\n"
                   L"  PS2-DriveForge-Mount.exe --unmount <P:>\n\n"
-                  L"The CLI remains a diagnostic/script frontend and packaged mount helper.\n"
-                  L"Source devices are always opened read-only and mounted mutations are rejected.\n";
+                  L"Mounts are read-only unless --writable is given. Writable mounts (disk images\n"
+                  L"for now) accept Explorer writes into PFS partitions through the DriveForge\n"
+                  L"write-back engine: data is staged on the host, coalesced and committed in\n"
+                  L"batches; __system/__sysconf/__net stay protected unless named with --allow.\n";
 }
 
 } // namespace
@@ -80,6 +90,10 @@ int wmain(int argc, wchar_t** argv)
     std::optional<std::wstring> mount_point;
     std::optional<std::wstring> unmount_point;
     bool debug = false;
+    bool writable = false;
+    bool replay_journal = false;
+    std::wstring confirm;
+    std::set<std::string> allowed;
 
     for (int i = 1; i < argc; ++i) {
         const std::wstring_view arg(argv[i]);
@@ -96,6 +110,15 @@ int wmain(int argc, wchar_t** argv)
             mount_point = normalize_cli_mount_point(argv[++i]);
         } else if (arg == L"--unmount" && i + 1 < argc) {
             unmount_point = normalize_cli_mount_point(argv[++i]);
+        } else if (arg == L"--writable") {
+            writable = true;
+        } else if (arg == L"--confirm" && i + 1 < argc) {
+            confirm = argv[++i];
+        } else if (arg == L"--replay-journal") {
+            replay_journal = true;
+        } else if (arg == L"--allow" && i + 1 < argc) {
+            const std::wstring id = argv[++i];
+            allowed.insert(std::string(id.begin(), id.end()));
         } else if (arg == L"--debug") {
             debug = true;
         } else if (arg == L"--help" || arg == L"-h") {
@@ -140,8 +163,62 @@ int wmain(int argc, wchar_t** argv)
         source = std::move(device);
     }
 
+    if (writable && physical && confirm != L"PhysicalDrive" + std::to_wstring(*physical)) {
+        std::wcerr << L"A writable mount of a physical drive needs the literal target confirmation:\n"
+                   << L"  --confirm PhysicalDrive" << *physical << L"\n";
+        return 2;
+    }
+
     ps2hdd::DokanyMountController controller;
-    if (!controller.start(std::move(source), *mount_point, debug)) {
+    bool started = false;
+    if (writable) {
+        wchar_t local[MAX_PATH]{};
+        const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        const std::filesystem::path base = chars > 0 && chars < MAX_PATH ? std::filesystem::path(local)
+                                                                       : std::filesystem::temp_directory_path();
+        ps2hdd::WriteBackOptions options;
+        options.spool_directory = base / L"PS2 DriveForge" / L"Spool" /
+                                  (image ? image->filename().wstring() : L"PhysicalDrive" + std::to_wstring(*physical));
+        if (!allowed.empty()) {
+            options.writable_partitions = allowed;
+            for (const auto& id : allowed) options.protected_partitions.erase(id);
+        }
+        const auto orphans = ps2hdd::PfsWriteBack::scan_journal(options.spool_directory);
+        if (!orphans.empty() && !replay_journal) {
+            std::wcout << orphans.size() << L" uncommitted file(s) from a previous session are kept in\n  "
+                       << options.spool_directory.wstring()
+                       << L"\nRe-run with --replay-journal to write them to the disk.\n";
+        }
+        ps2hdd::WriterFactory factory;
+        if (image) {
+            const auto image_path = *image;
+            factory = [image_path](std::string& error) -> std::unique_ptr<ps2hdd::WritableBlockDevice> {
+                auto device = std::make_unique<ps2hdd::WritableFileBlockDevice>(image_path);
+                if (!device->is_open()) {
+                    error = "Could not reopen the disk image for writing";
+                    return nullptr;
+                }
+                return device;
+            };
+        } else {
+            auto guarded = ps2hdd::make_physical_mount_writer(*physical, base / L"PS2 DriveForge" / L"Recovery");
+            if (!guarded.ok) {
+                std::cerr << "Writable physical mount refused: " << guarded.error << '\n';
+                return 1;
+            }
+            std::wcout << L"Safety backup of the APA master: " << guarded.hddmbr_path.wstring() << L"\n";
+            factory = std::move(guarded.factory);
+        }
+        started = controller.start_writable(std::move(source), std::move(factory), options, *mount_point, debug);
+        if (started && replay_journal && !orphans.empty()) {
+            if (auto* engine = controller.write_back()) {
+                std::wcout << L"Replaying " << engine->replay_orphans(orphans) << L" journaled file(s).\n";
+            }
+        }
+    } else {
+        started = controller.start(std::move(source), *mount_point, debug);
+    }
+    if (!started) {
         std::cerr << "Mount startup failed: " << controller.last_error() << '\n';
         return 1;
     }
@@ -149,7 +226,8 @@ int wmain(int argc, wchar_t** argv)
     g_controller = &controller;
     SetConsoleCtrlHandler(console_handler, TRUE);
 
-    std::wcout << L"Mounting PS2 DriveForge read-only at " << *mount_point << L"...\n"
+    std::wcout << L"Mounting PS2 DriveForge " << (writable ? L"with write-back" : L"read-only") << L" at "
+               << *mount_point << L"...\n"
                << L"Namespace root: " << *mount_point << L"Partitions\\\n"
                << L"Press Ctrl+C or run --unmount " << *mount_point
                << L" from another terminal.\n";
@@ -158,10 +236,45 @@ int wmain(int argc, wchar_t** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
     if (controller.is_mounted()) {
-        std::wcout << L"Mounted PS2 DriveForge read-only at " << *mount_point << L"\n";
+        std::wcout << L"Mounted PS2 DriveForge " << (writable ? L"writable" : L"read-only") << L" at "
+                   << *mount_point << L"\n";
     }
 
+    // Heartbeat for frontends (WinUI polls this): the helper is a separate,
+    // possibly elevated process, so a tiny key=value file is the IPC.
+    if (auto* engine = controller.write_back(); engine && writable) {
+        wchar_t local[MAX_PATH]{};
+        const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        const std::filesystem::path base = chars > 0 && chars < MAX_PATH ? std::filesystem::path(local)
+                                                                       : std::filesystem::temp_directory_path();
+        const auto status_path = base / L"PS2 DriveForge" / L"Spool" /
+                                 (image ? image->filename().wstring() : L"PhysicalDrive" + std::to_wstring(*physical)) /
+                                 L"status.txt";
+        while (controller.is_running()) {
+            const auto stats = engine->stats();
+            {
+                std::ofstream out(status_path.wstring() + L".tmp", std::ios::trunc);
+                out << "pending_ops=" << stats.pending_ops << "\npending_bytes=" << stats.pending_bytes
+                    << "\ncommitted_ops=" << stats.committed_ops << "\nfailed_ops=" << stats.failed_ops
+                    << "\ncoalesced_ops=" << stats.coalesced_ops << "\napplication_writes=" << stats.application_writes
+                    << "\ndisk_sessions=" << stats.disk_write_sessions << "\nread_only=" << (stats.read_only ? 1 : 0)
+                    << "\nlast_error=" << stats.last_error << "\n";
+            }
+            std::error_code ec;
+            std::filesystem::rename(status_path.wstring() + L".tmp", status_path, ec);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        std::error_code ec;
+        std::filesystem::remove(status_path, ec);
+    }
     controller.wait();
+    if (auto* engine = controller.write_back()) {
+        const auto stats = engine->stats();
+        std::wcout << L"Write-back: " << stats.application_writes << L" application writes -> "
+                   << stats.committed_ops << L" PFS operations in " << stats.disk_write_sessions
+                   << L" disk session(s); " << stats.coalesced_ops << L" coalesced, " << stats.failed_ops
+                   << L" failed.\n";
+    }
     SetConsoleCtrlHandler(console_handler, FALSE);
     g_controller = nullptr;
 

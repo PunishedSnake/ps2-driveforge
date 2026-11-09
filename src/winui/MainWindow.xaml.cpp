@@ -5,6 +5,8 @@
 #include "MainWindow.g.cpp"
 #endif
 
+#include "ps2hdd/bdm_library.hpp"
+#include "ps2hdd/pfs_write_back.hpp"
 #include "ps2hdd/darkness_policy.hpp"
 #include "ps2hdd/pfs_export.hpp"
 
@@ -20,14 +22,15 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <map>
 #include <cctype>
-#include <cwctype>
 #include <exception>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace winrt::PS2DriveForge::WinUI::implementation
 {
@@ -38,26 +41,18 @@ using namespace Microsoft::UI::Xaml::Controls;
 
 std::wstring widen(std::string_view value)
 {
-    if (value.empty()) {
-        return {};
-    }
+    if (value.empty()) return {};
     const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                           value.data(), static_cast<int>(value.size()),
                                           nullptr, 0);
-    if (count <= 0) {
-        return std::wstring(value.begin(), value.end());
-    }
+    if (count <= 0) return std::wstring(value.begin(), value.end());
     std::wstring result(static_cast<std::size_t>(count), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                        value.data(), static_cast<int>(value.size()),
-                        result.data(), count);
+                        value.data(), static_cast<int>(value.size()), result.data(), count);
     return result;
 }
 
-winrt::hstring htext(std::string_view value)
-{
-    return winrt::hstring(widen(value));
-}
+winrt::hstring htext(std::string_view value) { return winrt::hstring(widen(value)); }
 
 std::string lower_ascii(std::string value)
 {
@@ -83,9 +78,7 @@ std::wstring format_bytes(std::uint64_t bytes)
 
 std::wstring format_ms(std::uint64_t ns)
 {
-    if (ns == 0) {
-        return L"—";
-    }
+    if (ns == 0) return L"-";
     std::wostringstream out;
     out << std::fixed << std::setprecision(2) << (static_cast<double>(ns) / 1'000'000.0) << L" ms";
     return out.str();
@@ -105,7 +98,6 @@ std::wstring kind_name(ps2hdd::PartitionCatalogKind kind)
     case ps2hdd::PartitionCatalogKind::pfs: return L"PFS";
     case ps2hdd::PartitionCatalogKind::hdl: return L"HDL";
     case ps2hdd::PartitionCatalogKind::free_space: return L"Free";
-    case ps2hdd::PartitionCatalogKind::other:
     default: return L"Other";
     }
 }
@@ -116,16 +108,13 @@ std::wstring enrichment_name(ps2hdd::EnrichmentState state)
     case ps2hdd::EnrichmentState::pending: return L"Pending";
     case ps2hdd::EnrichmentState::ready: return L"Ready";
     case ps2hdd::EnrichmentState::error: return L"Error";
-    case ps2hdd::EnrichmentState::not_applicable:
-    default: return L"—";
+    default: return L"-";
     }
 }
 
 std::wstring bus_name(const ps2hdd::StorageCharacteristics& storage)
 {
-    if (!storage.bus_type_known) {
-        return L"Unknown";
-    }
+    if (!storage.bus_type_known) return L"Unknown";
     switch (storage.bus_type) {
     case 1: return L"SCSI";
     case 2: return L"ATAPI";
@@ -142,16 +131,13 @@ std::wstring media_name(const ps2hdd::StorageCharacteristics& storage)
     switch (storage.media_class) {
     case ps2hdd::StorageMediaClass::rotational: return L"Rotational";
     case ps2hdd::StorageMediaClass::solid_state: return L"Solid state";
-    case ps2hdd::StorageMediaClass::unknown:
     default: return L"Unknown";
     }
 }
 
 std::string join_pfs_path(std::string_view parent, std::string_view child)
 {
-    if (parent.empty()) {
-        return std::string(child);
-    }
+    if (parent.empty()) return std::string(child);
     std::string result(parent);
     result.push_back('/');
     result.append(child);
@@ -171,9 +157,7 @@ TextBlock make_cell(std::wstring text, bool strong = false)
     cell.FontSize(12);
     cell.VerticalAlignment(VerticalAlignment::Center);
     cell.TextTrimming(TextTrimming::CharacterEllipsis);
-    if (strong) {
-        cell.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-    }
+    if (strong) cell.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
     return cell;
 }
 
@@ -187,15 +171,11 @@ Grid make_partition_row(const ps2df::winui::PartitionRowSnapshot& row)
         column.Width(GridLengthHelper::FromValueAndType(weight, GridUnitType::Star));
         grid.ColumnDefinitions().Append(column);
     }
-
     std::array<TextBlock, 6> cells{
         make_cell(widen(row.title.empty() ? row.partition_id : row.title), true),
-        make_cell(widen(row.startup)),
-        make_cell(kind_name(row.kind)),
-        make_cell(format_bytes(row.size_bytes)),
-        make_cell(std::to_wstring(row.start_lba)),
-        make_cell(enrichment_name(row.enrichment)),
-    };
+        make_cell(widen(row.startup)), make_cell(kind_name(row.kind)),
+        make_cell(format_bytes(row.size_bytes)), make_cell(std::to_wstring(row.start_lba)),
+        make_cell(enrichment_name(row.enrichment))};
     for (std::uint32_t i = 0; i < cells.size(); ++i) {
         Grid::SetColumn(cells[i], static_cast<int>(i));
         grid.Children().Append(cells[i]);
@@ -207,21 +187,19 @@ Grid make_file_row(const ps2df::winui::BrowseEntrySnapshot& entry)
 {
     Grid grid;
     grid.Padding(Thickness{14, 9, 14, 9});
-    ColumnDefinition name; name.Width(GridLengthHelper::FromValueAndType(3, GridUnitType::Star));
-    ColumnDefinition type; type.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-    ColumnDefinition size; size.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
-    grid.ColumnDefinitions().Append(name);
-    grid.ColumnDefinitions().Append(type);
-    grid.ColumnDefinitions().Append(size);
-
-    auto name_cell = make_cell(widen(entry.name), true);
-    auto type_cell = make_cell(entry.is_directory ? L"Folder" : (entry.is_regular ? L"File" : L"Other"));
-    auto size_cell = make_cell(entry.is_directory ? L"—" : format_bytes(entry.size_bytes));
-    Grid::SetColumn(type_cell, 1);
-    Grid::SetColumn(size_cell, 2);
-    grid.Children().Append(name_cell);
-    grid.Children().Append(type_cell);
-    grid.Children().Append(size_cell);
+    for (double star : {3.0, 1.0, 1.0}) {
+        ColumnDefinition column;
+        column.Width(GridLengthHelper::FromValueAndType(star, GridUnitType::Star));
+        grid.ColumnDefinitions().Append(column);
+    }
+    auto name = make_cell(widen(entry.name), true);
+    auto type = make_cell(entry.is_directory ? L"Folder" : (entry.is_regular ? L"File" : L"Other"));
+    auto size = make_cell(entry.is_directory ? L"-" : format_bytes(entry.size_bytes));
+    Grid::SetColumn(type, 1);
+    Grid::SetColumn(size, 2);
+    grid.Children().Append(name);
+    grid.Children().Append(type);
+    grid.Children().Append(size);
     return grid;
 }
 
@@ -229,9 +207,7 @@ std::filesystem::path local_app_data_path()
 {
     std::array<wchar_t, 32768> buffer{};
     const DWORD count = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (count == 0 || count >= buffer.size()) {
-        return std::filesystem::temp_directory_path();
-    }
+    if (count == 0 || count >= buffer.size()) return std::filesystem::temp_directory_path();
     return std::filesystem::path(buffer.data());
 }
 
@@ -241,20 +217,50 @@ bool path_exists(const std::filesystem::path& path)
     return std::filesystem::exists(path, ec);
 }
 
+std::optional<std::filesystem::path> pick_folder(HWND owner)
+{
+    IFileOpenDialog* dialog = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dialog));
+    if (FAILED(hr) || !dialog) return std::nullopt;
+    FILEOPENDIALOGOPTIONS options{};
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    hr = dialog->Show(owner);
+    if (FAILED(hr)) {
+        dialog->Release();
+        return std::nullopt;
+    }
+    IShellItem* item = nullptr;
+    if (FAILED(dialog->GetResult(&item)) || !item) {
+        dialog->Release();
+        return std::nullopt;
+    }
+    PWSTR raw = nullptr;
+    hr = item->GetDisplayName(SIGDN_FILESYSPATH, &raw);
+    item->Release();
+    dialog->Release();
+    if (FAILED(hr) || !raw) return std::nullopt;
+    std::filesystem::path result(raw);
+    CoTaskMemFree(raw);
+    return result;
+}
+
 } // namespace
 
 MainWindow::MainWindow()
 {
     ps2df::winui::diag::log("MainWindow::MainWindow entered");
     try {
-        ps2df::winui::diag::log("MainWindow::InitializeComponent begin");
         InitializeComponent();
-        ps2df::winui::diag::log("MainWindow::InitializeComponent complete");
-
         ExtendsContentIntoTitleBar(true);
         SetTitleBar(TitleBarDragRegion());
+        install_window_chrome();
         wire_events();
         load_theme_preference();
+        RootGrid().ActualThemeChanged([this](auto&&, auto&&) { update_caption_buttons(); });
+        update_caption_buttons();
+        restore_window_placement();
 
         telemetry_timer_ = DispatcherTimer();
         telemetry_timer_.Interval(std::chrono::seconds(1));
@@ -271,12 +277,6 @@ MainWindow::MainWindow()
         ps2df::winui::diag::log_hresult("MainWindow construction failed", error.code().value,
                                        std::wstring_view(message.c_str(), message.size()));
         throw;
-    } catch (std::exception const& error) {
-        ps2df::winui::diag::log(std::string("MainWindow construction std::exception: ") + error.what());
-        throw;
-    } catch (...) {
-        ps2df::winui::diag::log("MainWindow construction failed with unknown exception");
-        throw;
     }
     ps2df::winui::diag::log("MainWindow::MainWindow complete");
 }
@@ -287,10 +287,11 @@ MainWindow::~MainWindow()
     if (source_thread_.joinable()) source_thread_.request_stop();
     if (enrichment_thread_.joinable()) enrichment_thread_.request_stop();
     if (export_thread_.joinable()) export_thread_.request_stop();
-    if (mount_process_) {
-        CloseHandle(mount_process_);
-        mount_process_ = nullptr;
-    }
+    if (mutation_thread_.joinable()) mutation_thread_.request_stop();
+    if (bdm_thread_.joinable()) bdm_thread_.request_stop();
+    if (recovery_thread_.joinable()) recovery_thread_.request_stop();
+    if (migrate_thread_.joinable()) migrate_thread_.request_stop();
+    if (mount_process_) CloseHandle(mount_process_);
 }
 
 void MainWindow::wire_events()
@@ -306,6 +307,15 @@ void MainWindow::wire_events()
     ShowSubsToggle().Toggled({this, &MainWindow::on_show_subs_toggled});
     RefreshMetadataButton().Click({this, &MainWindow::on_refresh_metadata});
     CancelEnrichmentButton().Click({this, &MainWindow::on_cancel_enrichment});
+
+    HdlChooseIsoButton().Click({this, &MainWindow::on_hdl_choose_iso});
+    HdlChooseArtifactButton().Click({this, &MainWindow::on_hdl_choose_artifacts});
+    HdlPreviewButton().Click({this, &MainWindow::on_hdl_preview});
+    HdlInstallButton().Click({this, &MainWindow::on_hdl_install});
+    HdlGamePicker().SelectionChanged({this, &MainWindow::on_hdl_game_changed});
+    HdlDeleteSelectedButton().Click({this, &MainWindow::on_hdl_delete});
+    PhysicalPreflightButton().Click({this, &MainWindow::on_physical_preflight});
+
     PfsPartitionPicker().SelectionChanged({this, &MainWindow::on_pfs_partition_changed});
     FilesList().SelectionChanged({this, &MainWindow::on_files_selection_changed});
     FilesList().DoubleTapped({this, &MainWindow::on_files_double_tapped});
@@ -328,6 +338,7 @@ void MainWindow::wire_events()
 void MainWindow::show_page(std::wstring_view tag, bool settings)
 {
     HddPage().Visibility(Visibility::Collapsed);
+    HdlToolsPage().Visibility(Visibility::Collapsed);
     FilesPage().Visibility(Visibility::Collapsed);
     MountPage().Visibility(Visibility::Collapsed);
     PerformancePage().Visibility(Visibility::Collapsed);
@@ -335,6 +346,9 @@ void MainWindow::show_page(std::wstring_view tag, bool settings)
 
     if (settings) {
         SettingsPage().Visibility(Visibility::Visible);
+    } else if (tag == L"hdl-tools") {
+        HdlToolsPage().Visibility(Visibility::Visible);
+        refresh_hdl_tools();
     } else if (tag == L"files") {
         FilesPage().Visibility(Visibility::Visible);
         browse_current_pfs();
@@ -368,7 +382,7 @@ void MainWindow::start_discovery(bool user_requested)
         discovery_thread_.request_stop();
         discovery_thread_.join();
     }
-    set_status(L"Scanning Windows disk interfaces for PS2 APA volumes…");
+    set_status(L"Scanning Windows disk interfaces for PS2 APA volumes...");
     DriveSelector().Items().Clear();
     OpenDriveButton().IsEnabled(false);
 
@@ -378,9 +392,7 @@ void MainWindow::start_discovery(bool user_requested)
         auto probes = ps2df::winui::NativeSessionController::discover_physical_drives();
         if (stop.stop_requested()) return;
         dispatcher.TryEnqueue([weak, probes = std::move(probes), user_requested]() mutable {
-            if (auto self = weak.get()) {
-                self->handle_discovery(std::move(probes), user_requested);
-            }
+            if (auto self = weak.get()) self->handle_discovery(std::move(probes), user_requested);
         });
     });
 }
@@ -391,62 +403,47 @@ void MainWindow::handle_discovery(std::vector<ps2hdd::PhysicalDriveProbe> probes
     bool access_denied = false;
     for (const auto& probe : probes) {
         access_denied = access_denied || probe.access_denied;
-        if (probe.apa_detected) {
-            detected_drives_.push_back(probe);
-        }
+        if (probe.apa_detected) detected_drives_.push_back(probe);
     }
 
     DriveSelector().Items().Clear();
     for (const auto& probe : detected_drives_) {
         std::wstring label = L"PhysicalDrive" + std::to_wstring(probe.index);
-        if (!probe.friendly_name.empty()) {
-            label += L" — " + widen(probe.friendly_name);
-        }
-        label += L" · " + format_bytes(probe.size_bytes);
+        if (!probe.friendly_name.empty()) label += L" / " + widen(probe.friendly_name);
+        label += L" / " + format_bytes(probe.size_bytes);
         DriveSelector().Items().Append(winrt::box_value(winrt::hstring(label)));
     }
     if (!detected_drives_.empty()) {
         DriveSelector().SelectedIndex(0);
         OpenDriveButton().IsEnabled(true);
     }
-
     AccessInfoBar().IsOpen(access_denied && detected_drives_.empty());
 
     if (detected_drives_.empty()) {
-        set_status(access_denied ? L"Raw disk access denied — restart as Administrator or open an image"
-                                 : L"No PS2 APA HDD detected — connect a disk or open an image");
+        set_status(access_denied ? L"Raw disk access denied; restart as Administrator or open an image"
+                                 : L"No PS2 APA HDD detected; connect a disk or open an image");
         return;
     }
-
     if (!snapshot_.open && detected_drives_.size() == 1) {
         open_physical_async(detected_drives_.front().index);
         return;
     }
-
-    std::wstring status = L"Detected " + std::to_wstring(detected_drives_.size()) + L" PS2 APA HDD";
-    if (detected_drives_.size() != 1) status += L"s";
-    status += L" — choose a source above";
-    set_status(status);
-    if (user_requested && detected_drives_.size() == 1) {
-        open_physical_async(detected_drives_.front().index);
-    }
+    set_status(L"Detected " + std::to_wstring(detected_drives_.size()) + L" PS2 APA source(s)");
+    if (user_requested && detected_drives_.size() == 1) open_physical_async(detected_drives_.front().index);
 }
 
 void MainWindow::open_physical_async(unsigned index)
 {
     if (source_busy_.exchange(true)) return;
     if (enrichment_thread_.joinable()) enrichment_thread_.request_stop();
-    set_status(L"Opening PhysicalDrive" + std::to_wstring(index) + L" read-only…");
-
+    set_status(L"Opening PhysicalDrive" + std::to_wstring(index) + L" read-only...");
     auto dispatcher = DispatcherQueue();
     auto weak = get_weak();
     source_thread_ = std::jthread([this, dispatcher, weak, index](std::stop_token stop) {
         std::string error;
         const bool ok = !stop.stop_requested() && controller_.open_physical(index, error);
         dispatcher.TryEnqueue([weak, ok, error = std::move(error), index]() mutable {
-            if (auto self = weak.get()) {
-                self->finish_source_open(ok, std::move(error), index, {});
-            }
+            if (auto self = weak.get()) self->finish_source_open(ok, std::move(error), index, {});
         });
     });
 }
@@ -455,17 +452,14 @@ void MainWindow::open_image_async(std::filesystem::path path)
 {
     if (source_busy_.exchange(true)) return;
     if (enrichment_thread_.joinable()) enrichment_thread_.request_stop();
-    set_status(L"Opening disk image read-only…");
-
+    set_status(L"Opening disk image read-only...");
     auto dispatcher = DispatcherQueue();
     auto weak = get_weak();
     source_thread_ = std::jthread([this, dispatcher, weak, path = std::move(path)](std::stop_token stop) mutable {
         std::string error;
         const bool ok = !stop.stop_requested() && controller_.open_image(path, error);
         dispatcher.TryEnqueue([weak, ok, error = std::move(error), path = std::move(path)]() mutable {
-            if (auto self = weak.get()) {
-                self->finish_source_open(ok, std::move(error), std::nullopt, std::move(path));
-            }
+            if (auto self = weak.get()) self->finish_source_open(ok, std::move(error), std::nullopt, std::move(path));
         });
     });
 }
@@ -480,32 +474,31 @@ void MainWindow::finish_source_open(bool ok, std::string error,
         show_error(L"PS2 DriveForge", widen(error));
         return;
     }
-
     current_physical_ = physical;
     current_image_ = std::move(image);
-    AccessInfoBar().IsOpen(false);
     current_pfs_partition_.clear();
     current_pfs_path_.clear();
+    hdl_preview_ = {};
+    AccessInfoBar().IsOpen(false);
     refresh_all_from_snapshot();
     start_enrichment(false);
     MountButton().IsEnabled(true);
     MountPageMountButton().IsEnabled(true);
-    set_status(L"Source opened read-only — APA catalog ready");
+    set_status(L"Source opened read-only; APA catalog ready");
 }
 
 void MainWindow::refresh_all_from_snapshot()
 {
     snapshot_ = controller_.snapshot();
     if (!snapshot_.open) return;
-
     SourceNameText().Text(htext(snapshot_.source_name));
     SourceSizeText().Text(format_bytes(snapshot_.source_size_bytes));
     SourceMediaText().Text(media_name(snapshot_.storage));
-    SourceDetailText().Text(current_physical_ ? L"Physical PS2 HDD · GENERIC_READ" : L"Disk image · read-only file source");
+    SourceDetailText().Text(current_physical_ ? L"Physical PS2 HDD / ordinary source handle is read-only"
+                                             : L"Disk image / ordinary source handle is read-only");
     ApaRowsText().Text(std::to_wstring(snapshot_.rows.size()));
     HdlGamesText().Text(std::to_wstring(snapshot_.progress.total_hdl));
     BackingReadsText().Text(std::to_wstring(snapshot_.stats.backing_io.read_calls));
-
     MediaClassText().Text(L"Media: " + media_name(snapshot_.storage));
     BusTypeText().Text(L"Bus: " + bus_name(snapshot_.storage));
     SeekPenaltyText().Text(snapshot_.storage.seek_penalty_known
@@ -514,17 +507,16 @@ void MainWindow::refresh_all_from_snapshot()
     TrimText().Text(snapshot_.storage.trim_known
         ? std::wstring(L"TRIM: ") + (snapshot_.storage.trim_enabled ? L"Enabled" : L"Disabled")
         : L"TRIM: Unknown");
-
     ApaScanTimeText().Text(L"APA scan: " + format_ms(snapshot_.stats.scan_time_ns));
     CatalogBuildTimeText().Text(L"Catalog build: " + format_ms(snapshot_.catalog_build_ms));
     const auto reads = snapshot_.stats.backing_io.read_calls;
     const double avg_ms = reads == 0 ? 0.0 :
         static_cast<double>(snapshot_.stats.backing_io.read_time_ns) / static_cast<double>(reads) / 1'000'000.0;
-    AverageReadText().Text(reads == 0 ? L"Avg. backing read: —" : L"Avg. backing read: " + format_ms(avg_ms));
-
+    AverageReadText().Text(reads == 0 ? L"Avg. backing read: -" : L"Avg. backing read: " + format_ms(avg_ms));
     refresh_partition_list();
     refresh_pfs_partitions();
     refresh_performance();
+    refresh_hdl_tools();
 }
 
 void MainWindow::refresh_partition_list()
@@ -532,7 +524,6 @@ void MainWindow::refresh_partition_list()
     const std::string query = lower_ascii(winrt::to_string(FilterBox().Text()));
     const int kind_filter = PartitionKindFilter().SelectedIndex();
     const bool show_subs = ShowSubsToggle().IsOn();
-
     visible_partition_rows_.clear();
     PartitionList().Items().Clear();
     for (const auto& row : snapshot_.rows) {
@@ -542,7 +533,6 @@ void MainWindow::refresh_partition_list()
         else if (kind_filter == 2) kind_ok = row.kind == ps2hdd::PartitionCatalogKind::pfs;
         else if (kind_filter == 3) kind_ok = row.kind != ps2hdd::PartitionCatalogKind::hdl && row.kind != ps2hdd::PartitionCatalogKind::pfs;
         if (!kind_ok) continue;
-
         if (!query.empty()) {
             const auto haystack = lower_ascii(row.title + " " + row.partition_id + " " + row.startup);
             if (haystack.find(query) == std::string::npos) continue;
@@ -558,13 +548,11 @@ void MainWindow::refresh_pfs_partitions()
     const auto old = current_pfs_partition_;
     pfs_partitions_.clear();
     for (const auto& row : snapshot_.rows) {
-        if (!row.is_sub && row.kind == ps2hdd::PartitionCatalogKind::pfs) {
-            if (std::find(pfs_partitions_.begin(), pfs_partitions_.end(), row.partition_id) == pfs_partitions_.end()) {
-                pfs_partitions_.push_back(row.partition_id);
-            }
+        if (!row.is_sub && row.kind == ps2hdd::PartitionCatalogKind::pfs &&
+            std::find(pfs_partitions_.begin(), pfs_partitions_.end(), row.partition_id) == pfs_partitions_.end()) {
+            pfs_partitions_.push_back(row.partition_id);
         }
     }
-
     PfsPartitionPicker().Items().Clear();
     int selected = -1;
     for (std::size_t i = 0; i < pfs_partitions_.size(); ++i) {
@@ -592,21 +580,19 @@ void MainWindow::start_enrichment(bool reset)
     if (reset) {
         controller_.reset_enrichment();
         snapshot_ = controller_.snapshot();
-        refresh_partition_list();
     }
     if (snapshot_.progress.total_hdl == 0) {
         EnrichmentStateText().Text(L"no HDL partitions");
         EnrichmentProgressText().Text(L"Nothing to enrich");
         EnrichmentProgress().Value(0);
         CancelEnrichmentButton().IsEnabled(false);
+        refresh_hdl_tools();
         return;
     }
-
     CancelEnrichmentButton().IsEnabled(true);
     EnrichmentStateText().Text(L"metadata loading");
     EnrichmentProgress().Maximum(static_cast<double>(snapshot_.progress.total_hdl));
     EnrichmentProgress().Value(0);
-
     auto dispatcher = DispatcherQueue();
     auto weak = get_weak();
     enrichment_thread_ = std::jthread([this, dispatcher, weak](std::stop_token stop) {
@@ -618,7 +604,6 @@ void MainWindow::start_enrichment(bool reset)
                     self->EnrichmentProgress().Value(static_cast<double>(completed));
                     self->EnrichmentProgressText().Text(std::to_wstring(completed) + L" / " + std::to_wstring(total));
                     self->HdlGamesText().Text(std::to_wstring(self->snapshot_.progress.ready_hdl));
-                    self->BackingReadsText().Text(std::to_wstring(self->snapshot_.stats.backing_io.read_calls));
                     self->refresh_partition_list();
                 }
             });
@@ -630,10 +615,284 @@ void MainWindow::start_enrichment(bool reset)
                 self->EnrichmentStateText().Text(cancelled ? L"metadata cancelled" : L"metadata ready");
                 self->EnrichmentProgressText().Text(cancelled ? L"Cancelled" : L"Complete");
                 self->refresh_partition_list();
+                self->refresh_hdl_tools();
                 self->refresh_performance();
             }
         });
     });
+}
+
+ps2df::winui::HdlInstallRequest MainWindow::current_hdl_request() const
+{
+    ps2df::winui::HdlInstallRequest request;
+    request.iso_path = hdl_iso_path_;
+    request.title = winrt::to_string(const_cast<MainWindow*>(this)->HdlTitleBox().Text());
+    request.hidden = const_cast<MainWindow*>(this)->HdlHiddenToggle().IsOn();
+    request.media = const_cast<MainWindow*>(this)->HdlMediaPicker().SelectedIndex() == 1
+                        ? ps2hdd::hdl::MediaType::cd
+                        : ps2hdd::hdl::MediaType::dvd;
+    request.artifact_directory = hdl_artifact_directory_;
+    return request;
+}
+
+void MainWindow::refresh_hdl_tools()
+{
+    HdlGamePicker().Items().Clear();
+    hdl_game_rows_.clear();
+    if (!snapshot_.open) {
+        HdlToolSourceText().Text(L"No source");
+        HdlToolSafetyText().Text(L"Open a PS2 HDD or disk image first.");
+        HdlPreviewButton().IsEnabled(false);
+        HdlInstallButton().IsEnabled(false);
+        HdlDeleteSelectedButton().IsEnabled(false);
+        PhysicalPreflightButton().IsEnabled(false);
+        opl_sync_ready_ = false;
+        update_game_action_buttons();
+        return;
+    }
+
+    HdlToolSourceText().Text(htext(snapshot_.source_name));
+    const bool physical = snapshot_.source_kind == ps2df::winui::SourceKind::physical;
+    HdlToolSafetyText().Text(physical
+        ? L"Physical writes use a separate short-lived RW lease after read-only admission, safety artifacts and exact target confirmation."
+        : L"Image mutation reopens only the selected existing image through WritableFileBlockDevice and cold-verifies afterward.");
+    PhysicalPreflightButton().IsEnabled(physical && !mutation_busy_.load());
+    if (!physical) {
+        PhysicalGateText().Text(L"Physical write gate: not applicable to this image source");
+        PhysicalFingerprintText().Text(L"Fingerprint: -");
+    }
+
+    for (const auto& row : snapshot_.rows) {
+        if (row.kind != ps2hdd::PartitionCatalogKind::hdl || row.is_sub) continue;
+        hdl_game_rows_.push_back(row);
+        std::wstring label = widen(row.title.empty() ? row.partition_id : row.title);
+        if (!row.startup.empty()) label += L" / " + widen(row.startup);
+        label += L" / " + format_bytes(row.size_bytes);
+        HdlGamePicker().Items().Append(winrt::box_value(winrt::hstring(label)));
+    }
+    HdlPreviewButton().IsEnabled(!hdl_iso_path_.empty() && !mutation_busy_.load());
+    HdlInstallButton().IsEnabled(hdl_preview_.ok && !mutation_busy_.load());
+    HdlDeleteSelectedButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !mutation_busy_.load());
+    update_game_action_buttons();
+    refresh_bdm_jail_state();
+}
+
+void MainWindow::update_game_action_buttons()
+{
+    const bool busy = mutation_busy_.load();
+    const bool exporting = iso_export_busy_.load();
+    const bool syncing = opl_sync_busy_.load();
+    const bool has_games = snapshot_.open && !hdl_game_rows_.empty();
+    HdlExportIsoButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !busy && !syncing);
+    HdlExportAllButton().IsEnabled(has_games && !busy && !syncing);
+    HdlCancelExportButton().IsEnabled(exporting);
+    OplSyncPlanButton().IsEnabled(has_games && !busy && !syncing);
+    OplSyncApplyButton().IsEnabled(opl_sync_ready_ && !busy && !syncing);
+}
+
+void MainWindow::choose_hdl_iso()
+{
+    std::array<wchar_t, 32768> path{};
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = native_hwnd();
+    dialog.lpstrFilter = L"PlayStation 2 ISO (*.iso)\0*.iso\0All files\0*.*\0";
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+    if (!GetOpenFileNameW(&dialog)) return;
+    hdl_iso_path_ = std::filesystem::path(path.data());
+    HdlIsoPathText().Text(hdl_iso_path_.wstring());
+    if (HdlTitleBox().Text().empty()) HdlTitleBox().Text(hdl_iso_path_.stem().wstring());
+    hdl_preview_ = {};
+    HdlPreviewStateText().Text(L"ISO selected; preview required before install");
+    refresh_hdl_tools();
+}
+
+void MainWindow::choose_hdl_artifact_directory()
+{
+    const auto picked = pick_folder(native_hwnd());
+    if (!picked) return;
+    hdl_artifact_directory_ = *picked;
+    HdlArtifactPathText().Text(hdl_artifact_directory_.wstring());
+}
+
+void MainWindow::preview_hdl_install()
+{
+    if (mutation_busy_.load()) return;
+    hdl_preview_ = controller_.preview_hdl_install(current_hdl_request());
+    if (!hdl_preview_.ok) {
+        HdlPreviewStateText().Text(L"Install plan refused");
+        HdlInstallButton().IsEnabled(false);
+        show_error(L"HDL install preview", widen(hdl_preview_.error));
+        return;
+    }
+    HdlPreviewStateText().Text(L"Install plan ready");
+    HdlPreviewStartupText().Text(L"Startup: " + widen(hdl_preview_.startup));
+    HdlPreviewPartitionText().Text(L"Partition: " + widen(hdl_preview_.partition_id));
+    HdlPreviewAllocationText().Text(L"Payload " + format_bytes(hdl_preview_.payload_bytes) +
+                                    L" / allocated " + format_bytes(hdl_preview_.allocated_bytes) +
+                                    L" / main + " + std::to_wstring(hdl_preview_.sub_count) + L" sub(s) / " +
+                                    std::to_wstring(hdl_preview_.affected_existing_headers) + L" existing link update(s)");
+    HdlPreviewTargetText().Text(L"Target: " + widen(hdl_preview_.target_name) +
+                                (hdl_preview_.requires_physical_confirmation ? L" / PHYSICAL guarded write" : L" / image mutation"));
+    HdlInstallProgress().Value(0);
+    HdlInstallProgressText().Text(L"Ready to install");
+    HdlInstallButton().IsEnabled(true);
+}
+
+void MainWindow::confirm_physical_action(std::wstring_view action,
+                                         std::function<void()> continuation)
+{
+    if (!current_physical_) {
+        show_error(L"Physical write confirmation", L"The current source is no longer a physical drive.");
+        return;
+    }
+    const std::wstring expected = L"PhysicalDrive" + std::to_wstring(*current_physical_);
+    ContentDialog dialog;
+    dialog.XamlRoot(RootGrid().XamlRoot());
+    dialog.Title(winrt::box_value(winrt::hstring(std::wstring(action))));
+    dialog.PrimaryButtonText(L"Apply destructive write");
+    dialog.CloseButtonText(L"Cancel");
+    dialog.DefaultButton(ContentDialogButton::Close);
+
+    StackPanel panel;
+    panel.Spacing(8);
+    TextBlock warning;
+    warning.Text(L"DriveForge will re-run read-only admission and identity checks before obtaining the writable lease. Type the exact current target below to continue:");
+    warning.TextWrapping(TextWrapping::Wrap);
+    TextBlock expected_text;
+    expected_text.Text(expected);
+    expected_text.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+    TextBox confirmation;
+    confirmation.PlaceholderText(expected);
+    panel.Children().Append(warning);
+    panel.Children().Append(expected_text);
+    panel.Children().Append(confirmation);
+    dialog.Content(panel);
+
+    auto weak = get_weak();
+    auto operation = dialog.ShowAsync();
+    operation.Completed([weak, confirmation, expected, continuation = std::move(continuation)](
+        auto const& async, Windows::Foundation::AsyncStatus status) mutable {
+        if (status != Windows::Foundation::AsyncStatus::Completed ||
+            async.GetResults() != ContentDialogResult::Primary) return;
+        if (auto self = weak.get()) {
+            if (std::wstring(confirmation.Text()) != expected) {
+                self->show_error(L"Physical write confirmation",
+                                 L"Target confirmation did not exactly match " + expected + L".");
+                return;
+            }
+            continuation();
+        }
+    });
+}
+
+void MainWindow::start_hdl_install(bool physical_confirmed)
+{
+    if (mutation_busy_.exchange(true)) return;
+    const auto request = current_hdl_request();
+    HdlPreviewButton().IsEnabled(false);
+    HdlInstallButton().IsEnabled(false);
+    HdlDeleteSelectedButton().IsEnabled(false);
+    HdlToolsInfoBar().IsOpen(false);
+    HdlInstallProgress().Maximum(1);
+    HdlInstallProgress().Value(0);
+    HdlInstallProgressText().Text(L"Starting guarded install...");
+    set_status(L"HDL install in progress...");
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    mutation_thread_ = std::jthread([this, dispatcher, weak, request, physical_confirmed](std::stop_token) {
+        auto result = controller_.install_hdl(
+            request, physical_confirmed,
+            [dispatcher, weak](std::uint64_t copied, std::uint64_t total, std::string_view phase) {
+                const std::string phase_copy(phase);
+                dispatcher.TryEnqueue([weak, copied, total, phase_copy] {
+                    if (auto self = weak.get()) {
+                        self->HdlInstallProgress().Maximum(static_cast<double>(std::max<std::uint64_t>(1, total)));
+                        self->HdlInstallProgress().Value(static_cast<double>(copied));
+                        self->HdlInstallProgressText().Text(widen(phase_copy) + L" / " + format_bytes(copied) + L" of " + format_bytes(total));
+                    }
+                });
+            });
+        dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
+            if (auto self = weak.get()) {
+                self->mutation_busy_.store(false);
+                self->snapshot_ = self->controller_.snapshot();
+                self->hdl_preview_ = {};
+                self->refresh_all_from_snapshot();
+                self->HdlToolsInfoBar().Severity(result.ok ? InfoBarSeverity::Success : InfoBarSeverity::Error);
+                self->HdlToolsInfoBar().Title(result.ok ? L"HDL install verified" : L"HDL install failed");
+                std::wstring message = result.ok
+                    ? L"Cold reopen succeeded for " + widen(result.partition_id) + L"."
+                    : widen(result.error);
+                if (!result.hddmbr_path.empty()) message += L" Safety backup: " + result.hddmbr_path.wstring();
+                if (!result.mutation_journal_path.empty()) message += L" Journal: " + result.mutation_journal_path.wstring();
+                self->HdlToolsInfoBar().Message(message);
+                self->HdlToolsInfoBar().IsOpen(true);
+                self->HdlInstallProgressText().Text(result.ok ? L"Committed and cold-verified" : L"Install stopped");
+                self->set_status(result.ok ? L"HDL install committed and cold-verified" : L"HDL install failed");
+                if (result.ok) self->start_enrichment(false);
+            }
+        });
+    });
+}
+
+void MainWindow::start_hdl_remove(bool physical_confirmed)
+{
+    const int selected = HdlGamePicker().SelectedIndex();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= hdl_game_rows_.size()) return;
+    if (mutation_busy_.exchange(true)) return;
+    const auto row = hdl_game_rows_[static_cast<std::size_t>(selected)];
+    const auto artifacts = hdl_artifact_directory_;
+    HdlPreviewButton().IsEnabled(false);
+    HdlInstallButton().IsEnabled(false);
+    HdlDeleteSelectedButton().IsEnabled(false);
+    HdlToolsInfoBar().IsOpen(false);
+    set_status(L"Removing grouped HDL game...");
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    mutation_thread_ = std::jthread([this, dispatcher, weak, row, artifacts, physical_confirmed](std::stop_token) {
+        auto result = controller_.remove_hdl(row.start_lba, artifacts, physical_confirmed);
+        dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
+            if (auto self = weak.get()) {
+                self->mutation_busy_.store(false);
+                self->snapshot_ = self->controller_.snapshot();
+                self->refresh_all_from_snapshot();
+                self->HdlToolsInfoBar().Severity(result.ok ? InfoBarSeverity::Success : InfoBarSeverity::Error);
+                self->HdlToolsInfoBar().Title(result.ok ? L"HDL game removed and verified" : L"HDL removal failed");
+                std::wstring message = result.ok
+                    ? L"Freed " + format_bytes(result.affected_bytes) + L" without zero-filling payload sectors."
+                    : widen(result.error);
+                if (!result.hddmbr_path.empty()) message += L" Safety backup: " + result.hddmbr_path.wstring();
+                if (!result.mutation_journal_path.empty()) message += L" Journal: " + result.mutation_journal_path.wstring();
+                self->HdlToolsInfoBar().Message(message);
+                self->HdlToolsInfoBar().IsOpen(true);
+                self->set_status(result.ok ? L"HDL removal committed and cold-verified" : L"HDL removal failed");
+                if (result.ok) self->start_enrichment(false);
+            }
+        });
+    });
+}
+
+void MainWindow::run_physical_preflight()
+{
+    if (mutation_busy_.load()) return;
+    set_status(L"Running read-only physical write admission...");
+    const auto result = controller_.physical_write_preflight();
+    if (!result.ok) {
+        PhysicalGateText().Text(L"Physical write gate: REFUSED");
+        PhysicalFingerprintText().Text(L"Fingerprint: -");
+        show_error(L"Physical write preflight", widen(result.error));
+        return;
+    }
+    PhysicalGateText().Text(L"Physical write gate: eligible / APA v" + std::to_wstring(result.apa_version) +
+                           L" / " + std::to_wstring(result.apa_header_count) + L" headers / " +
+                           format_bytes(result.size_bytes));
+    PhysicalFingerprintText().Text(L"Fingerprint: " + widen(result.fingerprint_hex));
+    set_status(L"Physical write preflight passed read-only");
 }
 
 void MainWindow::browse_current_pfs()
@@ -651,9 +910,7 @@ void MainWindow::browse_current_pfs()
 void MainWindow::refresh_files_list()
 {
     FilesList().Items().Clear();
-    for (const auto& entry : visible_file_entries_) {
-        FilesList().Items().Append(make_file_row(entry));
-    }
+    for (const auto& entry : visible_file_entries_) FilesList().Items().Append(make_file_row(entry));
     FilesPathText().Text(current_pfs_path_.empty() ? L"/" : L"/" + widen(current_pfs_path_));
     FilesUpButton().IsEnabled(!current_pfs_path_.empty());
     ExportButton().IsEnabled(false);
@@ -663,58 +920,22 @@ void MainWindow::export_selected_entry()
 {
     const int selected = FilesList().SelectedIndex();
     if (selected < 0 || static_cast<std::size_t>(selected) >= visible_file_entries_.size()) return;
+    const auto destination_root = pick_folder(native_hwnd());
+    if (!destination_root) return;
     const auto entry = visible_file_entries_[static_cast<std::size_t>(selected)];
-
-    IFileOpenDialog* dialog = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&dialog));
-    if (FAILED(hr) || !dialog) {
-        show_error(L"Export", L"Could not create the destination folder picker.");
-        return;
-    }
-    FILEOPENDIALOGOPTIONS options{};
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-    hr = dialog->Show(native_hwnd());
-    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
-        dialog->Release();
-        return;
-    }
-    IShellItem* item = nullptr;
-    if (FAILED(hr) || FAILED(dialog->GetResult(&item)) || !item) {
-        dialog->Release();
-        show_error(L"Export", L"Could not read the selected destination folder.");
-        return;
-    }
-    PWSTR raw_path = nullptr;
-    hr = item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path);
-    item->Release();
-    dialog->Release();
-    if (FAILED(hr) || !raw_path) {
-        show_error(L"Export", L"The selected destination does not have a filesystem path.");
-        return;
-    }
-    std::filesystem::path destination(raw_path);
-    CoTaskMemFree(raw_path);
-
+    auto destination = *destination_root / widen(ps2hdd::pfs::sanitize_host_filename(entry.name));
     const auto source_path = join_pfs_path(current_pfs_path_, entry.name);
-    destination /= widen(ps2hdd::pfs::sanitize_host_filename(entry.name));
-    set_status(L"Exporting " + widen(entry.name) + L"…");
-
+    const auto partition = current_pfs_partition_;
+    set_status(L"Exporting " + widen(entry.name) + L"...");
     auto dispatcher = DispatcherQueue();
     auto weak = get_weak();
-    const auto partition = current_pfs_partition_;
     export_thread_ = std::jthread([this, dispatcher, weak, partition, source_path, destination](std::stop_token) {
         std::string error;
         const bool ok = controller_.export_to_host(partition, source_path, destination, error);
         dispatcher.TryEnqueue([weak, ok, error = std::move(error), destination] {
             if (auto self = weak.get()) {
-                if (ok) {
-                    self->set_status(L"Export complete: " + destination.wstring());
-                } else {
-                    self->set_status(L"Export failed");
-                    self->show_error(L"Export", widen(error));
-                }
+                if (ok) self->set_status(L"Export complete: " + destination.wstring());
+                else self->show_error(L"Export", widen(error));
                 self->refresh_performance();
             }
         });
@@ -736,8 +957,8 @@ void MainWindow::refresh_performance()
     PerfCatalogText().Text(L"Catalog build: " + format_ms(snapshot_.catalog_build_ms));
     PerfReadsText().Text(L"Backing reads: " + std::to_wstring(reads));
     PerfBytesText().Text(L"Backing bytes: " + format_bytes(stats.backing_io.bytes_requested));
-    PerfAvgText().Text(reads == 0 ? L"Average backing read: —" : L"Average backing read: " + format_ms(avg_ms));
-    PerfCacheText().Text(L"Cache hits/misses — browse " + std::to_wstring(stats.cache.browse_hits) + L"/" +
+    PerfAvgText().Text(reads == 0 ? L"Average backing read: -" : L"Average backing read: " + format_ms(avg_ms));
+    PerfCacheText().Text(L"Cache browse " + std::to_wstring(stats.cache.browse_hits) + L"/" +
                         std::to_wstring(stats.cache.browse_misses) + L", stat " +
                         std::to_wstring(stats.cache.stat_hits) + L"/" + std::to_wstring(stats.cache.stat_misses));
 }
@@ -748,14 +969,59 @@ void MainWindow::start_mount()
         show_error(L"Mount", L"Open a PS2 HDD or disk image first.");
         return;
     }
-    if (!mount_point_.empty()) {
-        poll_mount_state();
-        if (!mount_point_.empty()) return;
+    const bool writable = MountWritableToggle().IsOn();
+    if (writable && current_physical_) {
+        confirm_physical_action(L"Mount physical PS2 HDD with Explorer writes", [weak = get_weak()] {
+            if (auto self = weak.get()) self->launch_mount(true);
+        });
+        return;
     }
+    launch_mount(writable);
+}
 
+std::filesystem::path MainWindow::mount_status_path() const
+{
+    const std::wstring name = current_physical_ ? L"PhysicalDrive" + std::to_wstring(*current_physical_)
+                                                : current_image_.filename().wstring();
+    return local_app_data_path() / L"PS2 DriveForge" / L"Spool" / name / L"status.txt";
+}
+
+void MainWindow::launch_mount(bool writable, std::optional<bool> replay_journal)
+{
+    if (writable && !replay_journal) {
+        // Crash recovery: uncommitted files from a previous writable session
+        // stay in the spool until the user decides what to do with them.
+        const auto orphans = ps2hdd::PfsWriteBack::scan_journal(mount_status_path().parent_path());
+        if (!orphans.empty()) {
+            ContentDialog dialog;
+            dialog.XamlRoot(RootGrid().XamlRoot());
+            dialog.Title(winrt::box_value(winrt::hstring(L"Uncommitted files from a previous session")));
+            std::wstring body = std::to_wstring(orphans.size()) +
+                L" file(s) were copied to this source but never reached the disk (the mount ended unexpectedly):\n";
+            for (std::size_t i = 0; i < orphans.size() && i < 8; ++i) {
+                body += L"  " + widen(orphans[i].partition + orphans[i].path) + L"\n";
+            }
+            if (orphans.size() > 8) body += L"  ...\n";
+            body += L"\nReplay writes them now. Mounting without replaying keeps them safely in the spool for later.";
+            dialog.Content(winrt::box_value(winrt::hstring(body)));
+            dialog.PrimaryButtonText(L"Replay and mount");
+            dialog.SecondaryButtonText(L"Mount without replaying");
+            dialog.CloseButtonText(L"Cancel");
+            dialog.DefaultButton(ContentDialogButton::Secondary);
+            auto weak = get_weak();
+            dialog.ShowAsync().Completed([weak](auto const& async, Windows::Foundation::AsyncStatus status) {
+                if (status != Windows::Foundation::AsyncStatus::Completed) return;
+                const auto choice = async.GetResults();
+                if (choice == ContentDialogResult::None) return;
+                if (auto self = weak.get()) self->launch_mount(true, choice == ContentDialogResult::Primary);
+            });
+            return;
+        }
+    }
+    mount_writable_ = writable;
     const auto helper = mount_helper_path();
     if (!path_exists(helper)) {
-        show_error(L"Mount", L"PS2-DriveForge-Mount.exe is not present. Use the full Setup/Portable package rather than the standalone WinUI development artifact.");
+        show_error(L"Mount", L"PS2-DriveForge-Mount.exe is not present in this package.");
         return;
     }
     const auto letter = ps2hdd::darkness_policy::choose_mount_letter(GetLogicalDrives());
@@ -764,20 +1030,21 @@ void MainWindow::start_mount()
         return;
     }
     mount_point_ = std::wstring{*letter, L':', L'\\'};
-
     std::wstring parameters;
     bool elevate = false;
     if (current_physical_) {
         parameters = L"--physical " + std::to_wstring(*current_physical_) + L" --mount \"" + mount_point_ + L"\"";
+        if (writable) parameters += L" --writable --confirm PhysicalDrive" + std::to_wstring(*current_physical_);
+        if (writable && replay_journal.value_or(false)) parameters += L" --replay-journal";
         elevate = true;
     } else if (!current_image_.empty()) {
         parameters = L"--image \"" + current_image_.wstring() + L"\" --mount \"" + mount_point_ + L"\"";
+        if (writable) parameters += L" --writable";
+        if (writable && replay_journal.value_or(false)) parameters += L" --replay-journal";
     } else {
         mount_point_.clear();
-        show_error(L"Mount", L"The current source cannot be reopened for mounting.");
         return;
     }
-
     SHELLEXECUTEINFOW execute{};
     execute.cbSize = sizeof(execute);
     execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
@@ -789,16 +1056,12 @@ void MainWindow::start_mount()
     execute.lpDirectory = root.c_str();
     execute.nShow = SW_HIDE;
     if (!ShellExecuteExW(&execute) || !execute.hProcess) {
-        const DWORD error = GetLastError();
         mount_point_.clear();
-        if (error != ERROR_CANCELLED) show_error(L"Mount", L"Could not start the read-only mount helper.");
+        if (GetLastError() != ERROR_CANCELLED) show_error(L"Mount", L"Could not start the mount helper.");
         return;
     }
     if (mount_process_) CloseHandle(mount_process_);
     mount_process_ = execute.hProcess;
-    MountStatusText().Text(L"Mounting read-only…");
-    MountPointText().Text(L"Drive letter: " + mount_point_);
-    set_status(L"Mounting DriveForge read-only at " + mount_point_ + L"…");
     mount_timer_.Start();
     poll_mount_state();
 }
@@ -821,11 +1084,9 @@ void MainWindow::request_unmount(bool interactive)
     execute.nShow = SW_HIDE;
     if (ShellExecuteExW(&execute)) {
         if (execute.hProcess) CloseHandle(execute.hProcess);
-        set_status(L"Unmount requested for " + mount_point_);
-        MountStatusText().Text(L"Unmounting…");
         mount_timer_.Start();
     } else if (interactive && GetLastError() != ERROR_CANCELLED) {
-        show_error(L"Unmount", L"Could not start the unmount helper.");
+        show_error(L"Unmount", L"Could not start unmount helper.");
     }
 }
 
@@ -839,46 +1100,54 @@ void MainWindow::poll_mount_state()
         UnmountButton().IsEnabled(false);
         MountButton().IsEnabled(snapshot_.open);
         MountPageMountButton().IsEnabled(snapshot_.open);
+        MountWritableToggle().IsEnabled(true);
+        MountWriteBackText().Text(L"");
         return;
     }
-
     const bool mounted = GetFileAttributesW(mount_point_.c_str()) != INVALID_FILE_ATTRIBUTES;
     if (mounted) {
-        MountStatusText().Text(L"Mounted read-only");
+        MountStatusText().Text(mount_writable_ ? L"Mounted with write-back" : L"Mounted read-only");
         MountPointText().Text(L"Drive letter: " + mount_point_);
+        MountWritableToggle().IsEnabled(false);
+        if (mount_writable_) {
+            std::wifstream in(mount_status_path());
+            std::map<std::wstring, std::wstring> status;
+            for (std::wstring line; std::getline(in, line);) {
+                if (const auto eq = line.find(L'='); eq != std::wstring::npos) status[line.substr(0, eq)] = line.substr(eq + 1);
+            }
+            std::wstring text = status.empty() ? L"Waiting for write-back status..." :
+                L"Pending: " + status[L"pending_ops"] + L" change(s) | committed: " + status[L"committed_ops"] +
+                L" | coalesced: " + status[L"coalesced_ops"] + L" | app writes " + status[L"application_writes"] +
+                L" -> " + status[L"disk_sessions"] + L" disk session(s)";
+            if (status[L"failed_ops"] != L"0" && !status[L"failed_ops"].empty()) text += L" | FAILED: " + status[L"failed_ops"];
+            if (status[L"read_only"] == L"1") text += L"\nCircuit breaker tripped - mount is now read-only. " + status[L"last_error"];
+            else if (!status[L"last_error"].empty()) text += L"\nLast error: " + status[L"last_error"];
+            MountWriteBackText().Text(text);
+        } else {
+            MountWriteBackText().Text(L"");
+        }
         OpenExplorerButton().IsEnabled(true);
         MountPageExplorerButton().IsEnabled(true);
         UnmountButton().IsEnabled(true);
         MountButton().IsEnabled(false);
         MountPageMountButton().IsEnabled(false);
-        set_status(L"Mounted read-only at " + mount_point_);
         return;
     }
-
     if (mount_process_ && WaitForSingleObject(mount_process_, 0) == WAIT_OBJECT_0) {
         DWORD exit_code = 0;
         GetExitCodeProcess(mount_process_, &exit_code);
         CloseHandle(mount_process_);
         mount_process_ = nullptr;
-        const auto old = mount_point_;
         mount_point_.clear();
         mount_timer_.Stop();
         MountStatusText().Text(exit_code == 0 ? L"Nothing mounted" : L"Mount helper exited with an error");
         MountPointText().Text(L"Drive letter: automatic");
-        OpenExplorerButton().IsEnabled(false);
-        MountPageExplorerButton().IsEnabled(false);
-        UnmountButton().IsEnabled(false);
-        MountButton().IsEnabled(snapshot_.open);
-        MountPageMountButton().IsEnabled(snapshot_.open);
-        set_status(exit_code == 0 ? L"Unmounted " + old : L"Mount failed — helper exit code " + std::to_wstring(exit_code));
     }
 }
 
 void MainWindow::open_mounted_volume()
 {
-    if (!mount_point_.empty()) {
-        ShellExecuteW(native_hwnd(), L"open", mount_point_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    }
+    if (!mount_point_.empty()) ShellExecuteW(native_hwnd(), L"open", mount_point_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void MainWindow::load_theme_preference()
@@ -908,6 +1177,101 @@ void MainWindow::save_theme_preference(int index)
 void MainWindow::apply_theme_index(int index)
 {
     RootGrid().RequestedTheme(index == 1 ? ElementTheme::Light : (index == 2 ? ElementTheme::Dark : ElementTheme::Default));
+    update_caption_buttons();
+}
+
+namespace {
+
+// Minimum track size in DIPs, scaled per monitor. Below this the cards and
+// tables reflow into unusable slivers; Windows enforces it during live resize.
+LRESULT CALLBACK window_chrome_subclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                        UINT_PTR id, DWORD_PTR)
+{
+    if (message == WM_GETMINMAXINFO) {
+        const UINT dpi = GetDpiForWindow(window);
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize.x = MulDiv(960, static_cast<int>(dpi), 96);
+        info->ptMinTrackSize.y = MulDiv(640, static_cast<int>(dpi), 96);
+        return 0;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(window, window_chrome_subclass, id);
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+std::filesystem::path placement_path()
+{
+    return local_app_data_path() / L"PS2 DriveForge" / L"window.txt";
+}
+
+} // namespace
+
+void MainWindow::install_window_chrome()
+{
+    if (HWND window = native_hwnd()) SetWindowSubclass(window, window_chrome_subclass, 0x5053, 0);
+}
+
+// With ExtendsContentIntoTitleBar the caption buttons are drawn by the system
+// using AppWindow.TitleBar colors, which do NOT follow RootGrid.RequestedTheme.
+// Without this, forcing Light on a dark system leaves white min/max/close
+// glyphs on a light Mica title bar (and the reverse).
+void MainWindow::update_caption_buttons()
+{
+    try {
+        const bool dark = RootGrid().ActualTheme() == ElementTheme::Dark;
+        using winrt::Windows::UI::Color;
+        using Ref = winrt::Windows::Foundation::IReference<Color>;
+        const Color transparent{0, 0, 0, 0};
+        const Color foreground = dark ? Color{255, 255, 255, 255} : Color{255, 26, 26, 26};
+        const Color inactive = dark ? Color{255, 150, 150, 150} : Color{255, 130, 130, 130};
+        const Color hover = dark ? Color{24, 255, 255, 255} : Color{20, 0, 0, 0};
+        const Color pressed = dark ? Color{40, 255, 255, 255} : Color{36, 0, 0, 0};
+        auto bar = AppWindow().TitleBar();
+        bar.ButtonBackgroundColor(Ref{transparent});
+        bar.ButtonInactiveBackgroundColor(Ref{transparent});
+        bar.ButtonForegroundColor(Ref{foreground});
+        bar.ButtonHoverForegroundColor(Ref{foreground});
+        bar.ButtonPressedForegroundColor(Ref{foreground});
+        bar.ButtonInactiveForegroundColor(Ref{inactive});
+        bar.ButtonHoverBackgroundColor(Ref{hover});
+        bar.ButtonPressedBackgroundColor(Ref{pressed});
+        if (HWND window = native_hwnd()) {
+            const BOOL dark_frame = dark ? TRUE : FALSE;
+            DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_frame, sizeof(dark_frame));
+        }
+    } catch (winrt::hresult_error const&) {
+        // Title-bar customization is cosmetic; never let it break startup.
+    }
+}
+
+void MainWindow::restore_window_placement()
+{
+    HWND window = native_hwnd();
+    std::ifstream input(placement_path());
+    RECT rect{};
+    int maximized = 0;
+    if (!window || !(input >> rect.left >> rect.top >> rect.right >> rect.bottom >> maximized)) return;
+    // Only restore onto a monitor that still exists (laptops undock, TVs turn off).
+    if (rect.right - rect.left < 200 || rect.bottom - rect.top < 200 ||
+        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) return;
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    placement.showCmd = maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    placement.rcNormalPosition = rect;
+    SetWindowPlacement(window, &placement);
+}
+
+void MainWindow::save_window_placement() const
+{
+    HWND window = native_hwnd();
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    if (!window || !GetWindowPlacement(window, &placement)) return;
+    std::error_code ec;
+    std::filesystem::create_directories(placement_path().parent_path(), ec);
+    std::ofstream output(placement_path(), std::ios::trunc);
+    const auto& r = placement.rcNormalPosition;
+    output << r.left << ' ' << r.top << ' ' << r.right << ' ' << r.bottom << ' '
+           << (placement.showCmd == SW_SHOWMAXIMIZED ? 1 : 0) << '\n';
 }
 
 void MainWindow::restart_as_administrator()
@@ -917,11 +1281,8 @@ void MainWindow::restart_as_administrator()
     const auto directory = target.parent_path();
     const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(native_hwnd(), L"runas", target.c_str(), nullptr,
                                                                 directory.c_str(), SW_SHOWNORMAL));
-    if (result > 32) {
-        Close();
-    } else if (result != SE_ERR_ACCESSDENIED) {
-        show_error(L"Administrator restart", L"Windows could not restart DriveForge with elevated privileges.");
-    }
+    if (result > 32) Close();
+    else if (result != SE_ERR_ACCESSDENIED) show_error(L"Administrator restart", L"Windows could not restart DriveForge elevated.");
 }
 
 void MainWindow::open_startup_log()
@@ -950,10 +1311,7 @@ void MainWindow::show_error(std::wstring_view title, std::wstring_view message) 
     MessageBoxW(native_hwnd(), std::wstring(message).c_str(), std::wstring(title).c_str(), MB_OK | MB_ICONERROR);
 }
 
-void MainWindow::set_status(std::wstring_view text)
-{
-    StatusText().Text(std::wstring(text));
-}
+void MainWindow::set_status(std::wstring_view text) { StatusText().Text(std::wstring(text)); }
 
 HWND MainWindow::native_hwnd() const
 {
@@ -978,25 +1336,10 @@ std::filesystem::path MainWindow::package_root() const
     return path;
 }
 
-std::filesystem::path MainWindow::mount_helper_path() const
-{
-    return package_root() / L"tools" / L"PS2-DriveForge-Mount.exe";
-}
-
-std::filesystem::path MainWindow::launcher_path() const
-{
-    return package_root() / L"PS2-DriveForge.exe";
-}
-
-std::filesystem::path MainWindow::startup_log_path() const
-{
-    return local_app_data_path() / L"PS2 DriveForge" / L"Logs" / L"winui-startup.log";
-}
-
-std::filesystem::path MainWindow::settings_path() const
-{
-    return local_app_data_path() / L"PS2 DriveForge" / L"settings.txt";
-}
+std::filesystem::path MainWindow::mount_helper_path() const { return package_root() / L"tools" / L"PS2-DriveForge-Mount.exe"; }
+std::filesystem::path MainWindow::launcher_path() const { return package_root() / L"PS2-DriveForge.exe"; }
+std::filesystem::path MainWindow::startup_log_path() const { return local_app_data_path() / L"PS2 DriveForge" / L"Logs" / L"winui-startup.log"; }
+std::filesystem::path MainWindow::settings_path() const { return local_app_data_path() / L"PS2 DriveForge" / L"settings.txt"; }
 
 void MainWindow::on_open_image(IInspectable const&, RoutedEventArgs const&)
 {
@@ -1008,26 +1351,447 @@ void MainWindow::on_open_image(IInspectable const&, RoutedEventArgs const&)
     dialog.lpstrFile = path.data();
     dialog.nMaxFile = static_cast<DWORD>(path.size());
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
-    if (GetOpenFileNameW(&dialog)) {
-        open_image_async(std::filesystem::path(path.data()));
-    }
+    if (GetOpenFileNameW(&dialog)) open_image_async(std::filesystem::path(path.data()));
 }
 
 void MainWindow::on_rescan(IInspectable const&, RoutedEventArgs const&) { start_discovery(true); }
-
 void MainWindow::on_open_drive(IInspectable const&, RoutedEventArgs const&)
 {
     const int selected = DriveSelector().SelectedIndex();
-    if (selected >= 0 && static_cast<std::size_t>(selected) < detected_drives_.size()) {
+    if (selected >= 0 && static_cast<std::size_t>(selected) < detected_drives_.size())
         open_physical_async(detected_drives_[static_cast<std::size_t>(selected)].index);
-    }
 }
-
 void MainWindow::on_filter_changed(IInspectable const&, TextChangedEventArgs const&) { refresh_partition_list(); }
 void MainWindow::on_partition_filter_changed(IInspectable const&, SelectionChangedEventArgs const&) { refresh_partition_list(); }
 void MainWindow::on_show_subs_toggled(IInspectable const&, RoutedEventArgs const&) { refresh_partition_list(); }
 void MainWindow::on_refresh_metadata(IInspectable const&, RoutedEventArgs const&) { start_enrichment(true); }
 void MainWindow::on_cancel_enrichment(IInspectable const&, RoutedEventArgs const&) { if (enrichment_thread_.joinable()) enrichment_thread_.request_stop(); }
+
+void MainWindow::on_hdl_choose_iso(IInspectable const&, RoutedEventArgs const&) { choose_hdl_iso(); }
+void MainWindow::on_hdl_choose_artifacts(IInspectable const&, RoutedEventArgs const&) { choose_hdl_artifact_directory(); }
+void MainWindow::on_hdl_preview(IInspectable const&, RoutedEventArgs const&) { preview_hdl_install(); }
+void MainWindow::on_hdl_install(IInspectable const&, RoutedEventArgs const&)
+{
+    if (snapshot_.source_kind == ps2df::winui::SourceKind::physical) {
+        confirm_physical_action(L"Install HDL game to physical PS2 HDD", [weak = get_weak()] {
+            if (auto self = weak.get()) self->start_hdl_install(true);
+        });
+    } else {
+        start_hdl_install(false);
+    }
+}
+void MainWindow::on_hdl_game_changed(IInspectable const&, SelectionChangedEventArgs const&)
+{
+    HdlDeleteSelectedButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !mutation_busy_.load());
+    update_game_action_buttons();
+}
+
+void MainWindow::on_hdl_export_iso(IInspectable const&, RoutedEventArgs const&)
+{
+    const int selected = HdlGamePicker().SelectedIndex();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= hdl_game_rows_.size()) return;
+    const auto directory = pick_folder(native_hwnd());
+    if (!directory) return;
+    start_iso_export({hdl_game_rows_[static_cast<std::size_t>(selected)]}, *directory);
+}
+
+void MainWindow::on_hdl_export_all(IInspectable const&, RoutedEventArgs const&)
+{
+    if (hdl_game_rows_.empty()) return;
+    const auto directory = pick_folder(native_hwnd());
+    if (!directory) return;
+    start_iso_export(hdl_game_rows_, *directory);
+}
+
+void MainWindow::on_hdl_cancel_export(IInspectable const&, RoutedEventArgs const&)
+{
+    if (iso_export_thread_.joinable()) iso_export_thread_.request_stop();
+    HdlExportProgressText().Text(L"Cancelling after the current chunk...");
+}
+
+void MainWindow::start_iso_export(std::vector<ps2df::winui::PartitionRowSnapshot> games,
+                                  std::filesystem::path directory)
+{
+    // Export is read-only, but it holds the session for a long time; keep
+    // mutations out until it finishes so nothing reopens the source under it.
+    if (mutation_busy_.exchange(true)) return;
+    iso_export_busy_.store(true);
+    if (iso_export_thread_.joinable()) iso_export_thread_.join();
+    update_game_action_buttons();
+    HdlInstallButton().IsEnabled(false);
+    HdlDeleteSelectedButton().IsEnabled(false);
+    HdlExportProgress().Value(0);
+    HdlExportProgressText().Text(L"Starting read-only ISO export...");
+    set_status(L"Exporting HDL game ISO(s) read-only...");
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    iso_export_thread_ = std::jthread([this, dispatcher, weak, games = std::move(games),
+                                       directory = std::move(directory)](std::stop_token stop) {
+        std::size_t exported = 0, skipped = 0, failed = 0;
+        std::wstring last_error;
+        bool cancelled = false;
+        for (std::size_t i = 0; i < games.size() && !cancelled; ++i) {
+            const auto& game = games[i];
+            const auto started = std::chrono::steady_clock::now();
+            const std::wstring name = widen(game.title.empty() ? game.partition_id : game.title);
+            const std::size_t index = i;
+            const std::size_t count = games.size();
+            auto result = controller_.export_hdl_iso(
+                game.partition_id, directory,
+                [dispatcher, weak, name, index, count, started](std::uint64_t done, std::uint64_t total) {
+                    const double seconds = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started).count();
+                    dispatcher.TryEnqueue([weak, name, index, count, done, total, seconds] {
+                        if (auto self = weak.get()) {
+                            const double game_fraction = total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total);
+                            self->HdlExportProgress().Value((static_cast<double>(index) + game_fraction) / static_cast<double>(count));
+                            std::wstring text = L"[" + std::to_wstring(index + 1) + L"/" + std::to_wstring(count) + L"] " +
+                                                name + L"  " + format_bytes(done) + L" / " + format_bytes(total);
+                            if (seconds > 0.5) {
+                                text += L"  (" + format_bytes(static_cast<std::uint64_t>(static_cast<double>(done) / seconds)) + L"/s)";
+                            }
+                            self->HdlExportProgressText().Text(text);
+                        }
+                    });
+                },
+                stop);
+            if (result.ok) {
+                ++exported;
+            } else if (result.cancelled || stop.stop_requested()) {
+                cancelled = true;
+            } else if (result.error.find("already exists") != std::string::npos) {
+                ++skipped;
+            } else {
+                ++failed;
+                last_error = name + L": " + widen(result.error);
+            }
+        }
+        dispatcher.TryEnqueue([weak, exported, skipped, failed, cancelled, last_error, directory] {
+            if (auto self = weak.get()) {
+                self->iso_export_busy_.store(false);
+                self->mutation_busy_.store(false);
+                self->HdlExportProgress().Value(cancelled ? 0.0 : 1.0);
+                std::wstring summary = L"Exported " + std::to_wstring(exported) + L", skipped " +
+                                       std::to_wstring(skipped) + L" existing, failed " +
+                                       std::to_wstring(failed) + (cancelled ? L" (cancelled)" : L"") +
+                                       L" -> " + directory.wstring();
+                if (!last_error.empty()) summary += L". Last error: " + last_error;
+                self->HdlExportProgressText().Text(summary);
+                self->set_status(cancelled ? L"ISO export cancelled; no partial files left" : L"ISO export finished");
+                self->refresh_hdl_tools();
+            }
+        });
+    });
+}
+
+void MainWindow::set_bdm_root(const std::filesystem::path& root)
+{
+    bdm_root_ = root;
+    BdmRootText().Text(root.wstring());
+    update_bdm_buttons();
+}
+
+void MainWindow::update_bdm_buttons()
+{
+    const bool idle = !bdm_busy_.load();
+    const bool has_root = !bdm_root_.empty();
+    BdmInstallButton().IsEnabled(idle && has_root && !hdl_iso_path_.empty());
+    BdmScanButton().IsEnabled(idle && has_root);
+    BdmSyncButton().IsEnabled(idle && has_root);
+    BdmOpenButton().IsEnabled(has_root);
+    BdmChooseRootButton().IsEnabled(idle);
+    BdmDetectButton().IsEnabled(idle && snapshot_.open);
+}
+
+void MainWindow::refresh_bdm_jail_state()
+{
+    if (!snapshot_.open) {
+        BdmJailStateText().Text(L"APA-Jail exFAT side: open a source to detect it, or pick any OPL BDM folder.");
+        update_bdm_buttons();
+        return;
+    }
+    const auto jail = controller_.jail_library();
+    std::wstring text;
+    if (jail.jail) {
+        text = L"APA-Jail " + (jail.signature.empty() ? std::wstring(L"(unsigned)") : widen(jail.signature));
+        if (jail.has_exfat)
+            text += L" - exFAT library at offset " + format_bytes(jail.exfat_offset_bytes) + L", " +
+                    format_bytes(jail.exfat_size_bytes) + L". ";
+        else
+            text += L". ";
+    }
+    text += widen(jail.note);
+    if (!jail.volume.empty()) text += L" (" + jail.volume.wstring() + L")";
+    BdmJailStateText().Text(text);
+    if (bdm_root_.empty() && !jail.volume.empty()) set_bdm_root(jail.volume);
+    update_bdm_buttons();
+}
+
+void MainWindow::on_bdm_detect(IInspectable const&, RoutedEventArgs const&)
+{
+    const auto jail = controller_.jail_library();
+    if (!jail.volume.empty()) {
+        set_bdm_root(jail.volume);
+        set_status(L"Using the APA-Jail exFAT volume " + jail.volume.wstring());
+    } else {
+        set_status(widen(jail.note));
+    }
+    refresh_bdm_jail_state();
+}
+
+void MainWindow::on_bdm_choose_root(IInspectable const&, RoutedEventArgs const&)
+{
+    if (const auto picked = pick_folder(native_hwnd())) set_bdm_root(*picked);
+}
+
+void MainWindow::on_bdm_open(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty()) return;
+    ShellExecuteW(native_hwnd(), L"open", bdm_root_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void MainWindow::on_bdm_install(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || hdl_iso_path_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    ps2hdd::bdm::InstallOptions options;
+    options.title = winrt::to_string(HdlTitleBox().Text());
+    // The media picker defaults to DVD; only an explicit CD choice overrides the
+    // library's size-based CD/DVD detection.
+    if (HdlMediaPicker().SelectedIndex() == 1) options.media = ps2hdd::hdl::MediaType::cd;
+    BdmProgress().IsIndeterminate(false);
+    BdmProgress().Value(0);
+    BdmSummaryText().Text(L"Preallocating and copying into the library...");
+    set_status(L"Installing ISO into the BDM library");
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_, iso = hdl_iso_path_, options](std::stop_token stop) {
+        auto result = ps2hdd::bdm::install_game(
+            root, iso, options,
+            [dispatcher, weak](std::uint64_t done, std::uint64_t total) {
+                dispatcher.TryEnqueue([weak, done, total] {
+                    if (auto self = weak.get())
+                        self->BdmProgress().Value(total == 0 ? 0.0 : static_cast<double>(done) / static_cast<double>(total));
+                });
+            },
+            stop);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            if (!result.ok) {
+                self->BdmSummaryText().Text(result.cancelled ? std::wstring(L"Install cancelled; partial file removed.")
+                                                             : L"Install failed: " + widen(result.error));
+            } else {
+                std::wstring text = L"Installed " + widen(result.startup) + L" -> " + result.path.wstring() + L" (" +
+                                    format_bytes(result.bytes) + L", " +
+                                    (result.fragments.known
+                                         ? std::to_wstring(result.fragments.extents) + L" fragment(s)"
+                                         : std::wstring(L"fragments unknown")) +
+                                    L")";
+                for (const auto& warning : result.warnings) text += L"\n" + widen(warning);
+                self->BdmSummaryText().Text(text);
+                self->BdmProgress().Value(1.0);
+                self->set_status(L"BDM install complete");
+            }
+            self->update_bdm_buttons();
+        });
+    });
+}
+
+void MainWindow::on_bdm_scan(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    BdmProgress().IsIndeterminate(true);
+    BdmSummaryText().Text(L"Scanning DVD\\ and CD\\ and measuring fragmentation...");
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_](std::stop_token) {
+        auto games = ps2hdd::bdm::scan_library(root);
+        dispatcher.TryEnqueue([weak, games = std::move(games)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            self->BdmProgress().IsIndeterminate(false);
+            std::size_t fragmented = 0;
+            std::wstring lines;
+            for (const auto& game : games) {
+                const bool bad = game.fragments.known && game.fragments.extents > ps2hdd::bdm::kOplMaxFragments;
+                if (bad) ++fragmented;
+                lines += widen(game.startup.empty() ? std::string("?") : game.startup) + L"  " +
+                         (game.cd ? L"CD  " : L"DVD ") + game.path.filename().wstring();
+                if (game.fragments.known) lines += L"  [" + std::to_wstring(game.fragments.extents) + L" frag]";
+                if (bad) lines += L"  <- too fragmented for OPL";
+                if (!game.error.empty()) lines += L"  (" + widen(game.error) + L")";
+                lines += L"\n";
+            }
+            self->BdmSummaryText().Text(std::to_wstring(games.size()) + L" game image(s), " +
+                                        std::to_wstring(fragmented) + L" over OPL's fragment limit.\n" + lines);
+            self->update_bdm_buttons();
+        });
+    });
+}
+
+void MainWindow::on_bdm_sync(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    BdmProgress().IsIndeterminate(true);
+    BdmSummaryText().Text(L"Fetching missing ART/CFG/CHT for the library...");
+    const auto cache_root = local_app_data_path() / L"PS2 DriveForge" / L"OPL Cache";
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_, cache_root](std::stop_token) {
+        ps2hdd::bdm::AssetSyncResult result;
+        auto http = ps2hdd::make_platform_http_client();
+        if (!http) result.error = "Native HTTPS transport is unavailable.";
+        else result = ps2hdd::bdm::sync_assets(root, *http, cache_root, true);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            self->BdmProgress().IsIndeterminate(false);
+            if (!result.ok) {
+                self->BdmSummaryText().Text(L"Asset sync failed: " + widen(result.error));
+            } else {
+                std::wstring text = std::to_wstring(result.games) + L" game(s): " + std::to_wstring(result.written) +
+                                    L" file(s) written, " + std::to_wstring(result.already_present) +
+                                    L" already present.";
+                for (const auto& issue : result.issues) text += L"\n" + widen(issue);
+                self->BdmSummaryText().Text(text);
+                self->set_status(L"BDM library assets updated");
+            }
+            self->update_bdm_buttons();
+        });
+    });
+}
+
+void MainWindow::on_opl_sync_plan(IInspectable const&, RoutedEventArgs const&)
+{
+    if (mutation_busy_.load() || opl_sync_busy_.exchange(true)) return;
+    if (opl_sync_thread_.joinable()) opl_sync_thread_.join();
+    opl_sync_ready_ = false;
+    update_game_action_buttons();
+    OplSyncProgress().Value(0);
+    OplSyncSummaryText().Text(L"Checking the OPL partition and game databases...");
+    OplSyncDetailsText().Text(L"");
+    set_status(L"Planning OPL asset sync (read-only)...");
+    const auto cache_root = local_app_data_path() / L"PS2 DriveForge" / L"OPL Cache";
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    opl_sync_thread_ = std::jthread([this, dispatcher, weak, cache_root](std::stop_token stop) {
+        auto plan = controller_.plan_library_sync(
+            cache_root,
+            [dispatcher, weak](std::size_t done, std::size_t total) {
+                dispatcher.TryEnqueue([weak, done, total] {
+                    if (auto self = weak.get()) {
+                        self->OplSyncProgress().Value(total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total));
+                        self->OplSyncSummaryText().Text(L"Checked " + std::to_wstring(done) + L" of " + std::to_wstring(total) + L" game(s)...");
+                    }
+                });
+            },
+            stop);
+        dispatcher.TryEnqueue([weak, plan = std::move(plan)] {
+            if (auto self = weak.get()) {
+                self->opl_sync_busy_.store(false);
+                self->OplSyncProgress().Value(1.0);
+                if (!plan.ok) {
+                    self->OplSyncSummaryText().Text(L"Could not plan OPL sync: " + widen(plan.error));
+                    self->update_game_action_buttons();
+                    return;
+                }
+                self->opl_sync_ready_ = plan.asset_count > 0;
+                std::wstring summary = widen(plan.opl_partition_id) + L": " + std::to_wstring(plan.games) +
+                                       L" game(s) - " + std::to_wstring(plan.games_with_updates) + L" with new files (" +
+                                       std::to_wstring(plan.asset_count) + L" files, " + format_bytes(plan.asset_bytes) +
+                                       L"), " + std::to_wstring(plan.up_to_date) + L" already complete, " +
+                                       std::to_wstring(plan.nothing_found) + L" not in databases, " +
+                                       std::to_wstring(plan.skipped) + L" skipped.";
+                if (plan.asset_count == 0) summary += L" Nothing to write.";
+                else if (plan.requires_physical_confirmation) summary += L" Writing needs physical target confirmation.";
+                self->OplSyncSummaryText().Text(summary);
+                std::wstring details;
+                for (const auto& line : plan.details) details += widen(line) + L"\n";
+                self->OplSyncDetailsText().Text(details);
+                self->set_status(L"OPL asset plan ready; nothing has been written yet");
+                self->update_game_action_buttons();
+            }
+        });
+    });
+}
+
+void MainWindow::on_opl_sync_apply(IInspectable const&, RoutedEventArgs const&)
+{
+    if (!opl_sync_ready_) return;
+    if (snapshot_.source_kind == ps2df::winui::SourceKind::physical) {
+        confirm_physical_action(L"Write OPL artwork, CFG and cheats to physical PS2 HDD", [weak = get_weak()] {
+            if (auto self = weak.get()) self->start_opl_sync_apply(true);
+        });
+    } else {
+        start_opl_sync_apply(false);
+    }
+}
+
+void MainWindow::start_opl_sync_apply(bool physical_confirmed)
+{
+    if (mutation_busy_.exchange(true)) return;
+    opl_sync_busy_.store(true);
+    if (opl_sync_thread_.joinable()) opl_sync_thread_.join();
+    update_game_action_buttons();
+    OplSyncSummaryText().Text(L"Writing staged files to the OPL partition...");
+    set_status(L"Applying OPL asset sync...");
+    const auto artifacts = hdl_artifact_directory_.empty()
+        ? local_app_data_path() / L"PS2 DriveForge" / L"Recovery"
+        : hdl_artifact_directory_;
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    opl_sync_thread_ = std::jthread([this, dispatcher, weak, artifacts, physical_confirmed](std::stop_token) {
+        auto result = controller_.apply_library_sync(artifacts, physical_confirmed);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            if (auto self = weak.get()) {
+                self->mutation_busy_.store(false);
+                self->opl_sync_busy_.store(false);
+                self->opl_sync_ready_ = false;
+                self->snapshot_ = self->controller_.snapshot();
+                self->refresh_all_from_snapshot();
+                self->HdlToolsInfoBar().Severity(result.ok ? InfoBarSeverity::Success : InfoBarSeverity::Error);
+                self->HdlToolsInfoBar().Title(result.ok ? L"OPL assets written and verified" : L"OPL asset sync failed");
+                std::wstring message = result.ok
+                    ? (result.warning.empty() ? L"Wrote " + std::to_wstring(result.affected_headers) +
+                                                    L" file(s) to " + widen(result.partition_id) + L"."
+                                              : widen(result.warning))
+                    : widen(result.error);
+                if (!result.hddmbr_path.empty()) message += L" Safety backup: " + result.hddmbr_path.wstring();
+                self->HdlToolsInfoBar().Message(message);
+                self->HdlToolsInfoBar().IsOpen(true);
+                self->OplSyncSummaryText().Text(result.ok ? L"Up to date. Run the check again after installing more games."
+                                                          : L"Sync did not complete: " + widen(result.error));
+                self->set_status(result.ok ? L"OPL asset sync committed and cold-verified" : L"OPL asset sync failed");
+                self->update_game_action_buttons();
+            }
+        });
+    });
+}
+void MainWindow::on_hdl_delete(IInspectable const&, RoutedEventArgs const&)
+{
+    if (snapshot_.source_kind == ps2df::winui::SourceKind::physical) {
+        confirm_physical_action(L"Delete grouped HDL game from physical PS2 HDD", [weak = get_weak()] {
+            if (auto self = weak.get()) self->start_hdl_remove(true);
+        });
+    } else {
+        const int answer = MessageBoxW(native_hwnd(), L"Remove the selected HDL main partition and all authoritative subs?",
+                                       L"HDL Tools", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        if (answer == IDYES) start_hdl_remove(false);
+    }
+}
+void MainWindow::on_physical_preflight(IInspectable const&, RoutedEventArgs const&) { run_physical_preflight(); }
 
 void MainWindow::on_pfs_partition_changed(IInspectable const&, SelectionChangedEventArgs const&)
 {
@@ -1037,13 +1801,11 @@ void MainWindow::on_pfs_partition_changed(IInspectable const&, SelectionChangedE
     current_pfs_path_.clear();
     browse_current_pfs();
 }
-
 void MainWindow::on_files_selection_changed(IInspectable const&, SelectionChangedEventArgs const&)
 {
     const int selected = FilesList().SelectedIndex();
     ExportButton().IsEnabled(selected >= 0 && static_cast<std::size_t>(selected) < visible_file_entries_.size());
 }
-
 void MainWindow::on_files_double_tapped(IInspectable const&, Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const&)
 {
     const int selected = FilesList().SelectedIndex();
@@ -1054,25 +1816,17 @@ void MainWindow::on_files_double_tapped(IInspectable const&, Microsoft::UI::Xaml
         browse_current_pfs();
     }
 }
-
-void MainWindow::on_files_up(IInspectable const&, RoutedEventArgs const&)
-{
-    current_pfs_path_ = parent_pfs_path(current_pfs_path_);
-    browse_current_pfs();
-}
+void MainWindow::on_files_up(IInspectable const&, RoutedEventArgs const&) { current_pfs_path_ = parent_pfs_path(current_pfs_path_); browse_current_pfs(); }
 void MainWindow::on_export(IInspectable const&, RoutedEventArgs const&) { export_selected_entry(); }
 void MainWindow::on_mount(IInspectable const&, RoutedEventArgs const&) { start_mount(); }
 void MainWindow::on_open_explorer(IInspectable const&, RoutedEventArgs const&) { open_mounted_volume(); }
 void MainWindow::on_unmount(IInspectable const&, RoutedEventArgs const&) { request_unmount(true); }
-
 void MainWindow::on_reset_stats(IInspectable const&, RoutedEventArgs const&)
 {
     controller_.reset_stats();
-    snapshot_ = controller_.snapshot();
     refresh_all_from_snapshot();
     set_status(L"Performance counters reset");
 }
-
 void MainWindow::on_theme_changed(IInspectable const&, SelectionChangedEventArgs const&)
 {
     if (suppress_theme_event_) return;
@@ -1080,24 +1834,21 @@ void MainWindow::on_theme_changed(IInspectable const&, SelectionChangedEventArgs
     apply_theme_index(index);
     save_theme_preference(index);
 }
-
 void MainWindow::on_restart_admin(IInspectable const&, RoutedEventArgs const&) { restart_as_administrator(); }
 void MainWindow::on_open_log(IInspectable const&, RoutedEventArgs const&) { open_startup_log(); }
 void MainWindow::on_open_legacy(IInspectable const&, RoutedEventArgs const&) { open_legacy_frontend(); }
-
 void MainWindow::on_telemetry_tick(IInspectable const&, IInspectable const&)
 {
-    if (snapshot_.open) {
+    if (snapshot_.open && !mutation_busy_.load()) {
         snapshot_ = controller_.snapshot();
         BackingReadsText().Text(std::to_wstring(snapshot_.stats.backing_io.read_calls));
         refresh_performance();
     }
 }
-
 void MainWindow::on_mount_tick(IInspectable const&, IInspectable const&) { poll_mount_state(); }
-
 void MainWindow::on_closed(IInspectable const&, Microsoft::UI::Xaml::WindowEventArgs const&)
 {
+    save_window_placement();
     if (!mount_point_.empty()) request_unmount(false);
     if (telemetry_timer_) telemetry_timer_.Stop();
     if (mount_timer_) mount_timer_.Stop();

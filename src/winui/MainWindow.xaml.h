@@ -3,9 +3,16 @@
 #include "pch.h"
 #include "MainWindow.g.h"
 #include "NativeSessionController.hpp"
+#include "WinUIBootstrapProvider.hpp"
+#include "ps2hdd/physical_discovery.hpp"
+#include "ps2hdd/recovery_service.hpp"
 
+#include <commdlg.h>
+
+#include <array>
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,12 +21,724 @@
 
 namespace winrt::PS2DriveForge::WinUI::implementation
 {
+// UTF-8 -> UTF-16 for core error/summary strings (paths and game titles may be
+// non-ASCII; byte-wise widening would mangle them).
+inline std::wstring widen_text(std::string_view text)
+{
+    if (text.empty()) return {};
+    const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (count <= 0) return std::wstring(text.begin(), text.end());
+    std::wstring out(static_cast<std::size_t>(count), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), count);
+    return out;
+}
+
 struct MainWindow : MainWindowT<MainWindow>
 {
     MainWindow();
     ~MainWindow();
 
+    // XAML-generated glue must be able to take the address of declarative event
+    // handlers. Keep only that thin UI surface public; storage state and helper
+    // methods remain private.
+    void on_hdl_export_iso(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_export_all(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_cancel_export(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_opl_sync_plan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_opl_sync_apply(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_detect(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_choose_root(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_install(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_scan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_sync(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_open(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
+    void on_hdl_iso_path_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::TextChangedEventArgs const&)
+    {
+        if (HdlIsoPathText().Text().empty() || hdl_iso_path_.empty()) return;
+        start_hdl_metadata_prepare(false);
+    }
+
+    void on_refresh_hdl_online_metadata(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (hdl_iso_path_.empty()) {
+            show_error(L"Refresh game metadata", L"Choose a PS2 ISO first.");
+            return;
+        }
+        start_hdl_metadata_prepare(true);
+    }
+
+    [[nodiscard]] ps2hdd::recovery_service::Source recovery_source() const
+    {
+        ps2hdd::recovery_service::Source source;
+        source.physical = current_physical_;
+        if (!current_physical_) source.image = current_image_;
+        return source;
+    }
+
+    // Every recovery action runs off the UI thread, then reopens the read-only
+    // session (when it wrote) so the catalog never shows pre-repair caches.
+    void run_recovery(std::wstring title, bool writes,
+                      std::function<ps2hdd::recovery_service::Outcome()> action)
+    {
+        if (mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        set_status(title + L"...");
+        RecoveryHealthText().Text(title + L" running...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, title, writes, action = std::move(action)](std::stop_token) {
+            auto outcome = action();
+            dispatcher.TryEnqueue([weak, title, writes, outcome = std::move(outcome)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                std::wstring text = widen_text(outcome.ok ? outcome.summary : outcome.error);
+                if (!outcome.warning.empty()) text += L"\n" + widen_text(outcome.warning);
+                for (const auto& artifact : outcome.artifacts) text += L"\n" + artifact.wstring();
+                if (!outcome.ok) {
+                    self->RecoveryHealthText().Text(title + L" failed" + (outcome.partial ? L" (partially applied)" : L"") + L"\n" + text);
+                    self->show_error(title, text);
+                    return;
+                }
+                if (writes && !outcome.nothing_to_do) {
+                    std::string reopen_error;
+                    const bool reopened = self->current_physical_
+                        ? self->controller_.open_physical(*self->current_physical_, reopen_error)
+                        : self->controller_.open_image(self->current_image_, reopen_error);
+                    if (!reopened) text += L"\nCommitted, but the read-only session could not reopen: " + widen_text(reopen_error);
+                    self->refresh_all_from_snapshot();
+                    self->refresh_hdl_tools();
+                }
+                self->RecoveryHealthText().Text(text);
+                self->show_recovery_success(title, text);
+                self->set_status(title + L" complete");
+            });
+        });
+    }
+
+    void confirm_recovery_action(std::wstring_view action, std::function<void()> continuation)
+    {
+        if (current_physical_) {
+            confirm_physical_action(action, std::move(continuation));
+            return;
+        }
+        Microsoft::UI::Xaml::Controls::ContentDialog dialog;
+        dialog.XamlRoot(RootGrid().XamlRoot());
+        dialog.Title(winrt::box_value(winrt::hstring(std::wstring(action))));
+        dialog.Content(winrt::box_value(winrt::hstring(
+            L"This writes to " + current_image_.filename().wstring() +
+            L". Safety artifacts are saved to the chosen directory first.")));
+        dialog.PrimaryButtonText(L"Apply to image");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(Microsoft::UI::Xaml::Controls::ContentDialogButton::Close);
+        auto weak = get_weak();
+        dialog.ShowAsync().Completed([weak, continuation = std::move(continuation)](auto const& async, Windows::Foundation::AsyncStatus status) {
+            if (status != Windows::Foundation::AsyncStatus::Completed ||
+                async.GetResults() != Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary) return;
+            if (weak.get()) continuation();
+        });
+    }
+
+    [[nodiscard]] bool recovery_ready(std::wstring_view title, bool needs_directory)
+    {
+        if (mutation_busy_.load()) return false;
+        if (!current_physical_ && current_image_.empty()) {
+            show_error(title, L"Open a PS2 HDD or disk image first.");
+            return false;
+        }
+        if (needs_directory && hdl_artifact_directory_.empty()) {
+            show_error(title, L"Choose a safety/artifact directory first (HDL Tools > Advanced).");
+            return false;
+        }
+        return true;
+    }
+
+    void on_health_check(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Structure health", false) || mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        RecoveryHealthText().Text(L"Checking APA master, chain and bootstrap pointer (read-only)...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, source = recovery_source()](std::stop_token) {
+            auto health = ps2hdd::recovery_service::assess(source);
+            dispatcher.TryEnqueue([weak, health = std::move(health)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                self->RecoveryHealthText().Text(widen_text(health.ok ? health.text : health.error));
+                self->set_status(health.ok ? L"Structure health: " + widen_text(ps2hdd::health::verdict_name(health.report.verdict))
+                                           : std::wstring(L"Structure health check failed"));
+            });
+        });
+    }
+
+    void on_capture_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Create Rescue Capsule", true)) return;
+        run_recovery(L"Create Rescue Capsule", false,
+                     [source = recovery_source(), dir = hdl_artifact_directory_] {
+                         return ps2hdd::recovery_service::capture_rescue(source, dir);
+                     });
+    }
+
+    void on_restore_rescue(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Restore bootstrap", true)) return;
+        confirm_recovery_action(L"Restore bootstrap from HDDRESCUE / HDDMBR", [this] {
+            run_recovery(L"Restore bootstrap", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::restore_bootstrap(source, dir, dir / L"pre-restore");
+                         });
+        });
+    }
+
+    void on_disable_bootstrap(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Disable bootstrap", true)) return;
+        confirm_recovery_action(L"Disable HDD bootstrap (only the MBR program pointer is cleared)", [this] {
+            run_recovery(L"Disable bootstrap", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::disable_bootstrap(source, dir);
+                         });
+        });
+    }
+
+    void on_forensic_analyze(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Forensic APA analysis", true)) return;
+        run_recovery(L"Forensic APA analysis", false,
+                     [source = recovery_source(), dir = hdl_artifact_directory_] {
+                         return ps2hdd::recovery_service::forensic_report(source, dir);
+                     });
+    }
+
+    void on_repair_master(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Repair APA master", true)) return;
+        confirm_recovery_action(L"Apply conservative APA master repair", [this] {
+            run_recovery(L"Repair APA master", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::repair_master(source, dir);
+                         });
+        });
+    }
+
+    void on_repair_forensic(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Forensic APA repair", true)) return;
+        confirm_recovery_action(L"Apply automatic-safe forensic APA topology repair", [this] {
+            run_recovery(L"Forensic APA repair", true,
+                         [source = recovery_source(), dir = hdl_artifact_directory_] {
+                             return ps2hdd::recovery_service::repair_forensic_automatic(source, dir);
+                         });
+        });
+    }
+
+    // ---- Boot chain ---------------------------------------------------------
+    void on_boot_chain(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Boot chain", false) || mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        RecoveryHealthText().Text(L"Reading the MBR program, __sysconf and __system (read-only)...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, source = recovery_source()](std::stop_token) {
+            auto chain = ps2hdd::recovery_service::boot_chain(source);
+            dispatcher.TryEnqueue([weak, chain = std::move(chain)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                self->RecoveryHealthText().Text(widen_text(chain.ok ? chain.text : chain.error));
+                self->set_status(chain.ok ? L"Boot chain: " + widen_text(chain.report.family) : std::wstring(L"Boot chain unavailable"));
+            });
+        });
+    }
+
+    // ---- Drive migration / backup -------------------------------------------
+    struct MigrateChoice {
+        std::optional<unsigned> physical;
+        std::filesystem::path image;
+        std::wstring label;
+    };
+
+    void populate_migrate_targets()
+    {
+        MigrateTargetPicker().Items().Clear();
+        for (const auto& choice : migrate_choices_)
+            MigrateTargetPicker().Items().Append(winrt::box_value(winrt::hstring(choice.label)));
+        update_migrate_buttons();
+    }
+
+    void update_migrate_buttons()
+    {
+        // SelectionChanged can fire while InitializeComponent is still creating
+        // the controls declared after the pickers.
+        if (!MigrateTargetPicker() || !MigrateImageSizePicker() || !MigratePlanButton() || !MigrateStartButton() ||
+            !MigrateCancelButton())
+            return;
+        const bool idle = !migrate_busy_.load();
+        const int index = MigrateTargetPicker().SelectedIndex();
+        const bool has_target = index >= 0 && static_cast<std::size_t>(index) < migrate_choices_.size();
+        const bool image_target = has_target && !migrate_choices_[static_cast<std::size_t>(index)].physical;
+        MigrateImageSizePicker().Visibility(image_target ? Microsoft::UI::Xaml::Visibility::Visible
+                                                         : Microsoft::UI::Xaml::Visibility::Collapsed);
+        MigratePlanButton().IsEnabled(idle && has_target && (current_physical_ || !current_image_.empty()));
+        MigrateStartButton().IsEnabled(idle && migrate_plan_.ok);
+        MigrateCancelButton().IsEnabled(!idle);
+    }
+
+    void on_migrate_target_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
+    {
+        migrate_plan_ = {};  // any change invalidates a checked plan
+        update_migrate_buttons();
+    }
+
+    void on_migrate_refresh(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (migrate_busy_.exchange(true)) return;
+        if (migrate_thread_.joinable()) migrate_thread_.join();
+        MigrateSummaryText().Text(L"Looking for drives (read-only)...");
+        update_migrate_buttons();
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        migrate_thread_ = std::jthread([dispatcher, weak, source = current_physical_](std::stop_token) {
+            auto drives = ps2hdd::discover_physical_drives();
+            dispatcher.TryEnqueue([weak, source, drives = std::move(drives)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->migrate_busy_.store(false);
+                std::vector<MigrateChoice> keep;
+                for (auto& choice : self->migrate_choices_)
+                    if (!choice.physical) keep.push_back(std::move(choice));  // keep chosen image targets
+                std::size_t listed = 0;
+                for (const auto& drive : drives) {
+                    if (source && drive.index == *source) continue;
+                    MigrateChoice choice;
+                    choice.physical = drive.index;
+                    choice.label = L"PhysicalDrive" + std::to_wstring(drive.index) + L"  " +
+                                   widen_text(drive.friendly_name) + L"  " + widen_text(ps2hdd::recovery_service::human_bytes(drive.size_bytes)) +
+                                   (drive.apa_detected ? L"  (PS2 disk: will be replaced)" : L"");
+                    keep.push_back(std::move(choice));
+                    ++listed;
+                }
+                self->migrate_choices_ = std::move(keep);
+                self->populate_migrate_targets();
+                self->MigrateSummaryText().Text(std::to_wstring(listed) +
+                    L" other drive(s) found. Drives with a PC partition table are refused when you check the plan.");
+            });
+        });
+    }
+
+    void on_migrate_choose_image(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        constexpr std::wstring_view suggested = L"PS2 HDD backup.img";
+        std::copy(suggested.begin(), suggested.end(), path.begin());
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"PS2 HDD image (*.img)\0*.img\0All files\0*.*\0";
+        dialog.lpstrDefExt = L"img";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_EXPLORER | OFN_NOREADONLYRETURN;
+        if (!GetSaveFileNameW(&dialog)) return;
+        const std::filesystem::path chosen(path.data());
+        std::error_code ec;
+        if (std::filesystem::exists(chosen, ec)) {
+            show_error(L"New image file", L"DriveForge never overwrites an existing image. Choose a new file name.");
+            return;
+        }
+        MigrateChoice choice;
+        choice.image = chosen;
+        choice.label = L"New image: " + chosen.filename().wstring();
+        migrate_choices_.push_back(std::move(choice));
+        populate_migrate_targets();
+        MigrateTargetPicker().SelectedIndex(static_cast<int>(migrate_choices_.size() - 1));
+    }
+
+    [[nodiscard]] std::uint64_t migrate_image_bytes()
+    {
+        const auto source = snapshot_.source_size_bytes;
+        switch (MigrateImageSizePicker().SelectedIndex()) {
+        case 1: return source * 2;
+        case 2: return 500ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 3: return 1000ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 4: return 2000ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 5: return 4000ULL * 1000ULL * 1000ULL * 1000ULL;
+        default: return source;
+        }
+    }
+
+    [[nodiscard]] std::optional<ps2hdd::recovery_service::MigrationTarget> migrate_target()
+    {
+        const int index = MigrateTargetPicker().SelectedIndex();
+        if (index < 0 || static_cast<std::size_t>(index) >= migrate_choices_.size()) return std::nullopt;
+        const auto& choice = migrate_choices_[static_cast<std::size_t>(index)];
+        ps2hdd::recovery_service::MigrationTarget target;
+        target.physical = choice.physical;
+        target.image = choice.image;
+        if (!choice.physical) target.image_bytes = migrate_image_bytes();
+        return target;
+    }
+
+    void on_migrate_plan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        const auto target = migrate_target();
+        if (!target || migrate_busy_.exchange(true)) return;
+        if (migrate_thread_.joinable()) migrate_thread_.join();
+        migrate_plan_ = {};
+        MigrateSummaryText().Text(L"Planning (read-only)...");
+        update_migrate_buttons();
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        migrate_thread_ = std::jthread([dispatcher, weak, source = recovery_source(), target = *target](std::stop_token) {
+            auto planned = ps2hdd::recovery_service::plan_migration(source, target);
+            dispatcher.TryEnqueue([weak, planned = std::move(planned)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->migrate_busy_.store(false);
+                self->MigrateSummaryText().Text(widen_text(planned.ok ? planned.text : "Refused: " + planned.error));
+                if (planned.ok) self->migrate_plan_ = planned.plan;
+                self->update_migrate_buttons();
+            });
+        });
+    }
+
+    void on_migrate_start(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        const auto target = migrate_target();
+        if (!target || !migrate_plan_.ok || migrate_busy_.load()) return;
+        auto start = [this, target = *target] {
+            if (migrate_busy_.exchange(true)) return;
+            if (migrate_thread_.joinable()) migrate_thread_.join();
+            MigrateProgress().Value(0);
+            update_migrate_buttons();
+            set_status(L"Migrating to " + widen_text(target.name()) + L"...");
+            auto dispatcher = DispatcherQueue();
+            auto weak = get_weak();
+            migrate_thread_ = std::jthread([dispatcher, weak, source = recovery_source(), target, plan = migrate_plan_](std::stop_token stop) {
+                auto outcome = ps2hdd::recovery_service::migrate(
+                    source, target, plan,
+                    [dispatcher, weak, last = std::make_shared<int>(-1)](std::uint64_t done, std::uint64_t total) {
+                        const int permille = total == 0 ? 1000 : static_cast<int>(done * 1000U / total);
+                        if (permille == *last) return;
+                        *last = permille;
+                        dispatcher.TryEnqueue([weak, permille] {
+                            if (auto self = weak.get()) self->MigrateProgress().Value(permille / 1000.0);
+                        });
+                    },
+                    stop);
+                dispatcher.TryEnqueue([weak, outcome = std::move(outcome)] {
+                    auto self = weak.get();
+                    if (!self) return;
+                    self->migrate_busy_.store(false);
+                    self->migrate_plan_ = {};
+                    std::wstring text = widen_text(outcome.ok ? outcome.summary : outcome.error);
+                    if (!outcome.warning.empty()) text += L"\n" + widen_text(outcome.warning);
+                    self->MigrateSummaryText().Text(text);
+                    self->set_status(outcome.ok ? L"Migration complete" : L"Migration did not complete");
+                    if (outcome.ok) self->show_recovery_success(L"Migration complete", text);
+                    self->update_migrate_buttons();
+                });
+            });
+        };
+        if (target->physical) {
+            confirm_typed_target(*target->physical,
+                                 L"Replace everything on PhysicalDrive" + std::to_wstring(*target->physical) + L" with this PS2 HDD",
+                                 std::move(start));
+        } else {
+            start();
+        }
+    }
+
+    void on_migrate_cancel(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (migrate_thread_.joinable()) migrate_thread_.request_stop();
+        MigrateSummaryText().Text(L"Cancelling after the current chunk; the target will not receive an APA master...");
+    }
+
+    // Typed confirmation for an arbitrary physical drive (the migration TARGET,
+    // which is never the open source).
+    void confirm_typed_target(unsigned index, std::wstring action, std::function<void()> continuation)
+    {
+        const std::wstring expected = L"PhysicalDrive" + std::to_wstring(index);
+        Microsoft::UI::Xaml::Controls::ContentDialog dialog;
+        dialog.XamlRoot(RootGrid().XamlRoot());
+        dialog.Title(winrt::box_value(winrt::hstring(action)));
+        dialog.PrimaryButtonText(L"Replace drive contents");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(Microsoft::UI::Xaml::Controls::ContentDialogButton::Close);
+        Microsoft::UI::Xaml::Controls::StackPanel panel;
+        panel.Spacing(8);
+        Microsoft::UI::Xaml::Controls::TextBlock warning;
+        warning.Text(L"Everything on the target drive is replaced by the PS2 HDD's partitions. Type the target to continue:");
+        warning.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+        Microsoft::UI::Xaml::Controls::TextBox confirmation;
+        confirmation.PlaceholderText(expected);
+        panel.Children().Append(warning);
+        panel.Children().Append(confirmation);
+        dialog.Content(panel);
+        auto weak = get_weak();
+        dialog.ShowAsync().Completed([weak, confirmation, expected, continuation = std::move(continuation)](
+            auto const& async, Windows::Foundation::AsyncStatus status) {
+            if (status != Windows::Foundation::AsyncStatus::Completed ||
+                async.GetResults() != Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary) return;
+            if (auto self = weak.get()) {
+                if (std::wstring(confirmation.Text()) != expected) {
+                    self->show_error(L"Target confirmation", L"The text did not exactly match " + expected + L".");
+                    return;
+                }
+                continuation();
+            }
+        });
+    }
+
+    void on_choose_provider_manifest(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"DriveForge provider manifests (*.txt;*.ini;*.manifest)\0*.txt;*.ini;*.manifest\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        provider_manifest_path_ = std::filesystem::path(path.data());
+        ProviderManifestPathText().Text(provider_manifest_path_.wstring());
+        provider_preview_ = {};
+        ProviderInstallButton().IsEnabled(false);
+        ProviderPreviewText().Text(L"Manifest selected; stage it before installation.");
+    }
+
+    void on_choose_provider_keyset(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"MagicGate keysets (*.txt;*.ini)\0*.txt;*.ini\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        provider_keyset_path_ = std::filesystem::path(path.data());
+        ProviderKeysetPathText().Text(provider_keyset_path_.wstring());
+        provider_preview_ = {};
+        ProviderInstallButton().IsEnabled(false);
+    }
+
+    void on_stage_provider(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.exchange(true)) return;
+        if (!current_physical_) {
+            mutation_busy_.store(false);
+            show_error(L"Stage bootstrap provider", L"Provider bootstrap installation requires an open physical PS2 HDD.");
+            return;
+        }
+        if (provider_manifest_path_.empty()) {
+            mutation_busy_.store(false);
+            show_error(L"Stage bootstrap provider", L"Choose a local provider manifest first.");
+            return;
+        }
+        ProviderStageButton().IsEnabled(false);
+        ProviderInstallButton().IsEnabled(false);
+        ProviderPreviewText().Text(L"Resolving immutable provider bytes, hashing and verifying KELF...");
+        set_status(L"Staging bootstrap provider entirely on the host...");
+
+        const auto index = *current_physical_;
+        const auto manifest = provider_manifest_path_;
+        const auto keyset = provider_keyset_path_;
+        const std::wstring icv = ProviderIcvps2Box().Text().c_str();
+        const auto provenance = winrt::to_string(ProviderIcvps2ProvenanceBox().Text());
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        mutation_thread_ = std::jthread([dispatcher, weak, index, manifest, keyset, icv, provenance](std::stop_token) mutable {
+            auto preview = ps2df::winui::stage_bootstrap_provider(index, manifest, keyset, icv, std::move(provenance));
+            dispatcher.TryEnqueue([weak, preview = std::move(preview)]() mutable {
+                if (auto self = weak.get()) {
+                    self->mutation_busy_.store(false);
+                    self->ProviderStageButton().IsEnabled(true);
+                    self->provider_preview_ = std::move(preview);
+                    if (!self->provider_preview_.ok) {
+                        self->ProviderPreviewText().Text(L"Staging refused: " + utf8_wide(self->provider_preview_.error));
+                        self->ProviderInstallButton().IsEnabled(false);
+                        self->set_status(L"Bootstrap provider staging refused before any target write");
+                        return;
+                    }
+                    const auto& p = self->provider_preview_;
+                    self->ProviderPreviewText().Text(
+                        utf8_wide(p.product) + L" / " + utf8_wide(p.version) +
+                        L"\nProvider: " + utf8_wide(p.provider_id) +
+                        L"\nSource SHA-256: " + utf8_wide(p.source_sha256) +
+                        L"\nPayload SHA-256: " + utf8_wide(p.payload_sha256) +
+                        L"\nPayload: " + std::to_wstring(p.payload_bytes) + L" bytes / " + std::to_wstring(p.payload_sectors) +
+                        L" sectors\nTarget fingerprint: " + utf8_wide(p.target_fingerprint));
+                    self->ProviderInstallButton().IsEnabled(true);
+                    self->set_status(L"Bootstrap provider staged, verified and frozen; no target writes performed");
+                }
+            });
+        });
+    }
+
+    void on_install_provider(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (mutation_busy_.load()) return;
+        if (!current_physical_ || !provider_preview_.ok) {
+            show_error(L"Install bootstrap provider", L"Stage and verify a provider against the current physical target first.");
+            return;
+        }
+        if (hdl_artifact_directory_.empty()) {
+            show_error(L"Install bootstrap provider", L"Choose the safety/artifact directory first. Provider install requires Rescue Capsule and HDDMBR evidence.");
+            return;
+        }
+        confirm_physical_action(L"install the staged bootstrap provider", [this] {
+            if (mutation_busy_.exchange(true)) return;
+            const auto index = *current_physical_;
+            const auto frozen = provider_preview_.frozen;
+            const auto safety = hdl_artifact_directory_;
+            ProviderInstallButton().IsEnabled(false);
+            ProviderPreviewText().Text(ProviderPreviewText().Text() + L"\nInstalling with guarded physical lease...");
+            set_status(L"Installing frozen bootstrap payload with Rescue Capsule/HDDMBR protection...");
+            auto dispatcher = DispatcherQueue();
+            auto weak = get_weak();
+            mutation_thread_ = std::jthread([dispatcher, weak, index, frozen, safety](std::stop_token) mutable {
+                auto result = ps2df::winui::commit_bootstrap_provider(index, frozen, safety);
+                dispatcher.TryEnqueue([weak, result = std::move(result)]() mutable {
+                    if (auto self = weak.get()) {
+                        self->mutation_busy_.store(false);
+                        if (!result.ok) {
+                            self->show_error(L"Install bootstrap provider", utf8_wide(result.error));
+                            self->ProviderInstallButton().IsEnabled(self->provider_preview_.ok);
+                            self->set_status(result.partial ? L"Bootstrap provider install failed after partial mutation; recovery evidence preserved" : L"Bootstrap provider install refused/failed before commit");
+                            return;
+                        }
+                        self->show_recovery_success(L"Bootstrap provider installed", L"Pre-install Rescue Capsule and HDDMBR were persisted. Payload, pointer and final APA state were cold-verified read-only.");
+                        self->ProviderPreviewText().Text(self->ProviderPreviewText().Text() + L"\nRescue: " + result.rescue_path.wstring() + L"\nHDDMBR: " + result.hddmbr_path.wstring());
+                        self->provider_preview_ = {};
+                        self->ProviderInstallButton().IsEnabled(false);
+                        std::string reopen_error;
+                        if (!self->controller_.open_physical(*self->current_physical_, reopen_error)) {
+                            self->show_error(L"Bootstrap provider", L"Install was cold-verified by the endpoint, but the management session could not reopen afterward.");
+                            return;
+                        }
+                        self->refresh_all_from_snapshot();
+                        self->refresh_hdl_tools();
+                        self->set_status(L"Bootstrap provider install complete and cold-verified");
+                    }
+                });
+            });
+        });
+    }
+
 private:
+    static std::wstring utf8_wide(std::string_view value)
+    {
+        if (value.empty()) return {};
+        const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+        if (needed <= 0) return std::wstring(value.begin(), value.end());
+        std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), needed);
+        return wide;
+    }
+
+    void start_hdl_metadata_prepare(bool refresh_catalog)
+    {
+        if (hdl_iso_path_.empty()) return;
+        if (hdl_prepare_busy_.exchange(true)) {
+            set_status(L"Game metadata is already being prepared...");
+            return;
+        }
+        if (hdl_prepare_thread_.joinable()) hdl_prepare_thread_.join();
+
+        std::array<wchar_t, 32768> local_data{};
+        const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local_data.data(), static_cast<DWORD>(local_data.size()));
+        std::filesystem::path app_root = chars > 0 && chars < local_data.size()
+            ? std::filesystem::path(local_data.data()) / L"PS2 DriveForge"
+            : std::filesystem::temp_directory_path() / L"PS2 DriveForge";
+        const auto cache_root = app_root / L"OPL Cache";
+
+        if (hdl_artifact_directory_.empty()) {
+            hdl_artifact_directory_ = app_root / L"Recovery";
+            std::error_code ec;
+            std::filesystem::create_directories(hdl_artifact_directory_, ec);
+            HdlArtifactPathText().Text(hdl_artifact_directory_.wstring());
+        }
+
+        const auto iso_path = hdl_iso_path_;
+        HdlInstallButton().IsEnabled(false);
+        HdlMetadataSummaryText().Text(refresh_catalog ? L"Refreshing game databases and OPL metadata..." : L"Reading SYSTEM.CNF and preparing game metadata...");
+        HdlDetectedMediaText().Text(L"Startup / media: detecting...");
+        HdlMetadataDetailsText().Text(L"Checking HDL Batch Installer / OPL databases, CFG, cheats and artwork...");
+        HdlPreviewStateText().Text(L"Preparing automatic install plan...");
+        set_status(L"Preparing ISO metadata and OPL assets on the host...");
+
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        hdl_prepare_thread_ = std::jthread([dispatcher, weak, iso_path, cache_root, refresh_catalog](std::stop_token) mutable {
+            auto self = weak.get();
+            if (!self) return;
+            auto profile = self->controller_.prepare_hdl_iso(iso_path, cache_root, refresh_catalog);
+            dispatcher.TryEnqueue([weak, iso_path, profile = std::move(profile)]() mutable {
+                if (auto self2 = weak.get()) {
+                    self2->hdl_prepare_busy_.store(false);
+                    if (self2->hdl_iso_path_ != iso_path) return;
+                    self2->hdl_iso_profile_ = std::move(profile);
+                    if (!self2->hdl_iso_profile_.ok) {
+                        self2->HdlMetadataSummaryText().Text(L"Could not prepare this ISO automatically");
+                        self2->HdlMetadataDetailsText().Text(utf8_wide(self2->hdl_iso_profile_.error));
+                        self2->HdlPreviewStateText().Text(L"Automatic plan unavailable");
+                        self2->HdlInstallButton().IsEnabled(false);
+                        self2->set_status(L"ISO metadata preparation failed before any target write");
+                        return;
+                    }
+
+                    const auto& p = self2->hdl_iso_profile_;
+                    self2->HdlTitleBox().Text(utf8_wide(p.title));
+                    self2->HdlMediaPicker().SelectedIndex(p.media == ps2hdd::hdl::MediaType::cd ? 1 : 0);
+                    const auto media = p.media == ps2hdd::hdl::MediaType::cd ? L"CD" : L"DVD";
+                    const auto mib = p.image_bytes / (1024ULL * 1024ULL);
+                    self2->HdlDetectedMediaText().Text(L"Startup: " + utf8_wide(p.game_id) + L"  |  " + media + L" auto-detected  |  " + std::to_wstring(mib) + L" MiB");
+
+                    std::wstring summary = p.title_from_database
+                        ? L"Title resolved from the HDL Batch Installer game database"
+                        : L"Title resolved from ISO/OPL metadata";
+                    summary += L". " + std::to_wstring(p.opl_assets) + L" OPL asset(s) staged automatically.";
+                    self2->HdlMetadataSummaryText().Text(summary);
+
+                    std::wstring details;
+                    if (!p.developer.empty()) details += L"Developer: " + utf8_wide(p.developer) + L"  ";
+                    if (!p.genre.empty()) details += L"Genre: " + utf8_wide(p.genre) + L"  ";
+                    if (!p.release_date.empty()) details += L"Release: " + utf8_wide(p.release_date) + L"  ";
+                    if (!p.players.empty()) details += L"Players: " + utf8_wide(p.players) + L"  ";
+                    if (!p.rating.empty()) details += L"Rating: " + utf8_wide(p.rating) + L"  ";
+                    details += L"Cache/catalog assets: " + std::to_wstring(p.cache_assets);
+                    if (!p.warnings.empty()) details += L"  |  Optional provider issues: " + std::to_wstring(p.warnings.size());
+                    self2->HdlMetadataDetailsText().Text(details);
+
+                    if (self2->snapshot_.open) {
+                        self2->preview_hdl_install();
+                        if (self2->hdl_preview_.ok && p.opl_assets != 0) {
+                            auto current = std::wstring(self2->HdlMetadataDetailsText().Text());
+                            if (self2->hdl_preview_.assets_will_install) {
+                                current += L"  |  Disk assets -> " + utf8_wide(self2->hdl_preview_.opl_partition_id);
+                            } else {
+                                current += L"  |  OPL assets kept host-side: " + utf8_wide(self2->hdl_preview_.warning);
+                            }
+                            self2->HdlMetadataDetailsText().Text(current);
+                        }
+                    } else {
+                        self2->HdlPreviewStateText().Text(L"Metadata ready; open a target to build the install plan");
+                    }
+                    self2->set_status(L"Game metadata and OPL assets prepared automatically");
+                }
+            });
+        });
+    }
+
     void wire_events();
     void load_theme_preference();
     void save_theme_preference(int index);
@@ -30,9 +749,7 @@ private:
     void handle_discovery(std::vector<ps2hdd::PhysicalDriveProbe> probes, bool user_requested);
     void open_physical_async(unsigned index);
     void open_image_async(std::filesystem::path path);
-    void finish_source_open(bool ok, std::string error,
-                            std::optional<unsigned> physical,
-                            std::filesystem::path image);
+    void finish_source_open(bool ok, std::string error, std::optional<unsigned> physical, std::filesystem::path image);
 
     void refresh_all_from_snapshot();
     void refresh_partition_list();
@@ -40,20 +757,35 @@ private:
     void refresh_performance();
     void start_enrichment(bool reset);
 
+    void refresh_hdl_tools();
+    void choose_hdl_iso();
+    void choose_hdl_artifact_directory();
+    void preview_hdl_install();
+    void start_hdl_install(bool physical_confirmed);
+    void start_hdl_remove(bool physical_confirmed);
+    void run_physical_preflight();
+    void confirm_physical_action(std::wstring_view action, std::function<void()> continuation);
+    [[nodiscard]] ps2df::winui::HdlInstallRequest current_hdl_request() const;
+
     void browse_current_pfs();
     void refresh_files_list();
     void export_selected_entry();
-
     void start_mount();
+    void launch_mount(bool writable, std::optional<bool> replay_journal = std::nullopt);
+    std::filesystem::path mount_status_path() const;
+    bool mount_writable_{false};
     void request_unmount(bool interactive = true);
     void poll_mount_state();
     void open_mounted_volume();
-
     void restart_as_administrator();
     void open_startup_log();
     void open_legacy_frontend();
     void show_error(std::wstring_view title, std::wstring_view message) const;
     void set_status(std::wstring_view text);
+    void install_window_chrome();
+    void update_caption_buttons();
+    void restore_window_placement();
+    void save_window_placement() const;
 
     [[nodiscard]] HWND native_hwnd() const;
     [[nodiscard]] std::filesystem::path executable_path() const;
@@ -63,8 +795,7 @@ private:
     [[nodiscard]] std::filesystem::path startup_log_path() const;
     [[nodiscard]] std::filesystem::path settings_path() const;
 
-    void on_navigation_invoked(Microsoft::UI::Xaml::Controls::NavigationView const&,
-                               Microsoft::UI::Xaml::Controls::NavigationViewItemInvokedEventArgs const& args);
+    void on_navigation_invoked(Microsoft::UI::Xaml::Controls::NavigationView const&, Microsoft::UI::Xaml::Controls::NavigationViewItemInvokedEventArgs const& args);
     void on_open_image(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_rescan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_open_drive(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -73,6 +804,23 @@ private:
     void on_show_subs_toggled(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_refresh_metadata(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_cancel_enrichment(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
+    void on_hdl_choose_iso(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_choose_artifacts(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_preview(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_install(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_game_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
+    void on_hdl_delete(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_physical_preflight(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
+    void show_recovery_success(std::wstring_view title, std::wstring_view message)
+    {
+        HdlToolsInfoBar().Severity(Microsoft::UI::Xaml::Controls::InfoBarSeverity::Success);
+        HdlToolsInfoBar().Title(title);
+        HdlToolsInfoBar().Message(message);
+        HdlToolsInfoBar().IsOpen(true);
+    }
+
     void on_pfs_partition_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_selection_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&);
     void on_files_double_tapped(IInspectable const&, Microsoft::UI::Xaml::Input::DoubleTappedRoutedEventArgs const&);
@@ -94,6 +842,7 @@ private:
     ps2df::winui::SessionSnapshot snapshot_;
     std::vector<ps2hdd::PhysicalDriveProbe> detected_drives_;
     std::vector<ps2df::winui::PartitionRowSnapshot> visible_partition_rows_;
+    std::vector<ps2df::winui::PartitionRowSnapshot> hdl_game_rows_;
     std::vector<std::string> pfs_partitions_;
     std::vector<ps2df::winui::BrowseEntrySnapshot> visible_file_entries_;
 
@@ -102,11 +851,44 @@ private:
     std::string current_pfs_partition_;
     std::string current_pfs_path_;
 
+    std::filesystem::path hdl_iso_path_;
+    std::filesystem::path hdl_artifact_directory_;
+    ps2df::winui::HdlInstallPreviewSnapshot hdl_preview_;
+    ps2df::winui::HdlIsoPreparationSnapshot hdl_iso_profile_;
+
+    std::filesystem::path provider_manifest_path_;
+    std::filesystem::path provider_keyset_path_;
+    ps2df::winui::BootstrapProviderPreview provider_preview_;
+
     std::jthread discovery_thread_;
     std::jthread source_thread_;
     std::jthread enrichment_thread_;
     std::jthread export_thread_;
+    std::jthread mutation_thread_;
+    std::jthread hdl_prepare_thread_;
+    std::jthread iso_export_thread_;
+    std::jthread opl_sync_thread_;
+    std::jthread bdm_thread_;
+    std::jthread recovery_thread_;
+    std::jthread migrate_thread_;
+    std::atomic_bool migrate_busy_{false};
+    std::vector<MigrateChoice> migrate_choices_;
+    ps2hdd::migrate::Plan migrate_plan_;
+    std::atomic_bool bdm_busy_{false};
+    std::filesystem::path bdm_root_;
+    void set_bdm_root(const std::filesystem::path& root);
+    void update_bdm_buttons();
+    void refresh_bdm_jail_state();
+    std::atomic_bool iso_export_busy_{false};
+    std::atomic_bool opl_sync_busy_{false};
+    bool opl_sync_ready_{false};
+    void start_iso_export(std::vector<ps2df::winui::PartitionRowSnapshot> games,
+                          std::filesystem::path directory);
+    void start_opl_sync_apply(bool physical_confirmed);
+    void update_game_action_buttons();
     std::atomic_bool source_busy_{false};
+    std::atomic_bool mutation_busy_{false};
+    std::atomic_bool hdl_prepare_busy_{false};
     bool suppress_theme_event_{false};
 
     Microsoft::UI::Xaml::DispatcherTimer telemetry_timer_;

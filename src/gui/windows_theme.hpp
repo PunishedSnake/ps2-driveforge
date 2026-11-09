@@ -20,6 +20,9 @@ struct ThemePalette {
     COLORREF text{};
     COLORREF muted_text{};
     COLORREF border{};
+    COLORREF menu_bar{};       // dark menu bar background
+    COLORREF menu_hot{};       // hot/selected menu bar item
+    COLORREF splitter{};       // 1px divider between tree and list
 };
 
 [[nodiscard]] ThemePreference load_theme_preference();
@@ -38,5 +41,19 @@ void apply_process_theme(ThemePreference preference);
 // deliberately wins over DriveForge's own Light/Dark choice.
 void apply_window_theme(HWND window, HWND tree, HWND list, HWND status,
                         ThemePreference preference);
+
+// Dark menu bar. Win32 has no documented dark menu *bar* (popups follow the
+// process app mode); the undocumented-but-stable UAH paint messages are what
+// dark-mode Win32 apps use. Returns true when the message was fully handled.
+// Call from the window procedure before DefWindowProc; no-op in light mode.
+[[nodiscard]] bool handle_menu_bar_message(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                           ThemePreference preference, LRESULT& result);
+
+// Message font (Segoe UI on modern Windows) at an explicit DPI. Caller owns it.
+[[nodiscard]] HFONT create_ui_font(UINT dpi);
+
+// Window placement + tree width persistence (HKCU\Software\PS2DriveForge).
+void save_window_layout(HWND window, int tree_width_dip);
+[[nodiscard]] bool restore_window_layout(HWND window, int show, int& tree_width_dip);
 
 } // namespace ps2driveforge::gui

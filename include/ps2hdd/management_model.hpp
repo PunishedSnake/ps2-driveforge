@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/hdl.hpp"
 #include "ps2hdd/partition_catalog.hpp"
 
@@ -26,6 +27,15 @@ struct ManagementRow {
     std::string enrichment_error;
 };
 
+struct ManagementGroup {
+    std::size_t main_row{};
+    std::vector<std::size_t> sub_rows;
+    std::uint64_t logical_size_bytes{};
+    std::uint64_t physical_extent_bytes{};
+    std::uint64_t subpartition_bytes{};
+    bool complete{};
+};
+
 struct ManagementProgress {
     std::size_t total_hdl{};
     std::size_t pending_hdl{};
@@ -42,14 +52,30 @@ public:
     explicit ManagementModel(PartitionCatalog catalog);
 
     [[nodiscard]] const std::vector<ManagementRow>& rows() const noexcept { return rows_; }
+    [[nodiscard]] const std::vector<ManagementGroup>& groups() const noexcept { return groups_; }
+    [[nodiscard]] const std::vector<std::size_t>& orphan_sub_rows() const noexcept
+    {
+        return orphan_sub_rows_;
+    }
     [[nodiscard]] ManagementProgress progress() const noexcept { return progress_; }
 
     // Returns the row index updated by this result, or nullopt if the result no
     // longer belongs to this model (for example after a source/session change).
     [[nodiscard]] std::optional<std::size_t> apply_hdl_result(const hdl::GameResult& result);
 
+    // Apply a successfully planned/committed APA removal directly to the current
+    // in-memory model. This is intentionally O(rows) RAM work with zero device
+    // I/O and zero HDL re-enrichment. It is the fast path that prevents deleting
+    // one game from turning into a complete HDD list rebuild.
+    [[nodiscard]] bool apply_partition_removal(const apa::RemovePlan& plan);
+
 private:
+    void rebuild_hdl_index_and_progress();
+    void rebuild_groups();
+
     std::vector<ManagementRow> rows_;
+    std::vector<ManagementGroup> groups_;
+    std::vector<std::size_t> orphan_sub_rows_;
     std::unordered_map<std::uint32_t, std::size_t> hdl_rows_by_lba_;
     ManagementProgress progress_{};
 };

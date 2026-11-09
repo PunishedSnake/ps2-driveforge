@@ -112,9 +112,16 @@
                                           HorizontalScrollBarVisibility="Disabled"
                                           HorizontalScrollMode="Disabled"
                                           HorizontalContentAlignment="Stretch">
-                                <Grid Width="{Binding ViewportWidth, ElementName=PageViewport}"
-                                      MaxWidth="1560"
-                                      HorizontalAlignment="Center">
+                                <!--
+                                    No Width binding to ViewportWidth here: when the vertical
+                                    scrollbar toggles during a resize that binding feeds the
+                                    content width back into the viewport (jitter and, in the
+                                    worst case, "Layout cycle detected"). With horizontal
+                                    scrolling disabled the ScrollViewer already measures the
+                                    content at viewport width; MaxWidth + Stretch centers it.
+                                -->
+                                <Grid MaxWidth="1560"
+                                      HorizontalAlignment="Stretch">
                                     <ContentPresenter Content="{TemplateBinding Content}"
                                                       ContentTemplate="{TemplateBinding ContentTemplate}"
                                                       HorizontalContentAlignment="Stretch"

@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include "ps2hdd/block_device.hpp"
+#include "ps2hdd/pfs_write_back.hpp"
 
 #include <memory>
 #include <string>
@@ -23,6 +24,16 @@ public:
                              std::wstring mount_point,
                              bool debug = false);
 
+    // Writable mount: PFS partitions allowed by `options` accept Explorer
+    // writes through the PfsWriteBack engine; every other path stays read-only.
+    // The source remains the read-only view; `factory` opens a fresh write
+    // capability per commit batch.
+    [[nodiscard]] bool start_writable(std::unique_ptr<BlockDevice> source,
+                                      WriterFactory factory, WriteBackOptions options,
+                                      std::wstring mount_point, bool debug = false);
+    // Live engine for status/flush/breaker UI; nullptr for read-only mounts.
+    [[nodiscard]] PfsWriteBack* write_back() noexcept;
+
     // Teardown may intentionally issue a best-effort unmount and then join the
     // worker regardless of the immediate Dokany acknowledgement, so callers that
     // care about the acknowledgement can inspect the bool while destructors may
@@ -41,7 +52,12 @@ public:
 
 private:
     struct Impl;
+    struct WritableSetup {
+        WriterFactory factory;
+        WriteBackOptions options;
+    };
     std::unique_ptr<Impl> impl_;
+    std::unique_ptr<WritableSetup> pending_writable_;
 };
 
 // Standalone helper used by the diagnostic CLI when it is asked to remove a

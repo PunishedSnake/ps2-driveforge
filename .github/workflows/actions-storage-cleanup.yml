@@ -1,0 +1,91 @@
+name: Actions storage cleanup
+
+# Keeps Actions storage small without ever touching artifacts that an active
+# run might still be uploading or that a reviewer is likely to download:
+#   - artifacts older than KEEP_ARTIFACT_HOURS (or already expired) are deleted;
+#   - caches not used for KEEP_CACHE_DAYS are deleted.
+# Release assets are not Actions storage and are never touched.
+#
+# Runs weekly on the default branch, on demand, and once on any pull request
+# that edits this file so a change can be verified before merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_artifact_hours:
+        description: Keep artifacts newer than this many hours
+        default: "48"
+      keep_cache_days:
+        description: Keep caches used within this many days
+        default: "7"
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - .github/workflows/actions-storage-cleanup.yml
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: actions-storage-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale artifacts and caches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_ARTIFACT_HOURS: ${{ inputs.keep_artifact_hours || '48' }}
+          KEEP_CACHE_DAYS: ${{ inputs.keep_cache_days || '7' }}
+        run: |
+          set -euo pipefail
+          now=$(date -u +%s)
+          artifact_cutoff=$(( now - KEEP_ARTIFACT_HOURS * 3600 ))
+          cache_cutoff=$(( now - KEEP_CACHE_DAYS * 86400 ))
+
+          before_bytes=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.expired | not) | .size_in_bytes] | add // 0' | awk '{s+=$1} END {print s+0}')
+          echo "Live artifact storage before: $(( before_bytes / 1048576 )) MiB"
+
+          deleted=0
+          freed=0
+          while IFS=$'\t' read -r id created expired size name; do
+            [ -z "$id" ] && continue
+            created_s=$(date -u -d "$created" +%s)
+            if [ "$expired" = "true" ] || [ "$created_s" -lt "$artifact_cutoff" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id" >/dev/null
+              deleted=$((deleted + 1))
+              freed=$((freed + size))
+              echo "deleted artifact $id ($name, $(( size / 1048576 )) MiB, $created)"
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+                     --jq '.artifacts[] | [.id, .created_at, .expired, .size_in_bytes, .name] | @tsv')
+
+          cache_deleted=0
+          while IFS=$'\t' read -r id accessed size key; do
+            [ -z "$id" ] && continue
+            accessed_s=$(date -u -d "$accessed" +%s)
+            if [ "$accessed_s" -lt "$cache_cutoff" ]; then
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" >/dev/null
+              cache_deleted=$((cache_deleted + 1))
+              echo "deleted cache $id ($key, $(( size / 1048576 )) MiB)"
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+                     --jq '.actions_caches[] | [.id, .last_accessed_at, .size_in_bytes, .key] | @tsv')
+
+          usage=$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" --jq '.active_caches_size_in_bytes')
+          {
+            echo "### Actions storage cleanup"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Live artifact storage before | $(( before_bytes / 1048576 )) MiB |"
+            echo "| Artifacts deleted | $deleted ($(( freed / 1048576 )) MiB) |"
+            echo "| Caches deleted | $cache_deleted |"
+            echo "| Cache storage now | $(( usage / 1048576 )) MiB |"
+          } >> "$GITHUB_STEP_SUMMARY"

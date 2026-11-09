@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,7 +18,15 @@ enum class MountNodeKind {
     namespace_directory,
     pfs_directory,
     pfs_file,
+    // Read-only virtual ISO assembled from an HDLoader game's allocation table.
+    hdl_iso,
 };
+
+[[nodiscard]] constexpr bool mount_kind_is_directory(MountNodeKind kind) noexcept
+{
+    return kind == MountNodeKind::root || kind == MountNodeKind::namespace_directory ||
+           kind == MountNodeKind::pfs_directory;
+}
 
 struct MountEntry {
     std::string name;
@@ -25,7 +35,7 @@ struct MountEntry {
 
     [[nodiscard]] bool is_directory() const noexcept
     {
-        return kind != MountNodeKind::pfs_file;
+        return mount_kind_is_directory(kind);
     }
 };
 
@@ -39,7 +49,7 @@ struct MountLookupResult {
 
     [[nodiscard]] bool is_directory() const noexcept
     {
-        return kind != MountNodeKind::pfs_file;
+        return mount_kind_is_directory(kind);
     }
 };
 
@@ -61,10 +71,11 @@ struct MountReadResult {
 // the normal Linux sanitizer job.
 //
 // Initial namespace:
-//   \
-//     Partitions\
-//       <PFS partition>\
-//         <PFS tree>
+//   \ (root)
+//   \Partitions
+//   \Partitions\<PFS partition>
+//   \Partitions\<PFS partition>\<PFS tree>
+//   \Games\<title> [<startup>].iso      (Frieren: HDL virtual ISOs)
 //
 // PFS and APA names are mapped to deterministic Windows-safe aliases. The
 // original names remain untouched on disk and are used internally when calling
@@ -78,8 +89,20 @@ public:
     [[nodiscard]] MountReadResult read_file(std::string_view path, std::uint64_t offset,
                                             std::span<std::byte> out);
 
+    struct GameAlias {
+        std::string visible;
+        std::string partition;
+        std::uint64_t size{};
+    };
+
 private:
+    // Built once per mount: Dokany performs a lookup for every callback, and
+    // the HDL alias table only depends on the immutable session scan.
+    [[nodiscard]] std::shared_ptr<const std::vector<GameAlias>> games();
+
     DriveSession& session_;
+    std::mutex games_mutex_;
+    std::shared_ptr<const std::vector<GameAlias>> games_;
 };
 
 } // namespace ps2hdd

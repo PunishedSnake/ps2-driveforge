@@ -6,6 +6,12 @@ on:
     branches: [ main, 'release/**' ]
   pull_request:
 
+concurrency:
+  # A newer push to the same branch/PR supersedes the older run; release and
+  # main pushes are never cancelled so every published commit stays verified.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -35,3 +41,6 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/sanitizers --output-on-failure
+
+      - name: Check documentation and recovery terminology style
+        run: cmake -DPS2DF_SOURCE_DIR="$PWD" -P scripts/check-text-style.cmake
