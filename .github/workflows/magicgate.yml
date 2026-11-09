@@ -22,6 +22,12 @@ on:
       - 'tests/magicgate/**'
       - '.github/workflows/magicgate.yml'
 
+concurrency:
+  # A newer push to the same branch/PR supersedes the older run; release and
+  # main pushes are never cancelled so every published commit stays verified.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
