@@ -14,7 +14,8 @@ PC tools derived from the PS2 IOP drivers execute every application `write()` as
 | `Cleanup` (handle closed) | none | one pending op per path; journal `W` intent written |
 | coalescing | none | last write wins; write+delete of a new file, and mkdir+rmdir, vanish |
 | committer thread | batched | debounced (750 ms quiet), ordered by intent sequence, up to 256 ops per batch, one `pfs::ImageWriter` session per partition per batch, 40 ms pause between batches |
-| per file | whole-file copy-on-write | old content stays valid until the directory entry is republished; cold-reader verification inside the writer |
+| per file | whole-file copy-on-write | committed straight from a memory-mapped spool (no file-sized heap buffer); old content stays valid until the directory entry is republished; cold-reader verification inside the writer |
+| case-only rename | one sector | `foo` → `Foo` rewrites the existing dentry in place (same length) and commits before anything else in its batch |
 | after a batch | none | session caches cleared; overlay entries retired; journal `C` marks |
 
 Explorer sees its own changes immediately: lookups, listings and reads are served from the overlay until the commit lands.
@@ -23,11 +24,17 @@ Explorer sees its own changes immediately: lookups, listings and reads are serve
 
 - **Backpressure:** pending data is capped (`max_pending_bytes`, default 512 MiB; `max_pending_ops`, 4096). Writes beyond it return `STATUS_DEVICE_BUSY` instead of growing an unbounded queue.
 - **Free-space reserve:** PFS is never filled past `free_space_reserve_bytes` (default 64 MiB), checked at write time and again at commit. Free space comes from the allocation bitmaps, not from the superblock counter.
-- **Whole-file limit:** `max_file_bytes` (default 1 GiB) per committed file.
+- **Whole-file limit:** `max_file_bytes` (default 4 GiB) per committed file. Because commits memory-map the spool, this limits PFS file size, not RAM.
 - **Protected partitions:** `__system`, `__sysconf`, `__net` and `__mbr` are read-only unless explicitly allowed (`--allow`).
 - **Circuit breaker:** after `breaker_failed_batches` (default 3) consecutive failed batches, the engine turns read-only, stops advertising uncommitted changes and stops touching the disk. Spool data and `W` intents are kept.
 - **Crash recovery:** `spool/journal.log` records `W/D/M/R` intents and `C/F` outcomes. `PfsWriteBack::scan_journal()` lists uncommitted writes; `--replay-journal` re-queues them on the next mount.
-- **Clean refusal:** case-only renames (`foo` → `Foo`) are refused because PFS is case-sensitive and Windows is not; cross-partition moves return `STATUS_NOT_SAME_DEVICE`.
+- **Case-only renames:** PFS is case-sensitive and Windows is not, so both spellings share one overlay key. A dedicated `rename_case` op rewrites the dentry in place. Changes already queued inside a renamed folder are rebased to the new spelling, and new requests that still use the old spelling are rebased too. Disk reads keep the old spelling until the rename commits.
+- **Clean refusal:** cross-partition moves return `STATUS_NOT_SAME_DEVICE`; editing an entry while its own case rename is queued returns `STATUS_DEVICE_BUSY` for a moment.
+
+## Frontends
+
+- `PS2-DriveForge-Mount.exe --writable` (images; physical with `--confirm`) publishes a one-second heartbeat to `<spool>\status.txt`.
+- WinUI's **Mount** page has an *Allow writes from Explorer* toggle (physical drives go through the literal confirmation dialog) and shows the heartbeat: pending changes, commits, coalescing, failures and breaker state.
 
 ## Using it
 

@@ -320,7 +320,6 @@ void coalescing_and_overlay_semantics()
 
     // Rename (copy-on-write move) and refused case-only rename.
     check(engine.rename("+OPL", "/conf_opl.cfg", "/CFG/conf_backup.cfg", false) == S::ok, "rename");
-    check(engine.rename("+OPL", "/CFG", "/cfg", false) == S::invalid, "case-only rename refused");
     check(engine.flush(), "flush rename");
     check(!rig.session->stat("+OPL", "/conf_opl.cfg").ok, "old name gone");
     check(disk_read(*rig.session, "/CFG/conf_backup.cfg") == expected, "new name has the data");
@@ -494,6 +493,78 @@ void layout_fingerprint_survives_pfs_commits()
           "a different-size disk changes the fingerprint");
 }
 
+void large_file_commits_from_mapped_spool()
+{
+    // Larger than the fixture's 256 KiB default I/O batches by far and
+    // spanning many zones, committed straight from the memory-mapped spool.
+    ps2hdd::WriteBackOptions options;
+    options.commit_delay = std::chrono::milliseconds(5);
+    Rig rig("large", options);
+    const auto big = payload(48U * 1024U * 1024U + 777U, 42);
+    ps2hdd::PfsWriteBack::Handle handle{};
+    check(rig.engine->open_write("+OPL", "/game.vcd", true, true, handle) == ps2hdd::WriteStatus::ok, "open");
+    for (std::size_t offset = 0; offset < big.size(); offset += 1024U * 1024U) {
+        const auto n = std::min<std::size_t>(1024U * 1024U, big.size() - offset);
+        check(rig.engine->write(handle, offset, std::span(big).subspan(offset, n)) == ps2hdd::WriteStatus::ok,
+              "1 MiB writes");
+    }
+    check(rig.engine->close(handle) == ps2hdd::WriteStatus::ok, "close");
+    check(rig.engine->flush(std::chrono::minutes(5)), "large commit");
+    check(disk_read(*rig.session, "/game.vcd") == big, "48 MiB file is byte exact on disk");
+    check(ps2hdd::WriteBackOptions{}.max_file_bytes >= 4ULL * 1024ULL * 1024ULL * 1024ULL,
+          "default whole-file limit allows VCD-sized and larger files");
+}
+
+void case_only_renames()
+{
+    using S = ps2hdd::WriteStatus;
+    ps2hdd::WriteBackOptions options;
+    options.commit_delay = std::chrono::hours(1);
+    Rig rig("case-rename", options);
+    auto& engine = *rig.engine;
+    ps2hdd::WritableMountView view(*rig.session, engine);
+
+    check(engine.make_directory("+OPL", "/art") == S::ok, "mkdir art");
+    check(explorer_copy(engine, "/art/cover.png", payload(5000, 1)) == S::ok, "file");
+    check(explorer_copy(engine, "/readme.txt", payload(300, 2)) == S::ok, "file");
+    check(engine.flush(), "commit originals");
+
+    // File on disk: in-place dentry rewrite.
+    check(engine.rename("+OPL", "/readme.txt", "/README.TXT", false) == S::ok, "file case rename queued");
+    const auto root = view.list_directory("\\Partitions\\+OPL");
+    check(std::any_of(root.entries.begin(), root.entries.end(), [](const auto& e) { return e.name == "README.TXT"; }),
+          "Explorer shows the new spelling before the commit");
+
+    // Directory on disk, plus a change queued inside it with the OLD spelling
+    // (exactly what Explorer does with a path it resolved a moment earlier).
+    check(engine.rename("+OPL", "/art", "/ART", false) == S::ok, "dir case rename queued");
+    check(explorer_copy(engine, "/art/icon.png", payload(700, 3)) == S::ok, "write under old spelling");
+    check(view.list_directory("\\Partitions\\+OPL\\ART").entries.size() == 2, "renamed folder lists both files");
+
+    check(engine.flush(), "commit renames");
+    check(rig.session->stat("+OPL", "/README.TXT").ok && !rig.session->stat("+OPL", "/readme.txt").ok,
+          "file renamed on disk, no duplicate");
+    check(disk_read(*rig.session, "/README.TXT") == payload(300, 2), "renamed file content intact");
+    check(rig.session->stat("+OPL", "/ART").ok && !rig.session->stat("+OPL", "/art").ok, "directory renamed");
+    check(disk_read(*rig.session, "/ART/cover.png") == payload(5000, 1) &&
+              disk_read(*rig.session, "/ART/icon.png") == payload(700, 3),
+          "old and newly queued children live under the new spelling");
+
+    // A queued, never-committed file renames without any disk work.
+    check(explorer_copy(engine, "/new.cfg", payload(10, 4)) == S::ok, "pending file");
+    const auto committed = engine.stats().committed_ops;
+    check(engine.rename("+OPL", "/new.cfg", "/NEW.cfg", false) == S::ok, "rename pending file");
+    check(engine.flush(), "flush");
+    check(engine.stats().committed_ops == committed + 1 && rig.session->stat("+OPL", "/NEW.cfg").ok &&
+              !rig.session->stat("+OPL", "/new.cfg").ok,
+          "pending file created directly under the new spelling");
+
+    // Renaming back before the commit cancels the operation entirely.
+    check(engine.rename("+OPL", "/README.TXT", "/Readme.txt", false) == S::ok, "rename");
+    check(engine.rename("+OPL", "/Readme.txt", "/README.TXT", false) == S::ok, "rename back");
+    check(engine.stats().pending_ops == 0, "round-trip case rename cancels out");
+}
+
 } // namespace
 
 int main()
@@ -506,6 +577,8 @@ int main()
         debounced_background_commit();
         mount_view_overlays_pending_state();
         layout_fingerprint_survives_pfs_commits();
+        large_file_commits_from_mapped_spool();
+        case_only_renames();
     } catch (const std::exception& error) {
         std::cerr << "Test failure: " << error.what() << '\n';
         return 1;

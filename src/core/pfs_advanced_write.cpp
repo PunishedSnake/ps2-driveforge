@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -541,6 +542,68 @@ bool ImageWriter::grow_directory(Node& directory, FileWriteResult& result)
     ++result.metadata_transactions;
     directory.inode = grown;
     return true;
+}
+
+FileWriteResult ImageWriter::rename_case(std::string_view path, std::string_view new_name)
+{
+    FileWriteResult result;
+    result.path = std::string(path);
+    if (!valid()) {
+        result.error = error_.empty() ? "PFS writer is not valid" : error_;
+        return result;
+    }
+    const auto slash = path.rfind('/');
+    if (slash == std::string_view::npos || slash + 1 >= path.size()) {
+        result.error = "PFS case rename needs an absolute path to an entry";
+        return result;
+    }
+    const auto parent_path = slash == 0 ? std::string_view("/") : path.substr(0, slash);
+    const auto old_name = path.substr(slash + 1);
+    const auto lower = [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); };
+    if (old_name.size() != new_name.size() || old_name == new_name ||
+        !std::equal(old_name.begin(), old_name.end(), new_name.begin(),
+                    [&](char a, char b) { return lower(a) == lower(b); })) {
+        result.error = "PFS case rename only changes letter case";
+        return result;
+    }
+
+    Reader reader(read_volume_, probe_);
+    const auto parent = reader.resolve(parent_path);
+    if (!parent) {
+        result.error = "PFS case rename parent not found";
+        return result;
+    }
+    for (const auto& entry : reader.list_directory(*parent)) {
+        if (entry.name == new_name) {
+            result.error = "PFS case rename target already exists";
+            return result;
+        }
+    }
+    const auto location = find_dentry(*parent, old_name);
+    if (!location.ok) {
+        result.error = location.error.empty() ? "PFS case rename source not found" : location.error;
+        return result;
+    }
+
+    DirectorySlot slot;
+    slot.ok = true;
+    slot.subpart = location.subpart;
+    slot.sector = location.sector;
+    slot.sector_bytes = location.sector_bytes;
+    std::memcpy(slot.sector_bytes.data() + static_cast<std::ptrdiff_t>(location.offset_in_sector + 8U),
+                new_name.data(), new_name.size());
+    if (!publish_dentry(slot, result)) {
+        return result;
+    }
+
+    Reader cold(read_volume_);
+    const std::string new_path = std::string(parent_path == "/" ? "" : parent_path) + "/" + std::string(new_name);
+    if (!cold.valid() || !cold.resolve(new_path) || cold.resolve(path)) {
+        result.error = "PFS case rename failed cold verification";
+        return result;
+    }
+    result.ok = true;
+    return result;
 }
 
 ImageWriter::DentryLocation ImageWriter::find_dentry(const Node& parent,

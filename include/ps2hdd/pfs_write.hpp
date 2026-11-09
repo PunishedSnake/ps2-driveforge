@@ -151,6 +151,11 @@ public:
     [[nodiscard]] DirectoryRemoveResult remove_empty_directory(std::string_view path);
     [[nodiscard]] TreeRemoveResult remove_tree(std::string_view path);
 
+    // Case-only rename (foo -> Foo) of a file or directory. The name length is
+    // unchanged, so the existing dentry is rewritten in place and published as
+    // a single-sector transaction: no allocation, no copy, nothing to unwind.
+    [[nodiscard]] FileWriteResult rename_case(std::string_view path, std::string_view new_name);
+
     // Free payload capacity derived from the allocation bitmaps (not from the
     // superblock counter, which PS2-era writers do not keep reliable). Uses
     // the session bitmap cache, so it is cheap once a batch has warmed it.

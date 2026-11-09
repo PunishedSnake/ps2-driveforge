@@ -122,8 +122,10 @@ MountListResult WritableMountView::list_directory(std::string_view path)
                     it = merged.erase(it);
                     continue;
                 }
-            } else if (found->second.kind == PendingNode::Kind::file) {
-                it->second.size = found->second.size;
+            } else {
+                // Pending case rename: show the new spelling right away.
+                it->second.name = found->second.path.substr(found->second.path.rfind('/') + 1);
+                if (found->second.kind == PendingNode::Kind::file) it->second.size = found->second.size;
             }
         }
         ++it;

@@ -20,6 +20,10 @@
 - Added the **PFS write-back engine** (`PfsWriteBack`) and `WritableMountView`: Explorer writes are staged on the host, coalesced and committed in debounced batches through the native PFS writer, with backpressure, a free-space reserve, protected system partitions, a read-only circuit breaker and a crash-recovery intent journal. See `docs/pfs-write-back.md`.
 - Dokany mount: `--writable` for disk images (`--allow`, `--replay-journal`); writable PFS paths support create/write/truncate/delete/rename/mkdir/rmdir with read-your-writes; timeout raised to 60 s as a backstop.
 - `pfs::ImageWriter::free_bytes()` derived from the allocation bitmaps.
+- Writable mounts of **physical drives** (`--physical N --writable --confirm PhysicalDriveN`): mount-time admission, APA layout fingerprint and HDDMBR backup; per-batch fingerprint check, fresh admission and a short guarded write lease.
+- WinUI Mount page: *Allow writes from Explorer* toggle with a live write-back status heartbeat.
+- Write-back commits memory-map the spool (zero-copy), raising the per-file limit to 4 GiB without RAM growth.
+- Case-only renames via in-place single-sector dentry rewrite (`pfs::ImageWriter::rename_case`), with rebasing of queued children.
 - CI: weekly/dispatchable Actions storage cleanup (artifacts >48 h, caches unused 7 days) and cancellation of superseded pull-request runs.
 
 ## 0.5.0 "Emilia" - 2026-08-23
