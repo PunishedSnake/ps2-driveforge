@@ -5,6 +5,7 @@
 #include "MainWindow.g.cpp"
 #endif
 
+#include "ps2hdd/pfs_write_back.hpp"
 #include "ps2hdd/darkness_policy.hpp"
 #include "ps2hdd/pfs_export.hpp"
 
@@ -976,8 +977,38 @@ std::filesystem::path MainWindow::mount_status_path() const
     return local_app_data_path() / L"PS2 DriveForge" / L"Spool" / name / L"status.txt";
 }
 
-void MainWindow::launch_mount(bool writable)
+void MainWindow::launch_mount(bool writable, std::optional<bool> replay_journal)
 {
+    if (writable && !replay_journal) {
+        // Crash recovery: uncommitted files from a previous writable session
+        // stay in the spool until the user decides what to do with them.
+        const auto orphans = ps2hdd::PfsWriteBack::scan_journal(mount_status_path().parent_path());
+        if (!orphans.empty()) {
+            ContentDialog dialog;
+            dialog.XamlRoot(RootGrid().XamlRoot());
+            dialog.Title(winrt::box_value(winrt::hstring(L"Uncommitted files from a previous session")));
+            std::wstring body = std::to_wstring(orphans.size()) +
+                L" file(s) were copied to this source but never reached the disk (the mount ended unexpectedly):\n";
+            for (std::size_t i = 0; i < orphans.size() && i < 8; ++i) {
+                body += L"  " + widen(orphans[i].partition + orphans[i].path) + L"\n";
+            }
+            if (orphans.size() > 8) body += L"  ...\n";
+            body += L"\nReplay writes them now. Mounting without replaying keeps them safely in the spool for later.";
+            dialog.Content(winrt::box_value(winrt::hstring(body)));
+            dialog.PrimaryButtonText(L"Replay and mount");
+            dialog.SecondaryButtonText(L"Mount without replaying");
+            dialog.CloseButtonText(L"Cancel");
+            dialog.DefaultButton(ContentDialogButton::Secondary);
+            auto weak = get_weak();
+            dialog.ShowAsync().Completed([weak](auto const& async, Windows::Foundation::AsyncStatus status) {
+                if (status != Windows::Foundation::AsyncStatus::Completed) return;
+                const auto choice = async.GetResults();
+                if (choice == ContentDialogResult::None) return;
+                if (auto self = weak.get()) self->launch_mount(true, choice == ContentDialogResult::Primary);
+            });
+            return;
+        }
+    }
     mount_writable_ = writable;
     const auto helper = mount_helper_path();
     if (!path_exists(helper)) {
@@ -995,10 +1026,12 @@ void MainWindow::launch_mount(bool writable)
     if (current_physical_) {
         parameters = L"--physical " + std::to_wstring(*current_physical_) + L" --mount \"" + mount_point_ + L"\"";
         if (writable) parameters += L" --writable --confirm PhysicalDrive" + std::to_wstring(*current_physical_);
+        if (writable && replay_journal.value_or(false)) parameters += L" --replay-journal";
         elevate = true;
     } else if (!current_image_.empty()) {
         parameters = L"--image \"" + current_image_.wstring() + L"\" --mount \"" + mount_point_ + L"\"";
         if (writable) parameters += L" --writable";
+        if (writable && replay_journal.value_or(false)) parameters += L" --replay-journal";
     } else {
         mount_point_.clear();
         return;

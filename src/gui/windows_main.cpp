@@ -4,7 +4,11 @@
 
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/hdl_export.hpp"
+#include "ps2hdd/image_game_deploy.hpp"
+#include "ps2hdd/pfs_write_back.hpp"
+#include "ps2hdd/ps2_iso.hpp"
 #include "ps2hdd/http_client.hpp"
 #include "ps2hdd/opl_library_sync.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
@@ -60,6 +64,9 @@ constexpr UINT kIdExportIso = 111;
 constexpr UINT kIdExportAllIso = 112;
 constexpr UINT kIdCancelJob = 113;
 constexpr UINT kIdOplSync = 114;
+constexpr UINT kIdMountWritable = 115;
+constexpr UINT kIdInstallIso = 116;
+constexpr UINT kIdDeleteGame = 117;
 constexpr UINT kIdPhysicalBase = 300;
 constexpr UINT kMaxPhysicalMenuEntries = 512;
 constexpr UINT kMountTimerId = 1;
@@ -412,8 +419,19 @@ public:
     }
 
 #ifdef PS2DF_HAS_DOKANY
-    void mount_read_only()
+    void mount_read_only() { mount(false); }
+
+    void mount(bool writable)
     {
+        if (writable && !current_image_) {
+            message(L"Writable mounts of physical PS2 HDDs need the typed target confirmation in the modern (WinUI) frontend. The legacy frontend offers writable mounts for disk images.",
+                    MB_ICONINFORMATION);
+            return;
+        }
+        if (job_running_) {
+            message(L"Wait for the running job to finish before mounting.", MB_ICONINFORMATION);
+            return;
+        }
         if (!session_) {
             message(L"Open a PS2 HDD or disk image before mounting.", MB_ICONINFORMATION);
             return;
@@ -450,13 +468,51 @@ public:
         }
 
         mount_controller_ = std::make_unique<ps2hdd::DokanyMountController>();
-        if (!mount_controller_->start(std::move(source), point, false)) {
-            message(L"Could not start the read-only mount:\n\n" + widen(mount_controller_->last_error()), MB_ICONERROR);
+        bool started = false;
+        if (writable) {
+            std::array<wchar_t, 32768> local{};
+            const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+            const auto base = chars > 0 && chars < local.size() ? std::filesystem::path(local.data())
+                                                              : std::filesystem::temp_directory_path();
+            ps2hdd::WriteBackOptions options;
+            options.spool_directory = base / L"PS2 DriveForge" / L"Spool" / current_image_->filename();
+            const auto orphans = ps2hdd::PfsWriteBack::scan_journal(options.spool_directory);
+            bool replay = false;
+            if (!orphans.empty()) {
+                const auto answer = MessageBoxW(window_,
+                    (std::to_wstring(orphans.size()) +
+                     L" file(s) from a previous writable session never reached the disk.\n\n"
+                     L"Yes: write them now.\nNo: keep them in the spool and mount without them.").c_str(),
+                    L"PS2 DriveForge - recover uncommitted files", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2);
+                if (answer == IDCANCEL) { mount_controller_.reset(); return; }
+                replay = answer == IDYES;
+            }
+            const auto image = *current_image_;
+            started = mount_controller_->start_writable(
+                std::move(source),
+                [image](std::string& error) -> std::unique_ptr<ps2hdd::WritableBlockDevice> {
+                    auto device = std::make_unique<ps2hdd::WritableFileBlockDevice>(image);
+                    if (!device->is_open()) {
+                        error = "Could not reopen the disk image for writing";
+                        return nullptr;
+                    }
+                    return device;
+                },
+                options, point, false);
+            if (started && replay) {
+                if (auto* engine = mount_controller_->write_back()) (void)engine->replay_orphans(orphans);
+            }
+        } else {
+            started = mount_controller_->start(std::move(source), point, false);
+        }
+        if (!started) {
+            message(L"Could not start the mount:\n\n" + widen(mount_controller_->last_error()), MB_ICONERROR);
             mount_controller_.reset();
             return;
         }
         SetTimer(window_, kMountTimerId, 100, nullptr);
-        set_status(L"Mounting PS2 DriveForge read-only at " + point + L"...");
+        set_status(std::wstring(L"Mounting PS2 DriveForge ") + (writable ? L"with write-back" : L"read-only") +
+                   L" at " + point + L"...");
         update_action_menu();
     }
 
@@ -548,10 +604,13 @@ private:
         const bool mounted = controller && mount_controller_->is_mounted();
         const bool running = controller && mount_controller_->is_running();
         EnableMenuItem(menu, kIdMountReadOnly, MF_BYCOMMAND | (source_open && !running ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(menu, kIdMountWritable, MF_BYCOMMAND |
+                       (source_open && !running && current_image_ && !job_running_ ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdOpenMounted, MF_BYCOMMAND | (mounted ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdUnmount, MF_BYCOMMAND | (running ? MF_ENABLED : MF_GRAYED));
 #else
         EnableMenuItem(menu, kIdMountReadOnly, MF_BYCOMMAND | MF_GRAYED);
+        EnableMenuItem(menu, kIdMountWritable, MF_BYCOMMAND | MF_GRAYED);
         EnableMenuItem(menu, kIdOpenMounted, MF_BYCOMMAND | MF_GRAYED);
         EnableMenuItem(menu, kIdUnmount, MF_BYCOMMAND | MF_GRAYED);
 #endif
@@ -564,6 +623,9 @@ private:
         EnableMenuItem(menu, kIdExportAllIso, MF_BYCOMMAND | (has_games && !job_running_ ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdCancelJob, MF_BYCOMMAND | (job_running_ ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdOplSync, MF_BYCOMMAND | (has_games && !job_running_ ? MF_ENABLED : MF_GRAYED));
+        const bool image_writable = source_open && current_image_ && !job_running_ && !mount_active();
+        EnableMenuItem(menu, kIdInstallIso, MF_BYCOMMAND | (image_writable ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(menu, kIdDeleteGame, MF_BYCOMMAND | (image_writable && hdl_selected ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdRestartElevated, MF_BYCOMMAND |
                        (!ps2driveforge::gui::is_process_elevated() ? MF_ENABLED : MF_GRAYED));
         DrawMenuBar(window_);
@@ -1137,6 +1199,11 @@ public:
         if (!session_ || job_running_) {
             return;
         }
+        if (mount_active()) {
+            message(L"Unmount the volume first: with the drive mounted, copy artwork through Explorer or unmount to let DriveForge write it.",
+                    MB_ICONINFORMATION);
+            return;
+        }
         if (!current_image_) {
             message(L"Writing OPL assets to a physical PS2 HDD requires the guarded target confirmation in the modern (WinUI) frontend.\n\nOpen PS2-DriveForge.exe without --legacy, then use HDL Tools > OPL artwork, CFG & cheats.",
                     MB_ICONINFORMATION);
@@ -1226,6 +1293,102 @@ public:
         reopen_after_job_ = true;
     }
 
+    [[nodiscard]] bool mount_active() const
+    {
+#ifdef PS2DF_HAS_DOKANY
+        return mount_controller_ && mount_controller_->is_running();
+#else
+        return false;
+#endif
+    }
+
+    void install_iso()
+    {
+        if (!session_ || job_running_ || !current_image_) return;
+        if (mount_active()) {
+            message(L"Unmount the volume before installing: only one writer may own the image.", MB_ICONINFORMATION);
+            return;
+        }
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window_;
+        dialog.lpstrFilter = L"PS2 game images (*.iso)\0*.iso\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        const std::filesystem::path iso_path(path.data());
+
+        ps2hdd::FileBlockDevice probe(iso_path);
+        const auto info = probe.is_open() ? ps2hdd::iso::inspect_ps2_iso(probe) : ps2hdd::iso::GameSourceResult{};
+        if (!info.ok) {
+            message(L"This does not look like a PS2 game image:\n\n" + widen(info.error), MB_ICONERROR);
+            return;
+        }
+        const bool small = info.game.image_bytes <= 750ULL * 1024ULL * 1024ULL;
+        const auto media = MessageBoxW(window_,
+            (L"Install " + iso_path.filename().wstring() + L" [" + widen(info.game.startup) + L"] (" +
+             format_bytes(info.game.image_bytes) + L") into this disk image?\n\n"
+             L"Yes: install as DVD\nNo: install as CD\n\nSuggested: " + (small ? L"CD" : L"DVD")).c_str(),
+            L"PS2 DriveForge - install game", MB_YESNOCANCEL | MB_ICONQUESTION | (small ? MB_DEFBUTTON2 : MB_DEFBUTTON1));
+        if (media == IDCANCEL) return;
+
+        ps2hdd::ImageGameDeployOptions options;
+        options.hdl.title = iso_path.stem().string();
+        options.hdl.media = media == IDYES ? ps2hdd::hdl::MediaType::dvd : ps2hdd::hdl::MediaType::cd;
+        const auto image = *current_image_;
+        begin_job();
+        set_status(L"Installing " + iso_path.filename().wstring() + L"...");
+        job_thread_ = std::jthread([this, image, iso_path, options](std::stop_token) {
+            ps2hdd::FileBlockDevice iso(iso_path);
+            ps2hdd::WritableFileBlockDevice target(image);
+            if (!iso.is_open() || !target.is_open()) {
+                post_done(false, L"Could not open the ISO or reopen the disk image for writing.");
+                return;
+            }
+            const auto result = ps2hdd::deploy_game_to_image(target, iso, {}, options);
+            post_done(result.ok, result.ok
+                ? L"Installed " + widen(options.hdl.title) +
+                      L".\n\nUse Games > Add missing OPL artwork, CFG & cheats to fetch its assets."
+                : L"Install failed" + std::wstring(result.partial ? L" (partially applied)" : L"") + L":\n\n" +
+                      widen(result.error));
+        });
+        reopen_after_job_ = true;
+    }
+
+    void delete_game()
+    {
+        if (!session_ || job_running_ || !current_image_ || !active_partition_ ||
+            active_partition_->type != ps2hdd::apa::kTypeHdl || active_partition_->is_sub()) {
+            return;
+        }
+        if (mount_active()) {
+            message(L"Unmount the volume before deleting: only one writer may own the image.", MB_ICONINFORMATION);
+            return;
+        }
+        const auto id = active_partition_->id;
+        const auto lba = active_partition_->start_lba;
+        if (MessageBoxW(window_, (L"Delete the HDL game partition " + widen(id) +
+                                  L" and all of its sub-partitions from this disk image?\n\nThis cannot be undone.").c_str(),
+                        L"PS2 DriveForge - delete game", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+            return;
+        }
+        ps2hdd::WritableFileBlockDevice target(*current_image_);
+        if (!target.is_open()) {
+            message(L"Could not reopen the disk image for writing.", MB_ICONERROR);
+            return;
+        }
+        const auto removed = ps2hdd::apa::remove_main_partition_from_image(target, lba);
+        if (!removed.ok) {
+            message(L"Delete failed:\n\n" + widen(removed.error), MB_ICONERROR);
+            return;
+        }
+        auto source = std::make_unique<ps2hdd::FileBlockDevice>(*current_image_);
+        if (source->is_open()) (void)load_device(std::move(source));
+        set_status(L"Deleted " + widen(id) + L" (" + format_bytes(removed.freed_bytes) + L" freed)");
+    }
+
     void job_progress(std::unique_ptr<std::wstring> text) { set_status(*text); }
 
     void job_done(bool ok, std::unique_ptr<std::wstring> text)
@@ -1309,6 +1472,7 @@ HMENU create_menu()
     AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(g_physical_menu), L"PS2 &HDDs");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING | MF_GRAYED, kIdMountReadOnly, L"&Mount read-only...");
+    AppendMenuW(file, MF_STRING | MF_GRAYED, kIdMountWritable, L"Mount with &writes (disk image)...");
     AppendMenuW(file, MF_STRING | MF_GRAYED, kIdOpenMounted, L"Open mounted volume in &Explorer");
     AppendMenuW(file, MF_STRING | MF_GRAYED, kIdUnmount, L"&Unmount");
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
@@ -1321,6 +1485,9 @@ HMENU create_menu()
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdExportIso, L"&Export selected game as ISO...");
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdExportAllIso, L"Export &all games as ISO...");
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdCancelJob, L"&Cancel running job");
+    AppendMenuW(games, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdInstallIso, L"&Install game ISO to image...");
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdDeleteGame, L"&Delete selected game (image)...");
     AppendMenuW(games, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdOplSync, L"Add missing OPL artwork, CFG && cheats...");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(games), L"&Games");
@@ -1431,9 +1598,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         case kIdOplSync:
             app->plan_opl_sync();
             return 0;
+        case kIdInstallIso:
+            app->install_iso();
+            return 0;
+        case kIdDeleteGame:
+            app->delete_game();
+            return 0;
 #ifdef PS2DF_HAS_DOKANY
         case kIdMountReadOnly:
             app->mount_read_only();
+            return 0;
+        case kIdMountWritable:
+            app->mount(true);
             return 0;
         case kIdOpenMounted:
             app->open_mounted_volume();

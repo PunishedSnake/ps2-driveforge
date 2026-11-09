@@ -23,6 +23,7 @@
 - Writable mounts of **physical drives** (`--physical N --writable --confirm PhysicalDriveN`): mount-time admission, APA layout fingerprint and HDDMBR backup; per-batch fingerprint check, fresh admission and a short guarded write lease.
 - WinUI Mount page: *Allow writes from Explorer* toggle with a live write-back status heartbeat.
 - Write-back commits memory-map the spool (zero-copy), raising the per-file limit to 4 GiB without RAM growth.
+- Frontend parity: WinUI offers journal recovery (replay / keep / cancel) before writable mounts; Win32 gains *Mount with writes (disk image)*, *Install game ISO to image*, *Delete selected game (image)* and the same recovery prompt. Physical writes stay in WinUI, behind the typed target confirmation.
 - Case-only renames via in-place single-sector dentry rewrite (`pfs::ImageWriter::rename_case`), with rebasing of queued children.
 - CI: weekly/dispatchable Actions storage cleanup (artifacts >48 h, caches unused 7 days) and cancellation of superseded pull-request runs.
 

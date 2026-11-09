@@ -446,7 +446,7 @@ private:
     void refresh_files_list();
     void export_selected_entry();
     void start_mount();
-    void launch_mount(bool writable);
+    void launch_mount(bool writable, std::optional<bool> replay_journal = std::nullopt);
     std::filesystem::path mount_status_path() const;
     bool mount_writable_{false};
     void request_unmount(bool interactive = true);
