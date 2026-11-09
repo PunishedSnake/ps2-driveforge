@@ -12,8 +12,86 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace ps2hdd {
 namespace {
+
+// Read-only memory map of a spool file. Commits hand the native writer a
+// zero-copy span: the OS pages data in from the host as the writer walks it,
+// so committing a multi-GiB file never allocates a file-sized heap buffer.
+class MappedFile {
+public:
+    explicit MappedFile(const std::filesystem::path& path)
+    {
+#ifdef _WIN32
+        file_ = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+        if (file_ == INVALID_HANDLE_VALUE) return;
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file_, &size)) return;
+        size_ = static_cast<std::uint64_t>(size.QuadPart);
+        if (size_ == 0) { ok_ = true; return; }
+        mapping_ = CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!mapping_) return;
+        data_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0);
+        ok_ = data_ != nullptr;
+#else
+        fd_ = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd_ < 0) return;
+        struct stat info{};
+        if (::fstat(fd_, &info) != 0) return;
+        size_ = static_cast<std::uint64_t>(info.st_size);
+        if (size_ == 0) { ok_ = true; return; }
+        void* map = ::mmap(nullptr, static_cast<std::size_t>(size_), PROT_READ, MAP_PRIVATE, fd_, 0);
+        if (map == MAP_FAILED) return;
+        (void)::madvise(map, static_cast<std::size_t>(size_), MADV_SEQUENTIAL);
+        data_ = map;
+        ok_ = true;
+#endif
+    }
+    ~MappedFile()
+    {
+#ifdef _WIN32
+        if (data_) UnmapViewOfFile(data_);
+        if (mapping_) CloseHandle(mapping_);
+        if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+#else
+        if (data_) ::munmap(data_, static_cast<std::size_t>(size_));
+        if (fd_ >= 0) ::close(fd_);
+#endif
+    }
+    MappedFile(const MappedFile&) = delete;
+    MappedFile& operator=(const MappedFile&) = delete;
+
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+    [[nodiscard]] std::span<const std::byte> bytes() const noexcept
+    {
+        return data_ ? std::span(static_cast<const std::byte*>(data_), static_cast<std::size_t>(size_))
+                     : std::span<const std::byte>{};
+    }
+
+private:
+#ifdef _WIN32
+    HANDLE file_{INVALID_HANDLE_VALUE};
+    HANDLE mapping_{};
+#else
+    int fd_{-1};
+#endif
+    void* data_{};
+    std::uint64_t size_{};
+    bool ok_{};
+};
 
 constexpr std::size_t kCopyChunk = 1024U * 1024U;
 
@@ -62,7 +140,7 @@ std::string make_key(std::string_view partition, const std::string& path)
     return key;
 }
 
-enum class OpType { write, remove, mkdir, rmdir };
+enum class OpType { write, remove, mkdir, rmdir, rename_case };
 
 struct Op {
     OpType type{OpType::write};
@@ -72,6 +150,9 @@ struct Op {
     std::filesystem::path spool;
     std::uint64_t size{};
     bool existed_on_disk{};
+    // rename_case: target spelling and whether the entry is a directory.
+    std::string new_path;
+    bool directory{};
 };
 
 struct HandleState {
@@ -185,7 +266,7 @@ struct PfsWriteBack::Impl {
     Kind disk_kind(std::string_view partition, const std::string& path)
     {
         if (path == "/") return Kind::directory;
-        const auto stat = session.stat(partition, path);
+        const auto stat = session.stat(partition, disk_spelling(partition, path));
         if (!stat.ok) return Kind::none;
         return stat.entry.is_directory() ? Kind::directory : Kind::file;
     }
@@ -198,9 +279,42 @@ struct PfsWriteBack::Impl {
             case OpType::mkdir: return Kind::directory;
             case OpType::remove:
             case OpType::rmdir: return Kind::none;
+            case OpType::rename_case: return it->second.directory ? Kind::directory : Kind::file;
             }
         }
         return disk_kind(partition, path);
+    }
+
+    // Paths under a queued case-only directory rename keep working with the
+    // new spelling for overlay purposes but must reach the disk with the
+    // spelling it actually has until that rename commits (rename ops always
+    // commit first in their batch, so queued children use the new spelling).
+    std::string rebase(std::string_view partition, std::string path) const
+    {
+        for (const auto& [key, op] : pending) {
+            if (op.type != OpType::rename_case || !op.directory || op.partition != partition) continue;
+            const auto prefix = upper_ascii(op.path) + "/";
+            if (upper_ascii(path).rfind(prefix, 0) == 0) {
+                path = op.new_path + path.substr(op.path.size());
+            }
+        }
+        return path;
+    }
+
+    // Inverse of rebase: the spelling the disk has until a rename commits.
+    std::string disk_spelling(std::string_view partition, std::string path) const
+    {
+        for (const auto& [key, op] : pending) {
+            if (op.type != OpType::rename_case || op.partition != partition) continue;
+            const auto upper_new = upper_ascii(op.new_path);
+            const auto upper_path = upper_ascii(path);
+            if (upper_path == upper_new) {
+                path = op.path;
+            } else if (op.directory && upper_path.rfind(upper_new + "/", 0) == 0) {
+                path = op.path + path.substr(op.new_path.size());
+            }
+        }
+        return path;
     }
 
     std::uint64_t pending_write_bytes() const
@@ -253,13 +367,14 @@ struct PfsWriteBack::Impl {
             size = it->second.size;
             return static_cast<bool>(out) || size == 0;
         }
-        const auto stat = session.stat(partition, path);
+        const auto on_disk = disk_spelling(partition, path);
+        const auto stat = session.stat(partition, on_disk);
         if (!stat.ok) return false;
         size = stat.entry.size;
         std::vector<std::byte> chunk(kCopyChunk);
         for (std::uint64_t offset = 0; offset < size; offset += chunk.size()) {
             const auto want = static_cast<std::size_t>(std::min<std::uint64_t>(chunk.size(), size - offset));
-            const auto read = session.read_file(partition, path, offset, std::span(chunk).first(want));
+            const auto read = session.read_file(partition, on_disk, offset, std::span(chunk).first(want));
             if (!read.ok || read.bytes_read != want) return false;
             out.write(reinterpret_cast<const char*>(chunk.data()), static_cast<std::streamsize>(want));
         }
@@ -294,7 +409,12 @@ struct PfsWriteBack::Impl {
             for (const auto& [key, op] : pending) {
                 if (!in_flight_seq(op.seq)) batch.push_back(op);
             }
-            std::sort(batch.begin(), batch.end(), [](const Op& a, const Op& b) { return a.seq < b.seq; });
+            // Case renames first: queued children already use the new spelling.
+            std::sort(batch.begin(), batch.end(), [](const Op& a, const Op& b) {
+                const bool ar = a.type == OpType::rename_case;
+                const bool br = b.type == OpType::rename_case;
+                return ar != br ? ar : a.seq < b.seq;
+            });
             if (batch.size() > options.max_ops_per_batch) batch.resize(options.max_ops_per_batch);
             for (const auto& op : batch) in_flight.insert(op.seq);
 
@@ -403,14 +523,12 @@ struct PfsWriteBack::Impl {
                     remember_error("Not enough PFS space for " + op.path + " (reserve kept)");
                     break;
                 }
-                std::vector<std::byte> bytes(static_cast<std::size_t>(op.size));
-                std::ifstream in(op.spool, std::ios::binary);
-                if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())) &&
-                    !bytes.empty()) {
+                const MappedFile mapped(op.spool);
+                if (!mapped.ok() || mapped.bytes().size() != op.size) {
                     remember_error("Spool file unreadable for " + op.path);
                     break;
                 }
-                const auto result = writer->write_file_complete(op.path, bytes);
+                const auto result = writer->write_file_complete(op.path, mapped.bytes());
                 ok = result.ok;
                 if (!ok) remember_error(op.path + ": " + result.error);
                 else *free -= std::min(*free, needed);
@@ -430,6 +548,12 @@ struct PfsWriteBack::Impl {
             }
             case OpType::rmdir: {
                 const auto result = writer->remove_empty_directory(op.path);
+                ok = result.ok;
+                if (!ok) remember_error(op.path + ": " + result.error);
+                break;
+            }
+            case OpType::rename_case: {
+                const auto result = writer->rename_case(op.path, leaf_of(op.new_path));
                 ok = result.ok;
                 if (!ok) remember_error(op.path + ": " + result.error);
                 break;
@@ -503,9 +627,10 @@ WriteStatus PfsWriteBack::open_write(std::string_view partition, std::string_vie
                                      bool truncate, bool create_new, Handle& handle)
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     if (path == "/") return WriteStatus::is_directory;
     std::unique_lock lock(d.mutex);
+    path = d.rebase(partition, path);
     if (const auto admitted = d.admit_mutation(partition); admitted != WriteStatus::ok) return admitted;
 
     const auto kind = d.effective_kind(partition, path);
@@ -656,11 +781,13 @@ WriteStatus PfsWriteBack::close(Handle handle, bool discard)
 WriteStatus PfsWriteBack::remove_file(std::string_view partition, std::string_view raw_path)
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     std::unique_lock lock(d.mutex);
+    path = d.rebase(partition, path);
     if (const auto admitted = d.admit_mutation(partition); admitted != WriteStatus::ok) return admitted;
     const auto key = make_key(partition, path);
     if (const auto it = d.pending.find(key); it != d.pending.end()) {
+        if (it->second.type == OpType::rename_case) return WriteStatus::busy;
         if (it->second.type != OpType::write) {
             return it->second.type == OpType::mkdir ? WriteStatus::is_directory : WriteStatus::not_found;
         }
@@ -690,9 +817,10 @@ WriteStatus PfsWriteBack::remove_file(std::string_view partition, std::string_vi
 WriteStatus PfsWriteBack::make_directory(std::string_view partition, std::string_view raw_path)
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     if (path == "/") return WriteStatus::exists;
     std::unique_lock lock(d.mutex);
+    path = d.rebase(partition, path);
     if (const auto admitted = d.admit_mutation(partition); admitted != WriteStatus::ok) return admitted;
     if (d.effective_kind(partition, parent_of(path)) != Kind::directory) return WriteStatus::not_found;
     const auto key = make_key(partition, path);
@@ -720,10 +848,15 @@ WriteStatus PfsWriteBack::make_directory(std::string_view partition, std::string
 WriteStatus PfsWriteBack::remove_directory(std::string_view partition, std::string_view raw_path)
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     if (path == "/") return WriteStatus::invalid;
     {
         std::unique_lock lock(d.mutex);
+        path = d.rebase(partition, path);
+        if (const auto it = d.pending.find(make_key(partition, path));
+            it != d.pending.end() && it->second.type == OpType::rename_case) {
+            return WriteStatus::busy;
+        }
         if (const auto admitted = d.admit_mutation(partition); admitted != WriteStatus::ok) return admitted;
         const auto kind = d.effective_kind(partition, path);
         if (kind == Kind::none) return WriteStatus::not_found;
@@ -755,13 +888,16 @@ WriteStatus PfsWriteBack::rename(std::string_view partition, std::string_view ra
                                  std::string_view raw_to, bool replace_existing)
 {
     auto& d = *impl_;
-    const auto from = normalize(raw_from);
-    const auto to = normalize(raw_to);
+    std::string from;
+    std::string to;
+    {
+        std::unique_lock lock(d.mutex);
+        from = d.rebase(partition, normalize(raw_from));
+        to = d.rebase(partition, normalize(raw_to));
+    }
     if (from == "/" || to == "/") return WriteStatus::invalid;
     if (from == to) return WriteStatus::ok;
-    // PFS names are case-sensitive while Windows is not: a case-only rename
-    // would need two names that collide in the overlay. Refuse it explicitly.
-    if (upper_ascii(from) == upper_ascii(to)) return WriteStatus::invalid;
+    if (upper_ascii(from) == upper_ascii(to)) return rename_case_only(partition, from, to);
     Kind kind;
     {
         std::unique_lock lock(d.mutex);
@@ -804,6 +940,86 @@ WriteStatus PfsWriteBack::rename(std::string_view partition, std::string_view ra
     return remove_directory(partition, from);
 }
 
+WriteStatus PfsWriteBack::rename_case_only(std::string_view partition, const std::string& from,
+                                           const std::string& to)
+{
+    // PFS is case-sensitive, Windows is not: both spellings share one overlay
+    // key, so this is a dedicated op rather than copy + delete.
+    auto& d = *impl_;
+    std::unique_lock lock(d.mutex);
+    if (const auto admitted = d.admit_mutation(partition); admitted != WriteStatus::ok) return admitted;
+    if (parent_of(from) != parent_of(to)) return WriteStatus::invalid;
+    const auto key = make_key(partition, from);
+    const auto upper_from = upper_ascii(from) + "/";
+
+    // Changes under a renamed directory follow it; refuse while any of them is
+    // already being committed under the old spelling.
+    for (const auto& [k, op] : d.pending) {
+        if (op.partition == partition && upper_ascii(op.path).rfind(upper_from, 0) == 0 && d.in_flight_seq(op.seq)) {
+            return WriteStatus::busy;
+        }
+    }
+    const auto rebase_children = [&] {
+        for (auto& [k, op] : d.pending) {
+            if (op.partition != partition) continue;
+            if (upper_ascii(op.path).rfind(upper_from, 0) == 0) op.path = to + op.path.substr(from.size());
+            if (!op.new_path.empty() && upper_ascii(op.new_path).rfind(upper_from, 0) == 0) {
+                op.new_path = to + op.new_path.substr(from.size());
+            }
+        }
+        for (auto& [id, h] : d.handles) {
+            if (h.partition == partition && upper_ascii(h.path).rfind(upper_from, 0) == 0) {
+                h.path = to + h.path.substr(from.size());
+            }
+        }
+    };
+
+    if (const auto it = d.pending.find(key); it != d.pending.end()) {
+        auto& op = it->second;
+        if (d.in_flight_seq(op.seq)) return WriteStatus::busy;
+        switch (op.type) {
+        case OpType::remove:
+        case OpType::rmdir: return WriteStatus::not_found;
+        case OpType::write:
+        case OpType::mkdir:
+            if (!op.existed_on_disk) {
+                // Not on disk yet: simply create it under the new spelling.
+                op.path = to;
+                rebase_children();
+                ++d.stats.coalesced_ops;
+                return WriteStatus::ok;
+            }
+            return WriteStatus::busy; // replacement of an on-disk entry still queued
+        case OpType::rename_case:
+            if (to == op.path) {
+                rebase_children();
+                d.journal("C " + std::to_string(op.seq));
+                d.pending.erase(it); // renamed back: nothing to do
+                return WriteStatus::ok;
+            }
+            op.new_path = to;
+            rebase_children();
+            return WriteStatus::ok;
+        }
+    }
+
+    const auto stat = d.session.stat(partition, from);
+    if (!stat.ok) return WriteStatus::not_found;
+    Op op;
+    op.type = OpType::rename_case;
+    op.seq = d.next_seq++;
+    op.partition = std::string(partition);
+    op.path = from;
+    op.new_path = to;
+    op.directory = stat.entry.is_directory();
+    op.size = stat.entry.size;
+    op.existed_on_disk = true;
+    rebase_children();
+    d.journal("N " + std::to_string(op.seq) + " " + op.partition + "\t" + op.path + "\t" + to);
+    d.enqueue(std::move(op));
+    return WriteStatus::ok;
+}
+
 bool PfsWriteBack::flush(std::chrono::milliseconds timeout)
 {
     auto& d = *impl_;
@@ -820,8 +1036,9 @@ bool PfsWriteBack::flush(std::chrono::milliseconds timeout)
 std::optional<PendingNode> PfsWriteBack::pending(std::string_view partition, std::string_view raw_path) const
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     std::unique_lock lock(d.mutex);
+    path = d.rebase(partition, path);
     for (const auto& [id, h] : d.handles) {
         if (h.partition == partition && upper_ascii(h.path) == upper_ascii(path)) {
             return PendingNode{PendingNode::Kind::file, h.path, h.size};
@@ -832,6 +1049,9 @@ std::optional<PendingNode> PfsWriteBack::pending(std::string_view partition, std
     switch (it->second.type) {
     case OpType::write: return PendingNode{PendingNode::Kind::file, it->second.path, it->second.size};
     case OpType::mkdir: return PendingNode{PendingNode::Kind::directory, it->second.path, 0};
+    case OpType::rename_case:
+        return PendingNode{it->second.directory ? PendingNode::Kind::directory : PendingNode::Kind::file,
+                           it->second.new_path, it->second.size};
     case OpType::remove:
     case OpType::rmdir:
     default: return PendingNode{PendingNode::Kind::deleted, it->second.path, 0};
@@ -844,9 +1064,15 @@ std::vector<PendingNode> PfsWriteBack::pending_children(std::string_view partiti
     // Merged view: on-disk children, minus pending deletes, plus pending
     // files/directories and open handles.
     auto& d = *impl_;
-    const auto directory = normalize(raw_directory);
+    std::string directory;
+    std::string disk_directory;
+    {
+        std::unique_lock lock(d.mutex);
+        directory = d.rebase(partition, normalize(raw_directory));
+        disk_directory = d.disk_spelling(partition, directory);
+    }
     std::map<std::string, PendingNode> merged;
-    const auto browse = d.session.browse(partition, directory);
+    const auto browse = d.session.browse(partition, disk_directory);
     if (browse.ok) {
         for (const auto& entry : browse.entries) {
             if (entry.name == "." || entry.name == "..") continue;
@@ -869,6 +1095,11 @@ std::vector<PendingNode> PfsWriteBack::pending_children(std::string_view partiti
     };
     for (const auto& [key, op] : d.pending) {
         if (op.partition != partition) continue;
+        if (op.type == OpType::rename_case) {
+            apply(op.new_path, PendingNode{op.directory ? PendingNode::Kind::directory : PendingNode::Kind::file,
+                                           op.new_path, op.size});
+            continue;
+        }
         PendingNode node{op.type == OpType::write ? PendingNode::Kind::file
                          : op.type == OpType::mkdir ? PendingNode::Kind::directory
                                                     : PendingNode::Kind::deleted,
@@ -888,8 +1119,9 @@ bool PfsWriteBack::read_pending(std::string_view partition, std::string_view raw
                                 std::span<std::byte> out, std::size_t& bytes_read) const
 {
     auto& d = *impl_;
-    const auto path = normalize(raw_path);
+    auto path = normalize(raw_path);
     std::unique_lock lock(d.mutex);
+    path = d.rebase(partition, path);
     bytes_read = 0;
     std::filesystem::path spool;
     std::uint64_t size = 0;

@@ -51,7 +51,8 @@ struct WriteBackOptions {
     std::filesystem::path spool_directory;
     std::uint64_t max_pending_bytes{512ULL * 1024ULL * 1024ULL};
     std::size_t max_pending_ops{4096};
-    std::uint64_t max_file_bytes{1024ULL * 1024ULL * 1024ULL};
+    // Commits memory-map the spool, so this caps PFS file size, not RAM.
+    std::uint64_t max_file_bytes{4ULL * 1024ULL * 1024ULL * 1024ULL};
     std::uint64_t free_space_reserve_bytes{64ULL * 1024ULL * 1024ULL};
     std::chrono::milliseconds commit_delay{750};
     std::chrono::milliseconds batch_pause{40};
@@ -176,6 +177,9 @@ public:
     std::size_t replay_orphans(const std::vector<JournalOrphan>& orphans);
 
 private:
+    [[nodiscard]] WriteStatus rename_case_only(std::string_view partition, const std::string& from,
+                                               const std::string& to);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
