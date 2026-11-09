@@ -998,7 +998,10 @@ private:
         navigate(active_path_);
     }
 
+public:
     // ---- Frieren background jobs: ISO export and OPL library sync ----------
+    // Public because the window procedure dispatches menu commands and
+    // worker-thread messages straight to these entry points.
 
     std::optional<std::filesystem::path> pick_folder(const wchar_t* title)
     {
@@ -1207,16 +1210,17 @@ private:
         const auto image = *current_image_;
         begin_job();
         set_status(L"Writing OPL assets to the disk image...");
-        job_thread_ = std::jthread([this, image, plan = std::shared_ptr<ps2hdd::opl::LibrarySyncPlan>(std::move(plan))](std::stop_token) {
+        std::shared_ptr<const ps2hdd::opl::LibrarySyncPlan> frozen(std::move(plan));
+        job_thread_ = std::jthread([this, image, frozen](std::stop_token) {
             ps2hdd::WritableFileBlockDevice target(image);
             if (!target.is_open()) {
                 post_done(false, L"Could not reopen the disk image for guarded write access.");
                 return;
             }
-            const auto applied = ps2hdd::opl::apply_library_sync(target, *plan);
+            const auto applied = ps2hdd::opl::apply_library_sync(target, *frozen);
             post_done(applied.ok, applied.ok
                 ? L"Wrote " + std::to_wstring(applied.files_written) + L" file(s) to " +
-                      widen(plan->opl_partition_id) + L" and verified the partition.\n\nThe image will be reopened."
+                      widen(frozen->opl_partition_id) + L" and verified the partition.\n\nThe image will be reopened."
                 : L"OPL sync failed:\n\n" + widen(applied.error));
         });
         reopen_after_job_ = true;
@@ -1249,6 +1253,8 @@ private:
             set_status(L"Cancelling after the current chunk...");
         }
     }
+
+private:
 
 #ifdef PS2DF_HAS_DOKANY
     void finish_mount_controller()
