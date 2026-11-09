@@ -101,6 +101,7 @@ add_library(ps2driveforge_host
     src/host/http_client.cpp
     src/host/opl_asset_pipeline.cpp
     src/host/opl_library_sync.cpp
+    src/host/bdm_library.cpp
     src/host/pfs_write_back.cpp
     src/host/writable_mount_view.cpp
     src/host/opl_partition.cpp
@@ -115,6 +116,7 @@ if(WIN32)
         src/platform/windows/physical_game_deploy.cpp
         src/platform/windows/physical_library_sync.cpp
         src/platform/windows/physical_mount_writer.cpp
+        src/platform/windows/windows_partition_volume.cpp
         src/platform/windows/physical_partition_remove.cpp
         src/platform/windows/physical_bootstrap_recovery.cpp
         src/platform/windows/physical_apa_recovery.cpp
@@ -469,6 +471,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-partition-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-partition-tests COMMAND ps2-driveforge-opl-partition-tests)
+    add_executable(ps2-driveforge-bdm-library-tests tests/bdm_library_tests.cpp)
+    target_link_libraries(ps2-driveforge-bdm-library-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-bdm-library-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-bdm-library-tests COMMAND ps2-driveforge-bdm-library-tests)
+
     add_executable(ps2-driveforge-apa-jail-tests tests/apa_jail_tests.cpp)
     target_link_libraries(ps2-driveforge-apa-jail-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-apa-jail-tests PRIVATE cxx_std_20)

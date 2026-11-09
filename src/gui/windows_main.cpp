@@ -2,7 +2,9 @@
 #define NOMINMAX
 #endif
 
+#include "ps2hdd/bdm_library.hpp"
 #include "ps2hdd/drive_session.hpp"
+#include "ps2hdd/windows_partition_volume.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/hdl_export.hpp"
@@ -67,6 +69,10 @@ constexpr UINT kIdOplSync = 114;
 constexpr UINT kIdMountWritable = 115;
 constexpr UINT kIdInstallIso = 116;
 constexpr UINT kIdDeleteGame = 117;
+constexpr UINT kIdBdmInstall = 118;
+constexpr UINT kIdBdmScan = 119;
+constexpr UINT kIdBdmSync = 120;
+constexpr UINT kIdBdmChooseRoot = 121;
 constexpr UINT kIdPhysicalBase = 300;
 constexpr UINT kMaxPhysicalMenuEntries = 512;
 constexpr UINT kMountTimerId = 1;
@@ -626,6 +632,8 @@ private:
         const bool image_writable = source_open && current_image_ && !job_running_ && !mount_active();
         EnableMenuItem(menu, kIdInstallIso, MF_BYCOMMAND | (image_writable ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdDeleteGame, MF_BYCOMMAND | (image_writable && hdl_selected ? MF_ENABLED : MF_GRAYED));
+        for (const UINT id : {kIdBdmInstall, kIdBdmScan, kIdBdmSync, kIdBdmChooseRoot})
+            EnableMenuItem(menu, id, MF_BYCOMMAND | (!job_running_ ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdRestartElevated, MF_BYCOMMAND |
                        (!ps2driveforge::gui::is_process_elevated() ? MF_ENABLED : MF_GRAYED));
         DrawMenuBar(window_);
@@ -1357,6 +1365,134 @@ public:
         reopen_after_job_ = true;
     }
 
+    // ---- exFAT / BDM library (APA-Jail exFAT side, USB, MX4SIO) -------------
+    // Windows owns the exFAT filesystem; DriveForge only finds the volume and
+    // writes through the normal filesystem with OPL naming + preallocation.
+    std::optional<std::filesystem::path> jail_volume() const
+    {
+        if (!session_ || !current_physical_) return std::nullopt;
+        const auto& jail = session_->scan_result().jail;
+        if (!jail || !jail->exfat) return std::nullopt;
+        return ps2hdd::find_partition_volume(*current_physical_, std::uint64_t{jail->exfat->start_lba} * 512U);
+    }
+
+    bool choose_bdm_root(bool force_prompt)
+    {
+        if (!force_prompt && !bdm_root_.empty()) return true;
+        if (const auto volume = jail_volume()) {
+            const auto answer = MessageBoxW(window_,
+                (L"This PS2 HDD is APA-Jail. Its OPL exFAT partition is mounted at\n\n" + volume->wstring() +
+                 L"\n\nUse it as the BDM library? (No = pick another folder)").c_str(),
+                L"PS2 DriveForge - BDM library", MB_YESNOCANCEL | MB_ICONQUESTION);
+            if (answer == IDCANCEL) return false;
+            if (answer == IDYES) {
+                bdm_root_ = *volume;
+                set_status(L"BDM library: " + bdm_root_.wstring());
+                return true;
+            }
+        }
+        const auto picked = pick_folder(L"Choose the OPL BDM library root (holds DVD\\ and CD\\)");
+        if (!picked) return false;
+        bdm_root_ = *picked;
+        set_status(L"BDM library: " + bdm_root_.wstring());
+        return true;
+    }
+
+    void bdm_install()
+    {
+        if (job_running_ || !choose_bdm_root(false)) return;
+        std::array<wchar_t, 32768> path{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window_;
+        dialog.lpstrFilter = L"PS2 game images (*.iso)\0*.iso\0All files\0*.*\0";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER;
+        if (!GetOpenFileNameW(&dialog)) return;
+        const std::filesystem::path iso_path(path.data());
+        const auto root = bdm_root_;
+        begin_job();
+        set_status(L"Copying " + iso_path.filename().wstring() + L" into " + root.wstring() + L"...");
+        job_thread_ = std::jthread([this, root, iso_path](std::stop_token stop) {
+            ps2hdd::bdm::InstallOptions options;
+            options.title = iso_path.stem().string();
+            int last = -1;
+            const auto result = ps2hdd::bdm::install_game(root, iso_path, options,
+                [this, &last](std::uint64_t done, std::uint64_t total) {
+                    const int pct = total == 0 ? 0 : static_cast<int>(done * 100U / total);
+                    if (pct != last) {
+                        last = pct;
+                        post_progress(L"BDM install " + std::to_wstring(pct) + L"%  |  Games > Cancel to stop");
+                    }
+                },
+                stop);
+            if (!result.ok) {
+                post_done(false, result.cancelled ? std::wstring(L"Install cancelled; partial file removed.")
+                                                  : L"BDM install failed:\n\n" + widen(result.error));
+                return;
+            }
+            std::wstring text = L"Installed " + widen(result.startup) + L" as\n" + result.path.wstring() + L"\n\nFragments: " +
+                                (result.fragments.known ? std::to_wstring(result.fragments.extents) : std::wstring(L"unknown"));
+            for (const auto& warning : result.warnings) text += L"\n" + widen(warning);
+            post_done(true, text);
+        });
+    }
+
+    void bdm_scan()
+    {
+        if (job_running_ || !choose_bdm_root(false)) return;
+        const auto root = bdm_root_;
+        begin_job();
+        set_status(L"Scanning BDM library...");
+        job_thread_ = std::jthread([this, root](std::stop_token) {
+            const auto games = ps2hdd::bdm::scan_library(root);
+            std::size_t fragmented = 0;
+            std::wstring lines;
+            for (const auto& game : games) {
+                const bool bad = game.fragments.known && game.fragments.extents > ps2hdd::bdm::kOplMaxFragments;
+                if (bad) ++fragmented;
+                lines += widen(game.startup.empty() ? std::string("?") : game.startup) + L"  " +
+                         (game.cd ? L"CD   " : L"DVD  ") + game.path.filename().wstring();
+                if (game.fragments.known) lines += L"  [" + std::to_wstring(game.fragments.extents) + L" frag]";
+                if (bad) lines += L"  <- too fragmented";
+                if (!game.error.empty()) lines += L"  (" + widen(game.error) + L")";
+                lines += L"\n";
+            }
+            post_done(true, std::to_wstring(games.size()) + L" game image(s), " + std::to_wstring(fragmented) +
+                                L" over OPL's fragment limit.\n\n" + lines);
+        });
+    }
+
+    void bdm_sync()
+    {
+        if (job_running_ || !choose_bdm_root(false)) return;
+        const auto root = bdm_root_;
+        std::array<wchar_t, 32768> local{};
+        const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+        const auto cache_root = (chars > 0 && chars < local.size() ? std::filesystem::path(local.data())
+                                                                   : std::filesystem::temp_directory_path()) /
+                                L"PS2 DriveForge" / L"OPL Cache";
+        begin_job();
+        set_status(L"Fetching missing OPL assets for the BDM library...");
+        job_thread_ = std::jthread([this, root, cache_root](std::stop_token) {
+            auto http = ps2hdd::make_platform_http_client();
+            if (!http) {
+                post_done(false, L"Native HTTPS transport is unavailable.");
+                return;
+            }
+            const auto result = ps2hdd::bdm::sync_assets(root, *http, cache_root, true);
+            if (!result.ok) {
+                post_done(false, L"BDM asset sync failed:\n\n" + widen(result.error));
+                return;
+            }
+            std::wstring text = std::to_wstring(result.games) + L" game(s): " + std::to_wstring(result.written) +
+                                L" file(s) written, " + std::to_wstring(result.already_present) + L" already present.";
+            for (const auto& issue : result.issues) text += L"\n" + widen(issue);
+            post_done(true, text);
+        });
+    }
+
     void delete_game()
     {
         if (!session_ || job_running_ || !current_image_ || !active_partition_ ||
@@ -1445,6 +1581,7 @@ private:
     std::vector<ps2hdd::PhysicalDriveProbe> detected_drives_;
     std::unique_ptr<ps2hdd::DriveSession> session_;
     std::optional<unsigned> current_physical_;
+    std::filesystem::path bdm_root_;
     std::optional<std::filesystem::path> current_image_;
 #ifdef PS2DF_HAS_DOKANY
     std::unique_ptr<ps2hdd::DokanyMountController> mount_controller_;
@@ -1490,6 +1627,13 @@ HMENU create_menu()
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdDeleteGame, L"&Delete selected game (image)...");
     AppendMenuW(games, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(games, MF_STRING | MF_GRAYED, kIdOplSync, L"Add missing OPL artwork, CFG && cheats...");
+    AppendMenuW(games, MF_SEPARATOR, 0, nullptr);
+    HMENU bdm = CreatePopupMenu();
+    AppendMenuW(bdm, MF_STRING, kIdBdmChooseRoot, L"&Choose library folder (or detect APA-Jail exFAT)...");
+    AppendMenuW(bdm, MF_STRING, kIdBdmInstall, L"&Install game ISO into library...");
+    AppendMenuW(bdm, MF_STRING, kIdBdmScan, L"&Scan library (IDs + fragmentation)");
+    AppendMenuW(bdm, MF_STRING, kIdBdmSync, L"Add missing &artwork, CFG && cheats to library");
+    AppendMenuW(games, MF_POPUP, reinterpret_cast<UINT_PTR>(bdm), L"exFAT / &BDM library (APA-Jail, USB, MX4SIO)");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(games), L"&Games");
 
     HMENU view = CreatePopupMenu();
@@ -1603,6 +1747,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             return 0;
         case kIdDeleteGame:
             app->delete_game();
+            return 0;
+        case kIdBdmChooseRoot:
+            app->choose_bdm_root(true);
+            return 0;
+        case kIdBdmInstall:
+            app->bdm_install();
+            return 0;
+        case kIdBdmScan:
+            app->bdm_scan();
+            return 0;
+        case kIdBdmSync:
+            app->bdm_sync();
             return 0;
 #ifdef PS2DF_HAS_DOKANY
         case kIdMountReadOnly:

@@ -164,6 +164,17 @@ struct HdlIsoExportSnapshot {
     std::vector<std::string> warnings;
 };
 
+// APA-Jail exFAT (OPL BDM) side of the current source.
+struct JailLibrarySnapshot {
+    bool jail{};           // the source carries an APA-Jail hybrid MBR
+    bool has_exfat{};      // an exFAT/OPL MBR entry exists
+    std::string signature; // "APAJ-A2"
+    std::uint64_t exfat_offset_bytes{};
+    std::uint64_t exfat_size_bytes{};
+    std::filesystem::path volume; // mounted Windows volume (physical sources only)
+    std::string note;
+};
+
 struct LibrarySyncPlanSnapshot {
     bool ok{};
     bool cancelled{};
@@ -228,6 +239,11 @@ public:
         std::stop_token stop = {});
     [[nodiscard]] HdlMutationResultSnapshot apply_library_sync(
         const std::filesystem::path& artifact_directory, bool physical_confirmation);
+
+    // Locates the exFAT library volume of an APA-Jail source. Windows mounts that
+    // partition itself, so DriveForge only resolves its volume path and lets
+    // bdm::install_game / bdm::sync_assets work through the normal filesystem.
+    [[nodiscard]] JailLibrarySnapshot jail_library() const;
 
     [[nodiscard]] RecoveryActionSnapshot capture_rescue_capsule(
         const std::filesystem::path& artifact_directory) const

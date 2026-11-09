@@ -124,6 +124,22 @@
                                         </StackPanel>
                                     </Border>
 
+                                    <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="exFAT / BDM library (APA-Jail, USB, MX4SIO)" FontWeight="SemiBold"/>
+                                            <TextBlock x:Name="BdmJailStateText" Text="APA-Jail exFAT side: open a source to detect it." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="BdmRootText" IsReadOnly="True" PlaceholderText="OPL library root (folder that holds DVD\ and CD\)"/><Button x:Name="BdmDetectButton" Grid.Column="1" Content="Detect jail volume" Click="on_bdm_detect"/><Button x:Name="BdmChooseRootButton" Grid.Column="2" Content="Choose folder..." Click="on_bdm_choose_root"/></Grid>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="BdmInstallButton" Content="Install selected ISO here" IsEnabled="False" Click="on_bdm_install" ToolTipService.ToolTip="Copies the ISO chosen above into DVD\ or CD\ with OPL naming, preallocated to keep it contiguous"/>
+                                                <Button x:Name="BdmScanButton" Content="Scan library" IsEnabled="False" Click="on_bdm_scan"/>
+                                                <Button x:Name="BdmSyncButton" Content="Add missing assets" IsEnabled="False" Click="on_bdm_sync" ToolTipService.ToolTip="Downloads ART/CFG/CHT for every game in the library; existing files are never replaced"/>
+                                                <Button x:Name="BdmOpenButton" Content="Open in Explorer" IsEnabled="False" Click="on_bdm_open"/>
+                                            </StackPanel>
+                                            <ProgressBar x:Name="BdmProgress" Minimum="0" Maximum="1" Value="0" Height="3" IsIndeterminate="False"/>
+                                            <TextBlock x:Name="BdmSummaryText" Text="" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap" MaxLines="14" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </Border>
+
                                     <Expander Header="Advanced bootstrap, diagnostics and recovery" IsExpanded="False" Margin="0,8,0,0">
                                         <StackPanel Spacing="12" Padding="0,8,0,0">
                                             <Border Style="{StaticResource DriveForgeCompactCardStyle}">

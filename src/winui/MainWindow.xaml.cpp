@@ -5,6 +5,7 @@
 #include "MainWindow.g.cpp"
 #endif
 
+#include "ps2hdd/bdm_library.hpp"
 #include "ps2hdd/pfs_write_back.hpp"
 #include "ps2hdd/darkness_policy.hpp"
 #include "ps2hdd/pfs_export.hpp"
@@ -283,6 +284,7 @@ MainWindow::~MainWindow()
     if (enrichment_thread_.joinable()) enrichment_thread_.request_stop();
     if (export_thread_.joinable()) export_thread_.request_stop();
     if (mutation_thread_.joinable()) mutation_thread_.request_stop();
+    if (bdm_thread_.joinable()) bdm_thread_.request_stop();
     if (mount_process_) CloseHandle(mount_process_);
 }
 
@@ -666,6 +668,7 @@ void MainWindow::refresh_hdl_tools()
     HdlInstallButton().IsEnabled(hdl_preview_.ok && !mutation_busy_.load());
     HdlDeleteSelectedButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !mutation_busy_.load());
     update_game_action_buttons();
+    refresh_bdm_jail_state();
 }
 
 void MainWindow::update_game_action_buttons()
@@ -1377,6 +1380,192 @@ void MainWindow::start_iso_export(std::vector<ps2df::winui::PartitionRowSnapshot
                 self->set_status(cancelled ? L"ISO export cancelled; no partial files left" : L"ISO export finished");
                 self->refresh_hdl_tools();
             }
+        });
+    });
+}
+
+void MainWindow::set_bdm_root(const std::filesystem::path& root)
+{
+    bdm_root_ = root;
+    BdmRootText().Text(root.wstring());
+    update_bdm_buttons();
+}
+
+void MainWindow::update_bdm_buttons()
+{
+    const bool idle = !bdm_busy_.load();
+    const bool has_root = !bdm_root_.empty();
+    BdmInstallButton().IsEnabled(idle && has_root && !hdl_iso_path_.empty());
+    BdmScanButton().IsEnabled(idle && has_root);
+    BdmSyncButton().IsEnabled(idle && has_root);
+    BdmOpenButton().IsEnabled(has_root);
+    BdmChooseRootButton().IsEnabled(idle);
+    BdmDetectButton().IsEnabled(idle && snapshot_.open);
+}
+
+void MainWindow::refresh_bdm_jail_state()
+{
+    if (!snapshot_.open) {
+        BdmJailStateText().Text(L"APA-Jail exFAT side: open a source to detect it, or pick any OPL BDM folder.");
+        update_bdm_buttons();
+        return;
+    }
+    const auto jail = controller_.jail_library();
+    std::wstring text;
+    if (jail.jail) {
+        text = L"APA-Jail " + (jail.signature.empty() ? std::wstring(L"(unsigned)") : widen(jail.signature));
+        if (jail.has_exfat)
+            text += L" - exFAT library at offset " + format_bytes(jail.exfat_offset_bytes) + L", " +
+                    format_bytes(jail.exfat_size_bytes) + L". ";
+        else
+            text += L". ";
+    }
+    text += widen(jail.note);
+    if (!jail.volume.empty()) text += L" (" + jail.volume.wstring() + L")";
+    BdmJailStateText().Text(text);
+    if (bdm_root_.empty() && !jail.volume.empty()) set_bdm_root(jail.volume);
+    update_bdm_buttons();
+}
+
+void MainWindow::on_bdm_detect(IInspectable const&, RoutedEventArgs const&)
+{
+    const auto jail = controller_.jail_library();
+    if (!jail.volume.empty()) {
+        set_bdm_root(jail.volume);
+        set_status(L"Using the APA-Jail exFAT volume " + jail.volume.wstring());
+    } else {
+        set_status(widen(jail.note));
+    }
+    refresh_bdm_jail_state();
+}
+
+void MainWindow::on_bdm_choose_root(IInspectable const&, RoutedEventArgs const&)
+{
+    if (const auto picked = pick_folder(native_hwnd())) set_bdm_root(*picked);
+}
+
+void MainWindow::on_bdm_open(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty()) return;
+    ShellExecuteW(native_hwnd(), L"open", bdm_root_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void MainWindow::on_bdm_install(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || hdl_iso_path_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    ps2hdd::bdm::InstallOptions options;
+    options.title = winrt::to_string(HdlTitleBox().Text());
+    // The media picker defaults to DVD; only an explicit CD choice overrides the
+    // library's size-based CD/DVD detection.
+    if (HdlMediaPicker().SelectedIndex() == 1) options.media = ps2hdd::hdl::MediaType::cd;
+    BdmProgress().IsIndeterminate(false);
+    BdmProgress().Value(0);
+    BdmSummaryText().Text(L"Preallocating and copying into the library...");
+    set_status(L"Installing ISO into the BDM library");
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_, iso = hdl_iso_path_, options](std::stop_token stop) {
+        auto result = ps2hdd::bdm::install_game(
+            root, iso, options,
+            [dispatcher, weak](std::uint64_t done, std::uint64_t total) {
+                dispatcher.TryEnqueue([weak, done, total] {
+                    if (auto self = weak.get())
+                        self->BdmProgress().Value(total == 0 ? 0.0 : static_cast<double>(done) / static_cast<double>(total));
+                });
+            },
+            stop);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            if (!result.ok) {
+                self->BdmSummaryText().Text(result.cancelled ? std::wstring(L"Install cancelled; partial file removed.")
+                                                             : L"Install failed: " + widen(result.error));
+            } else {
+                std::wstring text = L"Installed " + widen(result.startup) + L" -> " + result.path.wstring() + L" (" +
+                                    format_bytes(result.bytes) + L", " +
+                                    (result.fragments.known
+                                         ? std::to_wstring(result.fragments.extents) + L" fragment(s)"
+                                         : std::wstring(L"fragments unknown")) +
+                                    L")";
+                for (const auto& warning : result.warnings) text += L"\n" + widen(warning);
+                self->BdmSummaryText().Text(text);
+                self->BdmProgress().Value(1.0);
+                self->set_status(L"BDM install complete");
+            }
+            self->update_bdm_buttons();
+        });
+    });
+}
+
+void MainWindow::on_bdm_scan(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    BdmProgress().IsIndeterminate(true);
+    BdmSummaryText().Text(L"Scanning DVD\\ and CD\\ and measuring fragmentation...");
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_](std::stop_token) {
+        auto games = ps2hdd::bdm::scan_library(root);
+        dispatcher.TryEnqueue([weak, games = std::move(games)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            self->BdmProgress().IsIndeterminate(false);
+            std::size_t fragmented = 0;
+            std::wstring lines;
+            for (const auto& game : games) {
+                const bool bad = game.fragments.known && game.fragments.extents > ps2hdd::bdm::kOplMaxFragments;
+                if (bad) ++fragmented;
+                lines += widen(game.startup.empty() ? std::string("?") : game.startup) + L"  " +
+                         (game.cd ? L"CD  " : L"DVD ") + game.path.filename().wstring();
+                if (game.fragments.known) lines += L"  [" + std::to_wstring(game.fragments.extents) + L" frag]";
+                if (bad) lines += L"  <- too fragmented for OPL";
+                if (!game.error.empty()) lines += L"  (" + widen(game.error) + L")";
+                lines += L"\n";
+            }
+            self->BdmSummaryText().Text(std::to_wstring(games.size()) + L" game image(s), " +
+                                        std::to_wstring(fragmented) + L" over OPL's fragment limit.\n" + lines);
+            self->update_bdm_buttons();
+        });
+    });
+}
+
+void MainWindow::on_bdm_sync(IInspectable const&, RoutedEventArgs const&)
+{
+    if (bdm_root_.empty() || bdm_busy_.exchange(true)) return;
+    if (bdm_thread_.joinable()) bdm_thread_.join();
+    update_bdm_buttons();
+    BdmProgress().IsIndeterminate(true);
+    BdmSummaryText().Text(L"Fetching missing ART/CFG/CHT for the library...");
+    const auto cache_root = local_app_data_path() / L"PS2 DriveForge" / L"OPL Cache";
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    bdm_thread_ = std::jthread([dispatcher, weak, root = bdm_root_, cache_root](std::stop_token) {
+        ps2hdd::bdm::AssetSyncResult result;
+        auto http = ps2hdd::make_platform_http_client();
+        if (!http) result.error = "Native HTTPS transport is unavailable.";
+        else result = ps2hdd::bdm::sync_assets(root, *http, cache_root, true);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            auto self = weak.get();
+            if (!self) return;
+            self->bdm_busy_.store(false);
+            self->BdmProgress().IsIndeterminate(false);
+            if (!result.ok) {
+                self->BdmSummaryText().Text(L"Asset sync failed: " + widen(result.error));
+            } else {
+                std::wstring text = std::to_wstring(result.games) + L" game(s): " + std::to_wstring(result.written) +
+                                    L" file(s) written, " + std::to_wstring(result.already_present) +
+                                    L" already present.";
+                for (const auto& issue : result.issues) text += L"\n" + widen(issue);
+                self->BdmSummaryText().Text(text);
+                self->set_status(L"BDM library assets updated");
+            }
+            self->update_bdm_buttons();
         });
     });
 }

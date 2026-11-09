@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "NativeSessionController.hpp"
 
+#include "ps2hdd/windows_partition_volume.hpp"
 #include "ps2hdd/apa_remove.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/hdl_enrichment.hpp"
@@ -753,6 +754,49 @@ HdlMutationResultSnapshot NativeSessionController::remove_hdl(
             result.partial = true;
             result.error = "Removal committed but the WinUI session could not cold-reopen it: " + reopen_error;
         }
+    }
+    return result;
+}
+
+JailLibrarySnapshot NativeSessionController::jail_library() const
+{
+    JailLibrarySnapshot result;
+    std::shared_ptr<ps2hdd::DriveSession> session;
+    SourceKind kind = SourceKind::none;
+    std::optional<unsigned> index;
+    {
+        std::scoped_lock lock(mutex_);
+        session = session_;
+        kind = source_kind_;
+        index = physical_index_;
+    }
+    if (!session) {
+        result.note = "Open a PS2 HDD first.";
+        return result;
+    }
+    const auto& jail = session->scan_result().jail;
+    if (!jail) {
+        result.note = "No APA-Jail hybrid MBR on this source. Pick any OPL BDM folder (USB, MX4SIO, exFAT) instead.";
+        return result;
+    }
+    result.jail = true;
+    result.signature = jail->signature;
+    if (!jail->exfat) {
+        result.note = "APA-Jail layout has no exFAT/OPL partition entry.";
+        return result;
+    }
+    result.has_exfat = true;
+    result.exfat_offset_bytes = std::uint64_t{jail->exfat->start_lba} * 512U;
+    result.exfat_size_bytes = std::uint64_t{jail->exfat->sectors} * 512U;
+    if (kind != SourceKind::physical || !index) {
+        result.note = "exFAT partition found inside a disk image; mount the image in Windows or pick its folder manually.";
+        return result;
+    }
+    if (auto volume = ps2hdd::find_partition_volume(*index, result.exfat_offset_bytes)) {
+        result.volume = *volume;
+        result.note = "Windows has the OPL exFAT partition mounted.";
+    } else {
+        result.note = "Windows has not mounted the OPL exFAT partition (no volume at that offset). Assign it a drive letter in Disk Management.";
     }
     return result;
 }

@@ -1,4 +1,5 @@
 #include "ps2hdd/apa.hpp"
+#include "ps2hdd/bdm_library.hpp"
 #include "ps2hdd/apa_allocation.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/hdl.hpp"
@@ -48,7 +49,12 @@ void usage()
         << "  ps2-driveforge-hdl-tools sync-assets <disk-image> <cache-dir>\n"
         << "      [--partition <opl-pfs-id>] [--tar] [--all-art] [--apply]\n"
         << "      Adds missing ART/CFG/CHT for every installed game. Without --apply it\n"
-        << "      only plans and stages downloads; existing files are never replaced.\n\n"
+        << "      only plans and stages downloads; existing files are never replaced.\n"
+        << "  ps2-driveforge-hdl-tools bdm-scan <library-root>\n"
+        << "  ps2-driveforge-hdl-tools bdm-install <library-root> <game.iso> [--cd|--dvd] [--title <text>]\n"
+        << "  ps2-driveforge-hdl-tools bdm-sync <library-root> <cache-dir> [--apply]\n"
+        << "      OPL BDM libraries (APA-Jail exFAT, USB, MX4SIO): contiguous ISO install into\n"
+        << "      DVD/CD with fragment report, library scan, and missing-asset sync.\n\n"
         << "Asset downloads are staged on the host only. PFS import is intentionally a\n"
         << "separate Frieren write milestone. PhysicalDrive writes do not exist here.\n";
 }
@@ -390,6 +396,74 @@ int fetch_assets(int argc, char** argv)
     }
     std::cout << "PFS writes performed: zero. Assets are host-staged for the later PFS transaction.\n";
     return fetched.ok ? 0 : 1;
+}
+
+int bdm_command(std::string_view command, int argc, char** argv)
+{
+    if (argc < 3) {
+        usage();
+        return 2;
+    }
+    const std::filesystem::path root = argv[2];
+    if (command == "bdm-scan") {
+        const auto games = ps2hdd::bdm::scan_library(root);
+        for (const auto& game : games) {
+            std::cout << std::left << std::setw(13) << (game.startup.empty() ? "?" : game.startup)
+                      << std::setw(5) << (game.cd ? "CD" : "DVD")
+                      << std::setw(10) << (game.fragments.known ? std::to_string(game.fragments.extents) + " frag" : "-")
+                      << game.path.filename().string();
+            if (!game.error.empty()) std::cout << "  [" << game.error << ']';
+            std::cout << '\n';
+        }
+        std::cout << games.size() << " game image(s)\n";
+        return 0;
+    }
+    if (command == "bdm-install") {
+        if (argc < 4) {
+            usage();
+            return 2;
+        }
+        ps2hdd::bdm::InstallOptions options;
+        for (int i = 4; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--cd") options.media = ps2hdd::hdl::MediaType::cd;
+            else if (option == "--dvd") options.media = ps2hdd::hdl::MediaType::dvd;
+            else if (option == "--title" && i + 1 < argc) options.title = argv[++i];
+            else {
+                usage();
+                return 2;
+            }
+        }
+        const auto result = ps2hdd::bdm::install_game(root, argv[3], options);
+        if (!result.ok) {
+            std::cerr << "BDM install failed: " << result.error << '\n';
+            return 1;
+        }
+        std::cout << "Installed " << result.startup << " -> " << result.path.string() << '\n'
+                  << "Fragments: " << (result.fragments.known ? std::to_string(result.fragments.extents) : "unknown") << '\n';
+        for (const auto& warning : result.warnings) std::cout << "[WARN] " << warning << '\n';
+        return 0;
+    }
+    if (argc < 4) {
+        usage();
+        return 2;
+    }
+    const bool apply = argc > 4 && std::string_view(argv[4]) == "--apply";
+    auto http = ps2hdd::make_platform_http_client();
+    if (!http) {
+        std::cerr << "Native HTTPS asset transport is not available on this platform build.\n";
+        return 1;
+    }
+    const auto result = ps2hdd::bdm::sync_assets(root, *http, argv[3], apply);
+    if (!result.ok) {
+        std::cerr << "BDM sync failed: " << result.error << '\n';
+        return 1;
+    }
+    for (const auto& issue : result.issues) std::cout << "  " << issue << '\n';
+    std::cout << result.games << " game(s), " << result.already_present << " asset(s) already present, "
+              << result.staged << " staged, " << result.written << " written"
+              << (apply ? "" : " (dry run; add --apply to write)") << '\n';
+    return 0;
 }
 
 int sync_assets(int argc, char** argv)
@@ -743,6 +817,9 @@ int main(int argc, char** argv)
     }
     if (command == "sync-assets") {
         return sync_assets(argc, argv);
+    }
+    if (command == "bdm-scan" || command == "bdm-install" || command == "bdm-sync") {
+        return bdm_command(command, argc, argv);
     }
 
     usage();

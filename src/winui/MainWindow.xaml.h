@@ -33,6 +33,12 @@ struct MainWindow : MainWindowT<MainWindow>
     void on_hdl_cancel_export(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_opl_sync_plan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
     void on_opl_sync_apply(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_detect(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_choose_root(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_install(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_scan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_sync(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_bdm_open(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
 
     void on_hdl_iso_path_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::TextChangedEventArgs const&)
     {
@@ -539,6 +545,12 @@ private:
     std::jthread hdl_prepare_thread_;
     std::jthread iso_export_thread_;
     std::jthread opl_sync_thread_;
+    std::jthread bdm_thread_;
+    std::atomic_bool bdm_busy_{false};
+    std::filesystem::path bdm_root_;
+    void set_bdm_root(const std::filesystem::path& root);
+    void update_bdm_buttons();
+    void refresh_bdm_jail_state();
     std::atomic_bool iso_export_busy_{false};
     std::atomic_bool opl_sync_busy_{false};
     bool opl_sync_ready_{false};

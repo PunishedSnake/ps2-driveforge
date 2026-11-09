@@ -328,52 +328,6 @@ ps2hdd::opl::FetchedAsset tar_asset(ps2hdd::opl::AssetKind kind,
     return asset;
 }
 
-std::optional<std::vector<std::byte>> tar_member(std::span<const std::byte> archive,
-                                                 std::string_view wanted)
-{
-    constexpr std::size_t record = 512;
-    std::size_t cursor = 0;
-    while (cursor + record <= archive.size()) {
-        const auto header = archive.subspan(cursor, record);
-        if (std::all_of(header.begin(), header.end(), [](std::byte value) {
-                return value == std::byte{0};
-            })) {
-            return std::nullopt;
-        }
-        std::size_t name_size = 0;
-        while (name_size < 100 && header[name_size] != std::byte{0}) {
-            ++name_size;
-        }
-        const std::string name(reinterpret_cast<const char*>(header.data()), name_size);
-        std::uint64_t size = 0;
-        for (std::size_t index = 124; index < 136; ++index) {
-            const auto ch = std::to_integer<unsigned char>(header[index]);
-            if (ch == 0 || ch == static_cast<unsigned char>(' ')) {
-                continue;
-            }
-            if (ch < static_cast<unsigned char>('0') || ch > static_cast<unsigned char>('7')) {
-                return std::nullopt;
-            }
-            size = size * 8U + (ch - static_cast<unsigned char>('0'));
-        }
-        if (size > std::numeric_limits<std::size_t>::max()) {
-            return std::nullopt;
-        }
-        const auto payload = static_cast<std::size_t>(size);
-        const auto padded = ((payload + record - 1U) / record) * record;
-        if (cursor + record > archive.size() || padded > archive.size() - (cursor + record)) {
-            return std::nullopt;
-        }
-        if (name == wanted) {
-            return std::vector<std::byte>(
-                archive.begin() + static_cast<std::ptrdiff_t>(cursor + record),
-                archive.begin() + static_cast<std::ptrdiff_t>(cursor + record + payload));
-        }
-        cursor += record + padded;
-    }
-    return std::nullopt;
-}
-
 std::vector<std::byte> text_bytes(std::string_view text)
 {
     return std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),

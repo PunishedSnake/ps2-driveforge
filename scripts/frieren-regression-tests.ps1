@@ -32,6 +32,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-opl-library-sync-tests.exe',
     'ps2-driveforge-pfs-write-back-tests.exe',
     'ps2-driveforge-apa-jail-tests.exe',
+    'ps2-driveforge-bdm-library-tests.exe',
     'ps2-driveforge-hdl-write-tests.exe',
     'ps2-driveforge-write-transaction-tests.exe',
     'ps2-driveforge-mutation-journal-tests.exe',
