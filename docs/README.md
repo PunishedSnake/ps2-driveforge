@@ -34,6 +34,7 @@ They are not alternate names for the same thing.
 
 - [`apa-format-notes.md`](apa-format-notes.md) - APA structure and evidence-backed invariants.
 - [`pfs-format-notes.md`](pfs-format-notes.md) - PFS superblock, zones, inode/SEGD/SEGI and directory semantics.
+- [`hdl-format-notes.md`](hdl-format-notes.md) - HDLoader header and the loader-canonical allocation table behind ISO export.
 - [`pfsshell-comparison.md`](pfsshell-comparison.md) - compatibility observations relative to pfsshell workflows.
 
 These documents describe behavior DriveForge currently understands or has evidence for. They do not replace primary PS2SDK/upstream references, because copying a structure definition twice does not make either copy primary.

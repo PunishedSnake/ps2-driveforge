@@ -28,6 +28,7 @@ $FrierenRegressionTests = @(
     'ps2-driveforge-partition-catalog-tests.exe',
     'ps2-driveforge-partition-grouping-tests.exe',
     'ps2-driveforge-hdl-enrichment-tests.exe',
+    'ps2-driveforge-hdl-iso-tests.exe',
     'ps2-driveforge-hdl-write-tests.exe',
     'ps2-driveforge-write-transaction-tests.exe',
     'ps2-driveforge-mutation-journal-tests.exe',

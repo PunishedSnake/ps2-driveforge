@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0-dev "Frieren" - in development
+
+- Fixed a `-Wcomment` warning in `mount_view.hpp` (backslash-terminated `//` lines) that broke GCC `-Werror` builds.
+- Added loader-canonical HDLoader allocation-table decoding (`+0x0F4`, `{ISO LSN, HDD sector, bytes}`) as used by HDLoader/OPL, documented against hdl-dump's shifted `+0x0F5` encoding in `docs/hdl-format-notes.md`; both encodings are regression-tested to agree.
+- Added `hdl::read_game_layout()`: a fail-closed virtual-ISO map that rejects slices outside the game's own APA data areas, inside HDL reserved windows, past the device, overlapping, non-contiguous, zero-length or not whole 2048-byte sectors.
+- Added `hdl::read_iso()` random-offset reads with EOF clamping.
+- Added `export_hdl_iso()`: pipelined (read-ahead-of-write, double-buffered) read-only ISO export that writes `<name>.partial` and renames only after a complete flush, never overwrites by default, supports progress/cancellation and checks the ISO9660 descriptor.
+- `DriveSession` caches validated HDL layouts per session; bulk export streams from the instrumented backing device so multi-GiB copies neither evict metadata pages nor pay for 256 KiB read-ahead windows they immediately outrun.
+- Explorer mount: disks with HDL partitions now show `\Games\<title> [<startup>].iso` virtual files with deterministic, case-insensitive, de-duplicated names; PFS-only disks keep the unchanged Darkness root namespace.
+- `ps2-driveforge-inspect` gains `--games` (validated game list with ISO size/slices) and `--extract-iso <partition|--all> <output>` with live throughput; `--all` is resumable and skips already-exported games.
+- Added `ps2-driveforge-hdl-iso-tests`; the normal regression suite is now **15 executables** and package verification expects it.
+
 ## 0.5.0 "Emilia" - 2026-08-23
 
 - Started the performance/frontend-modernization release above the hardware-validated Darkness read-only Explorer stack.

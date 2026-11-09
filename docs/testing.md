@@ -60,6 +60,10 @@ Caches contain only data already validated through normal parser rules. Tests ke
 
 Known committed APA deletion can update the cached session/model snapshot without re-enriching every unrelated game. Tests protect surviving HDL enrichment and stale-background-result handling.
 
+## HDL virtual-ISO regressions
+
+`hdl-iso-tests` builds an APA image where one game's allocation table is written exactly as hdl-dump writes it (shifted u32s at `+0x0F5`) and others in the loader-canonical `+0x0F4` form, then requires both encodings to decode to the same byte-exact multi-slice ISO; nine malformed-slice layouts to be refused; export to be byte exact across pipelined chunks, never overwrite and leave no final or `.partial` file after cancellation or read failure; bulk export to bypass read-ahead; and the read-only mount to expose deterministic, de-duplicated `\\Games\\<title> [<startup>].iso` files only when HDL partitions exist.
+
 ## HDL mutation regressions
 
 HDLoader metadata is parsed in-process from the main partition at `+0x101000` with magic `0xDEADFEED`.

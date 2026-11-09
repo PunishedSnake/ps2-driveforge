@@ -1,11 +1,13 @@
 #include "ps2hdd/mount_view.hpp"
 
+#include "ps2hdd/hdl_export.hpp"
 #include "ps2hdd/pfs_export.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace ps2hdd {
@@ -112,6 +114,51 @@ std::vector<AliasEntry> make_partition_aliases(const apa::ScanResult& scan)
     return aliases;
 }
 
+// Zero-I/O decision from the validated APA scan: the Games namespace exists
+// only when the disk actually carries HDLoader partitions.
+bool has_hdl_games(const apa::ScanResult& scan)
+{
+    return std::any_of(scan.partitions.begin(), scan.partitions.end(), [](const auto& partition) {
+        return !partition.is_sub() && partition.type == apa::kTypeHdl;
+    });
+}
+
+std::vector<ReadOnlyMountView::GameAlias> make_game_aliases(DriveSession& session)
+{
+    std::vector<ReadOnlyMountView::GameAlias> candidates;
+    for (const auto& layout : session.hdl_layouts()) {
+        if (!layout.ok) {
+            continue;
+        }
+        candidates.push_back({default_hdl_iso_filename(layout.layout.game),
+                              layout.layout.game.partition_id, layout.layout.iso_size_bytes});
+    }
+    // Deterministic aliases regardless of physical order: duplicates are
+    // suffixed in partition-ID order.
+    std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+        return std::tie(left.visible, left.partition) < std::tie(right.visible, right.partition);
+    });
+
+    std::set<std::string> used;
+    for (auto& candidate : candidates) {
+        const std::string stem = candidate.visible.substr(0, candidate.visible.size() - 4); // ".iso"
+        unsigned suffix = 2;
+        while (!used.insert(uppercase_ascii(candidate.visible)).second) {
+            candidate.visible = stem + " (" + std::to_string(suffix++) + ").iso";
+        }
+    }
+    return candidates;
+}
+
+const ReadOnlyMountView::GameAlias* find_game(const std::vector<ReadOnlyMountView::GameAlias>& games,
+                                              std::string_view visible)
+{
+    const auto it = std::find_if(games.begin(), games.end(), [visible](const auto& game) {
+        return equal_windows_name(game.visible, visible);
+    });
+    return it == games.end() ? nullptr : &*it;
+}
+
 const AliasEntry* find_alias(const std::vector<AliasEntry>& aliases, std::string_view visible)
 {
     const auto it = std::find_if(aliases.begin(), aliases.end(), [visible](const AliasEntry& entry) {
@@ -127,6 +174,15 @@ bool forbidden_component(std::string_view component)
 
 } // namespace
 
+std::shared_ptr<const std::vector<ReadOnlyMountView::GameAlias>> ReadOnlyMountView::games()
+{
+    std::scoped_lock lock(games_mutex_);
+    if (!games_) {
+        games_ = std::make_shared<const std::vector<GameAlias>>(make_game_aliases(session_));
+    }
+    return games_;
+}
+
 MountLookupResult ReadOnlyMountView::lookup(std::string_view path)
 {
     MountLookupResult result;
@@ -141,6 +197,29 @@ MountLookupResult ReadOnlyMountView::lookup(std::string_view path)
             result.error = "Dot path components are not valid in the mounted namespace";
             return result;
         }
+    }
+
+    if (equal_windows_name(parts[0], "Games") && has_hdl_games(session_.scan_result())) {
+        if (parts.size() == 1) {
+            result.ok = true;
+            result.kind = MountNodeKind::namespace_directory;
+            return result;
+        }
+        if (parts.size() > 2) {
+            result.error = "Mounted path traverses through a regular file";
+            return result;
+        }
+        const auto table = games();
+        const auto* game = find_game(*table, parts[1]);
+        if (!game) {
+            result.error = "HDL game image does not exist";
+            return result;
+        }
+        result.ok = true;
+        result.kind = MountNodeKind::hdl_iso;
+        result.partition = game->partition;
+        result.size = game->size;
+        return result;
     }
 
     if (!equal_windows_name(parts[0], "Partitions")) {
@@ -212,6 +291,19 @@ MountListResult ReadOnlyMountView::list_directory(std::string_view path)
 
     if (node.kind == MountNodeKind::root) {
         result.entries.push_back({"Partitions", MountNodeKind::namespace_directory, 0});
+        if (has_hdl_games(session_.scan_result())) {
+            result.entries.push_back({"Games", MountNodeKind::namespace_directory, 0});
+        }
+        result.ok = true;
+        return result;
+    }
+    if (node.kind == MountNodeKind::namespace_directory && node.partition.empty() &&
+        equal_windows_name(split_path(path).front(), "Games")) {
+        const auto table = games();
+        result.entries.reserve(table->size());
+        for (const auto& game : *table) {
+            result.entries.push_back({game.visible, MountNodeKind::hdl_iso, game.size});
+        }
         result.ok = true;
         return result;
     }
@@ -246,6 +338,13 @@ MountReadResult ReadOnlyMountView::read_file(std::string_view path, std::uint64_
     const auto node = lookup(path);
     if (!node.ok) {
         result.error = node.error;
+        return result;
+    }
+    if (node.kind == MountNodeKind::hdl_iso) {
+        const auto read = session_.read_hdl_iso(node.partition, offset, out);
+        result.ok = read.ok;
+        result.error = read.error;
+        result.bytes_read = read.bytes_read;
         return result;
     }
     if (node.kind != MountNodeKind::pfs_file) {

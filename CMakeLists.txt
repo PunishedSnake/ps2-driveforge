@@ -96,6 +96,7 @@ add_library(ps2driveforge_host
     src/host/drive_session.cpp
     src/host/mount_view.cpp
     src/host/hdl_enrichment.cpp
+    src/host/hdl_export.cpp
     src/host/management_model.cpp
     src/host/http_client.cpp
     src/host/opl_asset_pipeline.cpp
@@ -463,6 +464,10 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-partition-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-partition-tests COMMAND ps2-driveforge-opl-partition-tests)
+    add_executable(ps2-driveforge-hdl-iso-tests tests/hdl_iso_tests.cpp)
+    target_link_libraries(ps2-driveforge-hdl-iso-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-hdl-iso-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-hdl-iso-tests COMMAND ps2-driveforge-hdl-iso-tests)
 
     add_executable(ps2-driveforge-storage-profile-tests tests/storage_profile_tests.cpp)
     target_link_libraries(ps2-driveforge-storage-profile-tests PRIVATE ps2driveforge_core)

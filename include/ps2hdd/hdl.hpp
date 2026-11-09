@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -35,6 +36,33 @@ inline constexpr std::size_t kAllocEntryBytes = 12;
 inline constexpr std::size_t kMaxAllocationEntries = 65;
 
 static_assert(kAllocTableOffset + kMaxAllocationEntries * kAllocEntryBytes <= kMetadataBytes);
+
+// Loader-canonical allocation table ("part specs").
+//
+// hdl-dump writes and reads its table through a u32 pointer at +0x0F5 with
+// shifted units (its own source calls this "aerial acrobatics"). The loaders
+// that actually boot the game -- HDLoader and OPL's cdvdman -- instead read
+// naturally aligned 12-byte records at +0x0F4:
+//
+//   u32 part_offset   ISO offset of this slice in 2048-byte sectors
+//   u32 data_start    absolute HDD position in 512-byte sectors
+//   u32 part_size     slice length in bytes
+//
+// and map ISO LSN -> HDD LBA as data_start + (lsn - part_offset) * 4. On
+// tables written by hdl-dump both views agree, which is also why 65 records
+// at +0x0F4 end exactly at the 1024-byte header boundary while the +0x0F5
+// view overruns it by one byte. DriveForge decodes the loader view because it
+// defines what the console reads.
+inline constexpr std::size_t kPartSpecsOffset = 0x00F4;
+inline constexpr std::size_t kPartSpecBytes = 12;
+inline constexpr std::uint64_t kIsoSectorSize = 2048;
+// HDL keeps its own metadata (APA header, icons, 0xDEADFEED header, KELF) in
+// the first 4 MiB of the main partition and 1 MiB of each sub-partition. Game
+// data must start after those reserved windows.
+inline constexpr std::uint64_t kMainDataReserveBytes = 0x400000ULL;
+inline constexpr std::uint64_t kSubDataReserveBytes = 0x100000ULL;
+
+static_assert(kPartSpecsOffset + kMaxAllocationEntries * kPartSpecBytes <= 1024);
 
 enum class MediaType {
     unknown,
@@ -86,6 +114,35 @@ struct MetadataPatch {
     }
 };
 
+// One contiguous slice of the game image. iso_offset ranges are contiguous
+// and ascending; device ranges are validated to lie inside an APA extent owned
+// by the same game and never overlap one another.
+struct IsoExtent {
+    std::uint64_t iso_offset{};
+    std::uint64_t device_offset{};
+    std::uint64_t length{};
+    // 0 = main APA extent, N = sub-partition N-1.
+    std::uint32_t apa_extent{};
+};
+
+struct GameLayout {
+    GameInfo game;
+    std::vector<IsoExtent> extents;
+    std::uint64_t iso_size_bytes{};
+};
+
+struct LayoutResult {
+    bool ok{};
+    std::string error;
+    GameLayout layout;
+};
+
+struct IsoReadResult {
+    bool ok{};
+    std::string error;
+    std::size_t bytes_read{};
+};
+
 using ProgressCallback =
     std::function<void(std::size_t completed, std::size_t total, const GameResult& game)>;
 
@@ -103,6 +160,19 @@ using ProgressCallback =
 [[nodiscard]] GameResult patch_game_metadata(WritableBlockDevice& device,
                                              const apa::Partition& partition,
                                              const MetadataPatch& patch);
+
+// Parse the header plus the complete allocation table and validate it into a
+// virtual ISO map. Fails closed on any ambiguity: non-contiguous ISO offsets,
+// slices outside the game's own APA extents or inside HDL reserved windows,
+// overlapping slices, or sizes that are not whole 2048-byte sectors.
+[[nodiscard]] LayoutResult read_game_layout(BlockDevice& device,
+                                            const apa::Partition& partition);
+
+// Random-offset read of the virtual ISO. Reads at/after EOF succeed with zero
+// bytes; reads crossing EOF are clamped. Only a backing-device failure is an
+// error.
+[[nodiscard]] IsoReadResult read_iso(BlockDevice& device, const GameLayout& layout,
+                                     std::uint64_t offset, std::span<std::byte> out);
 
 // Build native game metadata from an existing APA scan in ascending physical
 // LBA order. The callback is progressive/cancellable so callers can publish

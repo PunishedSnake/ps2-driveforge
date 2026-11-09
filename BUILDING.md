@@ -43,7 +43,7 @@ The script:
 
 1. configures the native CMake targets;
 2. builds core, host, Win32, launcher, CLI/benchmark and Dokany targets;
-3. runs all 14 normal regression executables;
+3. runs every regression executable listed in `scripts/frieren-regression-tests.ps1`;
 4. restores pinned Windows App SDK/C++WinRT packages;
 5. builds the unpackaged WinUI frontend;
 6. verifies and stages the canonical developer/release payload.
@@ -189,7 +189,7 @@ Treat all of these as real failures:
 - missing Windows App SDK/C++WinRT imports;
 - missing WinUI runtime payload in a self-contained build;
 - missing Dokany headers/import library;
-- any of the 14 regression targets failing;
+- any listed regression target failing;
 - Clang sanitizer or `-Werror` failures;
 - canonical or user-package verifier failures;
 - staged launcher `--self-test` failure;

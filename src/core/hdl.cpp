@@ -88,7 +88,12 @@ const char* media_type_name(MediaType media) noexcept
     }
 }
 
-GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
+namespace {
+
+// Reads and validates the fixed header. On success `bytes` holds the complete
+// metadata window so callers can decode further fields without a second read.
+GameResult read_game_info_bytes(BlockDevice& device, const apa::Partition& partition,
+                                std::array<std::byte, kMetadataBytes>& bytes)
 {
     GameResult result;
     result.game.partition_id = partition.id;
@@ -119,7 +124,6 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         return result;
     }
 
-    std::array<std::byte, kMetadataBytes> bytes{};
     if (!device.read(metadata_offset, bytes)) {
         result.error = "Could not read HDL metadata header";
         return result;
@@ -180,6 +184,141 @@ GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
         partition.sub_count + 1U, static_cast<std::uint32_t>(kMaxAllocationEntries));
     result.game.allocation_table_consistent = declared == expected_parts;
     result.ok = true;
+    return result;
+}
+
+struct OwnedExtent {
+    std::uint64_t data_begin{};
+    std::uint64_t end{};
+};
+
+} // namespace
+
+GameResult read_game_info(BlockDevice& device, const apa::Partition& partition)
+{
+    std::array<std::byte, kMetadataBytes> bytes{};
+    return read_game_info_bytes(device, partition, bytes);
+}
+
+LayoutResult read_game_layout(BlockDevice& device, const apa::Partition& partition)
+{
+    LayoutResult result;
+    std::array<std::byte, kMetadataBytes> bytes{};
+    auto info = read_game_info_bytes(device, partition, bytes);
+    if (!info.ok) {
+        result.error = std::move(info.error);
+        return result;
+    }
+    result.layout.game = std::move(info.game);
+
+    // Byte ranges this game is allowed to store data in.
+    std::vector<OwnedExtent> owned;
+    owned.reserve(partition.sub_partitions.size() + 1);
+    const auto add_owned = [&](std::uint64_t start_lba, std::uint64_t sectors,
+                               std::uint64_t reserve) {
+        const std::uint64_t begin = start_lba * apa::kSectorSize;
+        const std::uint64_t end = begin + sectors * apa::kSectorSize;
+        owned.push_back({std::min(end, begin + reserve), end});
+    };
+    add_owned(partition.start_lba, partition.length_sectors, kMainDataReserveBytes);
+    for (const auto& sub : partition.sub_partitions) {
+        add_owned(sub.start, sub.length, kSubDataReserveBytes);
+    }
+
+    const auto declared = result.layout.game.declared_parts;
+    auto& extents = result.layout.extents;
+    extents.reserve(declared);
+    std::uint64_t iso_cursor = 0;
+    for (std::size_t i = 0; i < declared; ++i) {
+        const std::byte* record = bytes.data() + kPartSpecsOffset + i * kPartSpecBytes;
+        const std::uint64_t part_offset = load_u32_le(record);
+        const std::uint64_t data_start = load_u32_le(record + 4);
+        const std::uint64_t part_size = load_u32_le(record + 8);
+        const std::string where = "HDL allocation slice " + std::to_string(i) + ": ";
+
+        if (part_size == 0 || part_size % kIsoSectorSize != 0) {
+            result.error = where + "size is not a positive multiple of 2048 bytes";
+            return result;
+        }
+        if (part_offset * kIsoSectorSize != iso_cursor) {
+            result.error = where + "ISO offset is not contiguous with the previous slice";
+            return result;
+        }
+
+        const std::uint64_t device_offset = data_start * apa::kSectorSize;
+        const std::uint64_t device_end = device_offset + part_size;
+        if (device_end > device.size_bytes()) {
+            result.error = where + "extends outside the backing device";
+            return result;
+        }
+
+        std::uint32_t owner = 0;
+        bool inside = false;
+        for (std::size_t k = 0; k < owned.size(); ++k) {
+            if (device_offset >= owned[k].data_begin && device_end <= owned[k].end) {
+                owner = static_cast<std::uint32_t>(k);
+                inside = true;
+                break;
+            }
+        }
+        if (!inside) {
+            result.error = where + "is not inside a data area owned by this game's APA partitions";
+            return result;
+        }
+
+        for (const auto& previous : extents) {
+            const auto prev_end = previous.device_offset + previous.length;
+            if (device_offset < prev_end && previous.device_offset < device_end) {
+                result.error = where + "overlaps another slice on disk";
+                return result;
+            }
+        }
+
+        extents.push_back({iso_cursor, device_offset, part_size, owner});
+        iso_cursor += part_size;
+    }
+
+    result.layout.iso_size_bytes = iso_cursor;
+    result.ok = true;
+    return result;
+}
+
+IsoReadResult read_iso(BlockDevice& device, const GameLayout& layout, std::uint64_t offset,
+                       std::span<std::byte> out)
+{
+    IsoReadResult result;
+    if (offset >= layout.iso_size_bytes || out.empty()) {
+        result.ok = true;
+        return result;
+    }
+    const std::uint64_t wanted =
+        std::min<std::uint64_t>(out.size(), layout.iso_size_bytes - offset);
+
+    // First extent whose range ends after `offset`.
+    auto it = std::upper_bound(layout.extents.begin(), layout.extents.end(), offset,
+                               [](std::uint64_t value, const IsoExtent& extent) {
+                                   return value < extent.iso_offset + extent.length;
+                               });
+    std::uint64_t done = 0;
+    while (done < wanted && it != layout.extents.end()) {
+        const std::uint64_t position = offset + done;
+        const std::uint64_t inside = position - it->iso_offset;
+        const std::uint64_t chunk = std::min(wanted - done, it->length - inside);
+        if (!device.read(it->device_offset + inside,
+                         out.subspan(static_cast<std::size_t>(done),
+                                     static_cast<std::size_t>(chunk)))) {
+            result.error = "Could not read HDL game data from the backing device";
+            result.bytes_read = static_cast<std::size_t>(done);
+            return result;
+        }
+        done += chunk;
+        ++it;
+    }
+    result.bytes_read = static_cast<std::size_t>(done);
+    result.ok = done == wanted;
+    if (!result.ok) {
+        result.error = "HDL layout ended before the declared ISO size";
+    }
     return result;
 }
 

@@ -53,7 +53,7 @@ A typo does not need every gate. A new APA assumption does.
 
 ## Tests
 
-The normal suite currently contains **14 executables**:
+The normal suite is every CMake `add_test` target; the list in `scripts/frieren-regression-tests.ps1` is the packaged source of truth:
 
 ```bash
 cmake -S . -B build -DPS2DF_BUILD_TESTS=ON
