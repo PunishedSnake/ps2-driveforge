@@ -1,4 +1,4 @@
-# PS2 DriveForge 0.7 — Recovery / Diagnostics / Forensics
+# PS2 DriveForge 0.7 - Recovery / Diagnostics / Forensics
 
 This document parks the intended 0.7 direction while 0.5/0.6 work continues elsewhere. It is a design target, not a release-date commitment.
 
