@@ -170,3 +170,5 @@ jobs:
             dist/PS2-DriveForge-0.6.0-dev-Frieren-Portable-x64.zip
             dist/PS2-DriveForge-0.6.0-dev-Frieren-Setup-x64.exe
           if-no-files-found: error
+
+          retention-days: 3
