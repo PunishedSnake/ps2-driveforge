@@ -359,7 +359,7 @@ struct MainWindow : MainWindowT<MainWindow>
         MigrateTargetPicker().SelectedIndex(static_cast<int>(migrate_choices_.size() - 1));
     }
 
-    [[nodiscard]] std::uint64_t migrate_image_bytes() const
+    [[nodiscard]] std::uint64_t migrate_image_bytes()
     {
         const auto source = snapshot_.source_size_bytes;
         switch (MigrateImageSizePicker().SelectedIndex()) {
@@ -372,7 +372,7 @@ struct MainWindow : MainWindowT<MainWindow>
         }
     }
 
-    [[nodiscard]] std::optional<ps2hdd::recovery_service::MigrationTarget> migrate_target() const
+    [[nodiscard]] std::optional<ps2hdd::recovery_service::MigrationTarget> migrate_target()
     {
         const int index = MigrateTargetPicker().SelectedIndex();
         if (index < 0 || static_cast<std::size_t>(index) >= migrate_choices_.size()) return std::nullopt;
