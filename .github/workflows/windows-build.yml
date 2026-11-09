@@ -32,7 +32,8 @@ jobs:
         run: |
           $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
           $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-          Invoke-WebRequest $url -OutFile $installer
+          # Pinned + SHA-256 verified below; retry transient CDN 5xx/timeouts.
+          Invoke-WebRequest $url -OutFile $installer -MaximumRetryCount 6 -RetryIntervalSec 15
           $expected = '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732'
           $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
           if ($actual -ne $expected) {
@@ -70,7 +71,8 @@ jobs:
         run: |
           $url = 'https://github.com/dokan-dev/dokany/releases/download/v2.3.1.1000/Dokan_x64.msi'
           $msi = Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi'
-          Invoke-WebRequest $url -OutFile $msi
+          # Pinned + SHA-256 verified below; retry transient CDN 5xx/timeouts.
+          Invoke-WebRequest $url -OutFile $msi -MaximumRetryCount 6 -RetryIntervalSec 15
           $expected = '69FF8CB37BFEC3A75921C85FFD1C6370B50A9EC4ECEF2CF3A009D488DCBF5465'
           $actual = (Get-FileHash $msi -Algorithm SHA256).Hash
           if ($actual -ne $expected) {
