@@ -321,7 +321,7 @@ void DOKAN_CALLBACK cleanup(LPCWSTR, PDOKAN_FILE_INFO info)
     auto* runtime = context(info);
     auto* state = open_state(info);
     if (!runtime || !state || !runtime->engine) return;
-    if (info->DeleteOnClose) {
+    if (info->DeletePending) {
         if (state->has_handle) {
             (void)runtime->engine->close(state->handle, true);
             state->has_handle = false;
