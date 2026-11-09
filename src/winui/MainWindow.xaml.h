@@ -4,6 +4,7 @@
 #include "MainWindow.g.h"
 #include "NativeSessionController.hpp"
 #include "WinUIBootstrapProvider.hpp"
+#include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/recovery_service.hpp"
 
 #include <commdlg.h>
@@ -232,6 +233,266 @@ struct MainWindow : MainWindowT<MainWindow>
                          [source = recovery_source(), dir = hdl_artifact_directory_] {
                              return ps2hdd::recovery_service::repair_forensic_automatic(source, dir);
                          });
+        });
+    }
+
+    // ---- Boot chain ---------------------------------------------------------
+    void on_boot_chain(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (!recovery_ready(L"Boot chain", false) || mutation_busy_.exchange(true)) return;
+        if (recovery_thread_.joinable()) recovery_thread_.join();
+        RecoveryHealthText().Text(L"Reading the MBR program, __sysconf and __system (read-only)...");
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        recovery_thread_ = std::jthread([dispatcher, weak, source = recovery_source()](std::stop_token) {
+            auto chain = ps2hdd::recovery_service::boot_chain(source);
+            dispatcher.TryEnqueue([weak, chain = std::move(chain)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->mutation_busy_.store(false);
+                self->RecoveryHealthText().Text(widen_text(chain.ok ? chain.text : chain.error));
+                self->set_status(chain.ok ? L"Boot chain: " + widen_text(chain.report.family) : std::wstring(L"Boot chain unavailable"));
+            });
+        });
+    }
+
+    // ---- Drive migration / backup -------------------------------------------
+    struct MigrateChoice {
+        std::optional<unsigned> physical;
+        std::filesystem::path image;
+        std::wstring label;
+    };
+
+    void populate_migrate_targets()
+    {
+        MigrateTargetPicker().Items().Clear();
+        for (const auto& choice : migrate_choices_)
+            MigrateTargetPicker().Items().Append(winrt::box_value(winrt::hstring(choice.label)));
+        update_migrate_buttons();
+    }
+
+    void update_migrate_buttons()
+    {
+        // SelectionChanged can fire while InitializeComponent is still creating
+        // the controls declared after the pickers.
+        if (!MigrateTargetPicker() || !MigrateImageSizePicker() || !MigratePlanButton() || !MigrateStartButton() ||
+            !MigrateCancelButton())
+            return;
+        const bool idle = !migrate_busy_.load();
+        const int index = MigrateTargetPicker().SelectedIndex();
+        const bool has_target = index >= 0 && static_cast<std::size_t>(index) < migrate_choices_.size();
+        const bool image_target = has_target && !migrate_choices_[static_cast<std::size_t>(index)].physical;
+        MigrateImageSizePicker().Visibility(image_target ? Microsoft::UI::Xaml::Visibility::Visible
+                                                         : Microsoft::UI::Xaml::Visibility::Collapsed);
+        MigratePlanButton().IsEnabled(idle && has_target && (current_physical_ || !current_image_.empty()));
+        MigrateStartButton().IsEnabled(idle && migrate_plan_.ok);
+        MigrateCancelButton().IsEnabled(!idle);
+    }
+
+    void on_migrate_target_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
+    {
+        migrate_plan_ = {};  // any change invalidates a checked plan
+        update_migrate_buttons();
+    }
+
+    void on_migrate_refresh(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (migrate_busy_.exchange(true)) return;
+        if (migrate_thread_.joinable()) migrate_thread_.join();
+        MigrateSummaryText().Text(L"Looking for drives (read-only)...");
+        update_migrate_buttons();
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        migrate_thread_ = std::jthread([dispatcher, weak, source = current_physical_](std::stop_token) {
+            auto drives = ps2hdd::discover_physical_drives();
+            dispatcher.TryEnqueue([weak, source, drives = std::move(drives)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->migrate_busy_.store(false);
+                std::vector<MigrateChoice> keep;
+                for (auto& choice : self->migrate_choices_)
+                    if (!choice.physical) keep.push_back(std::move(choice));  // keep chosen image targets
+                std::size_t listed = 0;
+                for (const auto& drive : drives) {
+                    if (source && drive.index == *source) continue;
+                    MigrateChoice choice;
+                    choice.physical = drive.index;
+                    choice.label = L"PhysicalDrive" + std::to_wstring(drive.index) + L"  " +
+                                   widen_text(drive.friendly_name) + L"  " + widen_text(ps2hdd::recovery_service::human_bytes(drive.size_bytes)) +
+                                   (drive.apa_detected ? L"  (PS2 disk: will be replaced)" : L"");
+                    keep.push_back(std::move(choice));
+                    ++listed;
+                }
+                self->migrate_choices_ = std::move(keep);
+                self->populate_migrate_targets();
+                self->MigrateSummaryText().Text(std::to_wstring(listed) +
+                    L" other drive(s) found. Drives with a PC partition table are refused when you check the plan.");
+            });
+        });
+    }
+
+    void on_migrate_choose_image(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        std::array<wchar_t, 32768> path{};
+        constexpr std::wstring_view suggested = L"PS2 HDD backup.img";
+        std::copy(suggested.begin(), suggested.end(), path.begin());
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = native_hwnd();
+        dialog.lpstrFilter = L"PS2 HDD image (*.img)\0*.img\0All files\0*.*\0";
+        dialog.lpstrDefExt = L"img";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_EXPLORER | OFN_NOREADONLYRETURN;
+        if (!GetSaveFileNameW(&dialog)) return;
+        const std::filesystem::path chosen(path.data());
+        std::error_code ec;
+        if (std::filesystem::exists(chosen, ec)) {
+            show_error(L"New image file", L"DriveForge never overwrites an existing image. Choose a new file name.");
+            return;
+        }
+        MigrateChoice choice;
+        choice.image = chosen;
+        choice.label = L"New image: " + chosen.filename().wstring();
+        migrate_choices_.push_back(std::move(choice));
+        populate_migrate_targets();
+        MigrateTargetPicker().SelectedIndex(static_cast<int>(migrate_choices_.size() - 1));
+    }
+
+    [[nodiscard]] std::uint64_t migrate_image_bytes() const
+    {
+        const auto source = snapshot_.source_size_bytes;
+        switch (MigrateImageSizePicker().SelectedIndex()) {
+        case 1: return source * 2;
+        case 2: return 500ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 3: return 1000ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 4: return 2000ULL * 1000ULL * 1000ULL * 1000ULL;
+        case 5: return 4000ULL * 1000ULL * 1000ULL * 1000ULL;
+        default: return source;
+        }
+    }
+
+    [[nodiscard]] std::optional<ps2hdd::recovery_service::MigrationTarget> migrate_target() const
+    {
+        const int index = MigrateTargetPicker().SelectedIndex();
+        if (index < 0 || static_cast<std::size_t>(index) >= migrate_choices_.size()) return std::nullopt;
+        const auto& choice = migrate_choices_[static_cast<std::size_t>(index)];
+        ps2hdd::recovery_service::MigrationTarget target;
+        target.physical = choice.physical;
+        target.image = choice.image;
+        if (!choice.physical) target.image_bytes = migrate_image_bytes();
+        return target;
+    }
+
+    void on_migrate_plan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        const auto target = migrate_target();
+        if (!target || migrate_busy_.exchange(true)) return;
+        if (migrate_thread_.joinable()) migrate_thread_.join();
+        migrate_plan_ = {};
+        MigrateSummaryText().Text(L"Planning (read-only)...");
+        update_migrate_buttons();
+        auto dispatcher = DispatcherQueue();
+        auto weak = get_weak();
+        migrate_thread_ = std::jthread([dispatcher, weak, source = recovery_source(), target = *target](std::stop_token) {
+            auto planned = ps2hdd::recovery_service::plan_migration(source, target);
+            dispatcher.TryEnqueue([weak, planned = std::move(planned)] {
+                auto self = weak.get();
+                if (!self) return;
+                self->migrate_busy_.store(false);
+                self->MigrateSummaryText().Text(widen_text(planned.ok ? planned.text : "Refused: " + planned.error));
+                if (planned.ok) self->migrate_plan_ = planned.plan;
+                self->update_migrate_buttons();
+            });
+        });
+    }
+
+    void on_migrate_start(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        const auto target = migrate_target();
+        if (!target || !migrate_plan_.ok || migrate_busy_.load()) return;
+        auto start = [this, target = *target] {
+            if (migrate_busy_.exchange(true)) return;
+            if (migrate_thread_.joinable()) migrate_thread_.join();
+            MigrateProgress().Value(0);
+            update_migrate_buttons();
+            set_status(L"Migrating to " + widen_text(target.name()) + L"...");
+            auto dispatcher = DispatcherQueue();
+            auto weak = get_weak();
+            migrate_thread_ = std::jthread([dispatcher, weak, source = recovery_source(), target, plan = migrate_plan_](std::stop_token stop) {
+                auto outcome = ps2hdd::recovery_service::migrate(
+                    source, target, plan,
+                    [dispatcher, weak, last = std::make_shared<int>(-1)](std::uint64_t done, std::uint64_t total) {
+                        const int permille = total == 0 ? 1000 : static_cast<int>(done * 1000U / total);
+                        if (permille == *last) return;
+                        *last = permille;
+                        dispatcher.TryEnqueue([weak, permille] {
+                            if (auto self = weak.get()) self->MigrateProgress().Value(permille / 1000.0);
+                        });
+                    },
+                    stop);
+                dispatcher.TryEnqueue([weak, outcome = std::move(outcome)] {
+                    auto self = weak.get();
+                    if (!self) return;
+                    self->migrate_busy_.store(false);
+                    self->migrate_plan_ = {};
+                    std::wstring text = widen_text(outcome.ok ? outcome.summary : outcome.error);
+                    if (!outcome.warning.empty()) text += L"\n" + widen_text(outcome.warning);
+                    self->MigrateSummaryText().Text(text);
+                    self->set_status(outcome.ok ? L"Migration complete" : L"Migration did not complete");
+                    if (outcome.ok) self->show_recovery_success(L"Migration complete", text);
+                    self->update_migrate_buttons();
+                });
+            });
+        };
+        if (target->physical) {
+            confirm_typed_target(*target->physical,
+                                 L"Replace everything on PhysicalDrive" + std::to_wstring(*target->physical) + L" with this PS2 HDD",
+                                 std::move(start));
+        } else {
+            start();
+        }
+    }
+
+    void on_migrate_cancel(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        if (migrate_thread_.joinable()) migrate_thread_.request_stop();
+        MigrateSummaryText().Text(L"Cancelling after the current chunk; the target will not receive an APA master...");
+    }
+
+    // Typed confirmation for an arbitrary physical drive (the migration TARGET,
+    // which is never the open source).
+    void confirm_typed_target(unsigned index, std::wstring action, std::function<void()> continuation)
+    {
+        const std::wstring expected = L"PhysicalDrive" + std::to_wstring(index);
+        Microsoft::UI::Xaml::Controls::ContentDialog dialog;
+        dialog.XamlRoot(RootGrid().XamlRoot());
+        dialog.Title(winrt::box_value(winrt::hstring(action)));
+        dialog.PrimaryButtonText(L"Replace drive contents");
+        dialog.CloseButtonText(L"Cancel");
+        dialog.DefaultButton(Microsoft::UI::Xaml::Controls::ContentDialogButton::Close);
+        Microsoft::UI::Xaml::Controls::StackPanel panel;
+        panel.Spacing(8);
+        Microsoft::UI::Xaml::Controls::TextBlock warning;
+        warning.Text(L"Everything on the target drive is replaced by the PS2 HDD's partitions. Type the target to continue:");
+        warning.TextWrapping(Microsoft::UI::Xaml::TextWrapping::Wrap);
+        Microsoft::UI::Xaml::Controls::TextBox confirmation;
+        confirmation.PlaceholderText(expected);
+        panel.Children().Append(warning);
+        panel.Children().Append(confirmation);
+        dialog.Content(panel);
+        auto weak = get_weak();
+        dialog.ShowAsync().Completed([weak, confirmation, expected, continuation = std::move(continuation)](
+            auto const& async, Windows::Foundation::AsyncStatus status) {
+            if (status != Windows::Foundation::AsyncStatus::Completed ||
+                async.GetResults() != Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary) return;
+            if (auto self = weak.get()) {
+                if (std::wstring(confirmation.Text()) != expected) {
+                    self->show_error(L"Target confirmation", L"The text did not exactly match " + expected + L".");
+                    return;
+                }
+                continuation();
+            }
         });
     }
 
@@ -521,6 +782,10 @@ private:
     void open_legacy_frontend();
     void show_error(std::wstring_view title, std::wstring_view message) const;
     void set_status(std::wstring_view text);
+    void install_window_chrome();
+    void update_caption_buttons();
+    void restore_window_placement();
+    void save_window_placement() const;
 
     [[nodiscard]] HWND native_hwnd() const;
     [[nodiscard]] std::filesystem::path executable_path() const;
@@ -605,6 +870,10 @@ private:
     std::jthread opl_sync_thread_;
     std::jthread bdm_thread_;
     std::jthread recovery_thread_;
+    std::jthread migrate_thread_;
+    std::atomic_bool migrate_busy_{false};
+    std::vector<MigrateChoice> migrate_choices_;
+    ps2hdd::migrate::Plan migrate_plan_;
     std::atomic_bool bdm_busy_{false};
     std::filesystem::path bdm_root_;
     void set_bdm_root(const std::filesystem::path& root);

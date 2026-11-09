@@ -255,8 +255,12 @@ MainWindow::MainWindow()
         InitializeComponent();
         ExtendsContentIntoTitleBar(true);
         SetTitleBar(TitleBarDragRegion());
+        install_window_chrome();
         wire_events();
         load_theme_preference();
+        RootGrid().ActualThemeChanged([this](auto&&, auto&&) { update_caption_buttons(); });
+        update_caption_buttons();
+        restore_window_placement();
 
         telemetry_timer_ = DispatcherTimer();
         telemetry_timer_.Interval(std::chrono::seconds(1));
@@ -286,6 +290,7 @@ MainWindow::~MainWindow()
     if (mutation_thread_.joinable()) mutation_thread_.request_stop();
     if (bdm_thread_.joinable()) bdm_thread_.request_stop();
     if (recovery_thread_.joinable()) recovery_thread_.request_stop();
+    if (migrate_thread_.joinable()) migrate_thread_.request_stop();
     if (mount_process_) CloseHandle(mount_process_);
 }
 
@@ -1172,6 +1177,101 @@ void MainWindow::save_theme_preference(int index)
 void MainWindow::apply_theme_index(int index)
 {
     RootGrid().RequestedTheme(index == 1 ? ElementTheme::Light : (index == 2 ? ElementTheme::Dark : ElementTheme::Default));
+    update_caption_buttons();
+}
+
+namespace {
+
+// Minimum track size in DIPs, scaled per monitor. Below this the cards and
+// tables reflow into unusable slivers; Windows enforces it during live resize.
+LRESULT CALLBACK window_chrome_subclass(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                        UINT_PTR id, DWORD_PTR)
+{
+    if (message == WM_GETMINMAXINFO) {
+        const UINT dpi = GetDpiForWindow(window);
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize.x = MulDiv(960, static_cast<int>(dpi), 96);
+        info->ptMinTrackSize.y = MulDiv(640, static_cast<int>(dpi), 96);
+        return 0;
+    }
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(window, window_chrome_subclass, id);
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+std::filesystem::path placement_path()
+{
+    return local_app_data_path() / L"PS2 DriveForge" / L"window.txt";
+}
+
+} // namespace
+
+void MainWindow::install_window_chrome()
+{
+    if (HWND window = native_hwnd()) SetWindowSubclass(window, window_chrome_subclass, 0x5053, 0);
+}
+
+// With ExtendsContentIntoTitleBar the caption buttons are drawn by the system
+// using AppWindow.TitleBar colors, which do NOT follow RootGrid.RequestedTheme.
+// Without this, forcing Light on a dark system leaves white min/max/close
+// glyphs on a light Mica title bar (and the reverse).
+void MainWindow::update_caption_buttons()
+{
+    try {
+        const bool dark = RootGrid().ActualTheme() == ElementTheme::Dark;
+        using winrt::Windows::UI::Color;
+        using Ref = winrt::Windows::Foundation::IReference<Color>;
+        const Color transparent{0, 0, 0, 0};
+        const Color foreground = dark ? Color{255, 255, 255, 255} : Color{255, 26, 26, 26};
+        const Color inactive = dark ? Color{255, 150, 150, 150} : Color{255, 130, 130, 130};
+        const Color hover = dark ? Color{24, 255, 255, 255} : Color{20, 0, 0, 0};
+        const Color pressed = dark ? Color{40, 255, 255, 255} : Color{36, 0, 0, 0};
+        auto bar = AppWindow().TitleBar();
+        bar.ButtonBackgroundColor(Ref{transparent});
+        bar.ButtonInactiveBackgroundColor(Ref{transparent});
+        bar.ButtonForegroundColor(Ref{foreground});
+        bar.ButtonHoverForegroundColor(Ref{foreground});
+        bar.ButtonPressedForegroundColor(Ref{foreground});
+        bar.ButtonInactiveForegroundColor(Ref{inactive});
+        bar.ButtonHoverBackgroundColor(Ref{hover});
+        bar.ButtonPressedBackgroundColor(Ref{pressed});
+        if (HWND window = native_hwnd()) {
+            const BOOL dark_frame = dark ? TRUE : FALSE;
+            DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_frame, sizeof(dark_frame));
+        }
+    } catch (winrt::hresult_error const&) {
+        // Title-bar customization is cosmetic; never let it break startup.
+    }
+}
+
+void MainWindow::restore_window_placement()
+{
+    HWND window = native_hwnd();
+    std::ifstream input(placement_path());
+    RECT rect{};
+    int maximized = 0;
+    if (!window || !(input >> rect.left >> rect.top >> rect.right >> rect.bottom >> maximized)) return;
+    // Only restore onto a monitor that still exists (laptops undock, TVs turn off).
+    if (rect.right - rect.left < 200 || rect.bottom - rect.top < 200 ||
+        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL)) return;
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    placement.showCmd = maximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    placement.rcNormalPosition = rect;
+    SetWindowPlacement(window, &placement);
+}
+
+void MainWindow::save_window_placement() const
+{
+    HWND window = native_hwnd();
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    if (!window || !GetWindowPlacement(window, &placement)) return;
+    std::error_code ec;
+    std::filesystem::create_directories(placement_path().parent_path(), ec);
+    std::ofstream output(placement_path(), std::ios::trunc);
+    const auto& r = placement.rcNormalPosition;
+    output << r.left << ' ' << r.top << ' ' << r.right << ' ' << r.bottom << ' '
+           << (placement.showCmd == SW_SHOWMAXIMIZED ? 1 : 0) << '\n';
 }
 
 void MainWindow::restart_as_administrator()
@@ -1748,6 +1848,7 @@ void MainWindow::on_telemetry_tick(IInspectable const&, IInspectable const&)
 void MainWindow::on_mount_tick(IInspectable const&, IInspectable const&) { poll_mount_state(); }
 void MainWindow::on_closed(IInspectable const&, Microsoft::UI::Xaml::WindowEventArgs const&)
 {
+    save_window_placement();
     if (!mount_point_.empty()) request_unmount(false);
     if (telemetry_timer_) telemetry_timer_.Stop();
     if (mount_timer_) mount_timer_.Stop();

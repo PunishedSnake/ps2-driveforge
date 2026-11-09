@@ -70,14 +70,14 @@ Readers fail closed on the wrong format. A Mutation Journal parser rejects `PS2H
 | Automated FHDB/HDD-OSD/HOSD/PSBBN acquisition | Planned | provider pipeline, host cache only |
 | Automated bootstrap installation from frozen provider inputs | Planned | bootstrap installer |
 | Physical forensic APA repair | Frieren / Windows | `repair_forensic_topology_on_physical`, WinUI recovery card, `physical-tools repair-forensic` |
-| Boot-chain evidence report | Planned parity | bootstrap evidence service |
-| FMCB HDD-skip / downstream boot evidence inspection | Planned parity | host evidence scanners |
+| Boot-chain evidence report | Frieren | `bootchain::inspect` (FHDB `classify_boot_chain` rule order + OSDMBR.CNF button map, p2lboot, optional memory-card FREEMCB.CNF) |
+| FMCB HDD-skip / downstream boot evidence inspection | Frieren (with a memory-card folder) | `bootchain::Options::memory_card_root` |
 | Deterministic unified structure-health verdict | Frieren | `health::assess` (master defects + pointer bounds + payload KELF + chain + PC ownership + APA-Jail), `repair-tools health`, `physical-tools health`, WinUI/Win32 |
 | Disable active bootstrap (backup + pointer clear) | Frieren | `fhdb::disable_bootstrap`, `disable_bootstrap_on_physical`; HDDMBR mandatory, Rescue Capsule best effort and never blocking |
 | Recovery on disk images from GUI/CLI | Frieren (DriveForge extension) | `recovery_service`, `repair-tools`, WinUI recovery card, Win32 *Recovery* menu |
 | APA-Jail masters in bootstrap capture/restore/disable | Frieren (DriveForge extension) | `is_apa_jail_master`; FHDB Manager still refuses 0x55AA masters; master field repair stays refused on jail |
-| Read-only shadow forensic APA map browsing | Planned UI | immutable forensic snapshot |
-| Hardware fault injection against images | Planned | recovery fault-injection tests |
+| Read-only shadow forensic APA map browsing | Frieren | `forensic::preview` (chain, per-header prev/next rewrite, orphaned headers) in CLI and WinUI |
+| Hardware fault injection against images | Frieren | `fault_injection_tests`: sector-atomic power cut at every write of disable/restore/master/topology/migration/HDL install |
 | Hardware fault injection against sacrificial physical HDD | Required before normal GUI exposure | hardware validation tooling |
 | GS video modes/themes/fonts | PS2-only | no host parity requirement |
 

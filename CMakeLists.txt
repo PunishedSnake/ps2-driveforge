@@ -174,6 +174,7 @@ if(WIN32)
         src/gui/windows_main.cpp
         src/gui/windows_theme.cpp
         src/gui/windows_elevation.cpp
+        src/gui/ps2-driveforge-gui.manifest
     )
     set_target_properties(ps2-driveforge-gui PROPERTIES OUTPUT_NAME "PS2-DriveForge")
     target_link_libraries(ps2-driveforge-gui PRIVATE

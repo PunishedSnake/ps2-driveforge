@@ -26,6 +26,7 @@
 #include "windows_theme.hpp"
 
 #include <commctrl.h>
+#include <windowsx.h>
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shobjidl.h>
@@ -81,6 +82,8 @@ constexpr UINT kIdRecoveryRepairMaster = 125;
 constexpr UINT kIdRecoveryRepairTopology = 126;
 constexpr UINT kIdRecoveryDisable = 127;
 constexpr UINT kIdRecoveryRestore = 128;
+constexpr UINT kIdRecoveryBootChain = 129;
+constexpr UINT kIdRecoveryMigrate = 130;
 constexpr UINT kIdPhysicalBase = 300;
 constexpr UINT kMaxPhysicalMenuEntries = 512;
 constexpr UINT kMountTimerId = 1;
@@ -186,17 +189,21 @@ public:
         if (background_brush_) {
             DeleteObject(background_brush_);
         }
+        if (font_) {
+            DeleteObject(font_);
+        }
     }
 
     void create_controls()
     {
-        tree_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
-                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_HASLINES |
-                                    TVS_LINESATROOT | TVS_HASBUTTONS | TVS_SHOWSELALWAYS,
+        dpi_ = GetDpiForWindow(window_);
+        tree_ = CreateWindowExW(0, WC_TREEVIEWW, L"",
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TVS_LINESATROOT | TVS_HASBUTTONS |
+                                    TVS_SHOWSELALWAYS | TVS_FULLROWSELECT | TVS_TRACKSELECT,
                                 0, 0, 0, 0, window_,
                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(kTreeId)),
                                 GetModuleHandleW(nullptr), nullptr);
-        list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+        list_ = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT |
                                     LVS_SHOWSELALWAYS | LVS_SINGLESEL,
                                 0, 0, 0, 0, window_,
@@ -208,29 +215,47 @@ public:
                                   reinterpret_cast<HMENU>(static_cast<INT_PTR>(kStatusId)),
                                   GetModuleHandleW(nullptr), nullptr);
 
-        ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER |
-                                                    LVS_EX_LABELTIP | LVS_EX_GRIDLINES);
-        add_column(0, L"Name", 280);
-        add_column(1, L"Type", 90);
-        add_column(2, L"Size", 110);
-        add_column(3, L"Sub", 70);
-        add_column(4, L"Inode", 100);
+        // Gridlines read as a spreadsheet and glare in dark mode; full-row
+        // selection + double buffering is the Explorer look.
+        ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        TreeView_SetExtendedStyle(tree_, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+        add_column(0, L"Name", scale(300));
+        add_column(1, L"Type", scale(90));
+        add_column(2, L"Size", scale(110));
+        add_column(3, L"Sub", scale(60));
+        add_column(4, L"Inode", scale(100));
+        apply_fonts();
 
         apply_theme(false);
         update_action_menu();
         start_discovery();
     }
 
+    [[nodiscard]] int scale(int dip) const { return MulDiv(dip, static_cast<int>(dpi_), 96); }
+
+    // Layout: [tree][splitter gap][list] above the status bar. Children move
+    // in one DeferWindowPos batch so a live resize repaints once, not once per
+    // control (the old MoveWindow-per-child path flickered and tore).
     void resize(int width, int height)
     {
+        if (!tree_ || !list_ || !status_) return;
         SendMessageW(status_, WM_SIZE, 0, 0);
         RECT status_rect{};
         GetWindowRect(status_, &status_rect);
         const int status_height = status_rect.bottom - status_rect.top;
         const int content_height = std::max(0, height - status_height);
-        const int tree_width = std::clamp(width / 3, 230, 420);
-        MoveWindow(tree_, 0, 0, tree_width, content_height, TRUE);
-        MoveWindow(list_, tree_width, 0, std::max(0, width - tree_width), content_height, TRUE);
+        const int gap = scale(kSplitterDip);
+        const int tree_width = std::clamp(scale(tree_width_dip_), scale(160), std::max(scale(160), width - scale(320)));
+        splitter_x_ = tree_width;
+        HDWP batch = BeginDeferWindowPos(2);
+        if (batch) batch = DeferWindowPos(batch, tree_, nullptr, 0, 0, tree_width, content_height, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (batch) batch = DeferWindowPos(batch, list_, nullptr, tree_width + gap, 0, std::max(0, width - tree_width - gap),
+                                          content_height, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (batch) EndDeferWindowPos(batch);
+        // Let the last column absorb spare width instead of leaving a dead strip.
+        ListView_SetColumnWidth(list_, 4, LVSCW_AUTOSIZE_USEHEADER);
+        RECT gap_rect{tree_width, 0, tree_width + gap, content_height};
+        InvalidateRect(window_, &gap_rect, TRUE);
     }
 
     void erase_background(HDC dc) const
@@ -241,9 +266,112 @@ public:
         RECT rect{};
         GetClientRect(window_, &rect);
         FillRect(dc, &rect, background_brush_);
+        // Hairline divider centred in the splitter gap.
+        const auto palette = ps2driveforge::gui::palette_for(theme_preference_);
+        RECT line{splitter_x_ + scale(kSplitterDip) / 2, 0, splitter_x_ + scale(kSplitterDip) / 2 + 1, rect.bottom};
+        if (HBRUSH brush = CreateSolidBrush(palette.splitter)) {
+            FillRect(dc, &line, brush);
+            DeleteObject(brush);
+        }
     }
 
-    void system_settings_changed() { apply_theme(false); }
+    // WM_SETTINGCHANGE fires for dozens of unrelated settings; only re-theme
+    // for the colour-scheme broadcast and High Contrast, which avoids a full
+    // repaint flash whenever, say, the wallpaper changes.
+    void system_settings_changed(LPARAM lparam)
+    {
+        const auto* area = reinterpret_cast<const wchar_t*>(lparam);
+        if (area && std::wstring_view(area) != L"ImmersiveColorSet" && std::wstring_view(area) != L"WindowsThemeElement")
+            return;
+        apply_theme(true);
+    }
+
+    void dpi_changed(UINT dpi, const RECT& suggested)
+    {
+        const int old_dpi = static_cast<int>(dpi_);
+        dpi_ = dpi;
+        for (int column = 0; column < 4; ++column)
+            ListView_SetColumnWidth(list_, column, MulDiv(ListView_GetColumnWidth(list_, column), static_cast<int>(dpi), old_dpi));
+        apply_fonts();
+        SetWindowPos(window_, nullptr, suggested.left, suggested.top, suggested.right - suggested.left,
+                     suggested.bottom - suggested.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    void min_max_info(MINMAXINFO& info) const
+    {
+        info.ptMinTrackSize.x = scale(760);
+        info.ptMinTrackSize.y = scale(480);
+    }
+
+    void apply_fonts()
+    {
+        HFONT font = ps2driveforge::gui::create_ui_font(dpi_);
+        if (!font) return;
+        for (HWND control : {tree_, list_, status_}) SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        if (font_) DeleteObject(font_);
+        font_ = font;
+        RECT client{};
+        GetClientRect(window_, &client);
+        resize(client.right, client.bottom);
+    }
+
+    // ---- splitter ----------------------------------------------------------
+    [[nodiscard]] bool over_splitter(int x) const
+    {
+        const int slack = scale(2);
+        return x >= splitter_x_ - slack && x <= splitter_x_ + scale(kSplitterDip) + slack;
+    }
+
+    bool set_cursor()
+    {
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(window_, &point);
+        if (!dragging_ && !over_splitter(point.x)) return false;
+        SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+        return true;
+    }
+
+    void mouse_down(int x)
+    {
+        if (!over_splitter(x)) return;
+        dragging_ = true;
+        SetCapture(window_);
+    }
+
+    void mouse_move(int x)
+    {
+        if (!dragging_) return;
+        tree_width_dip_ = std::clamp(MulDiv(x, 96, static_cast<int>(dpi_)), 160, 900);
+        RECT client{};
+        GetClientRect(window_, &client);
+        resize(client.right, client.bottom);
+    }
+
+    void mouse_up()
+    {
+        if (!dragging_) return;
+        dragging_ = false;
+        ReleaseCapture();
+    }
+
+    void save_layout() const { ps2driveforge::gui::save_window_layout(window_, tree_width_dip_); }
+    int& tree_width_dip() { return tree_width_dip_; }
+
+    [[nodiscard]] bool menu_bar_message(UINT message, WPARAM wparam, LPARAM lparam, LRESULT& result) const
+    {
+        return ps2driveforge::gui::handle_menu_bar_message(window_, message, wparam, lparam, theme_preference_, result);
+    }
+
+    void empty_markup(NMLVEMPTYMARKUP& markup) const
+    {
+        markup.dwFlags = EMF_CENTERED;
+        const std::wstring_view text = session_ ? L"This folder is empty."
+                                                : L"No PS2 HDD open.\nUse File > Open disk image..., or File > PS2 HDDs after restarting as Administrator.";
+        const auto count = std::min(text.size(), std::size(markup.szMarkup) - 1);
+        std::copy_n(text.begin(), count, markup.szMarkup);
+        markup.szMarkup[count] = L'\0';
+    }
 
     void set_theme(ThemePreference preference)
     {
@@ -643,7 +771,8 @@ private:
         for (const UINT id : {kIdBdmInstall, kIdBdmScan, kIdBdmSync, kIdBdmChooseRoot})
             EnableMenuItem(menu, id, MF_BYCOMMAND | (!job_running_ ? MF_ENABLED : MF_GRAYED));
         const bool has_source = (current_image_.has_value() || current_physical_.has_value()) && !job_running_;
-        for (const UINT id : {kIdRecoveryHealth, kIdRecoveryCapture, kIdRecoveryForensic})
+        for (const UINT id : {kIdRecoveryHealth, kIdRecoveryCapture, kIdRecoveryForensic, kIdRecoveryBootChain,
+                              kIdRecoveryMigrate})
             EnableMenuItem(menu, id, MF_BYCOMMAND | (has_source ? MF_ENABLED : MF_GRAYED));
         // Physical recovery writes stay in WinUI (typed PhysicalDriveN gate);
         // the items stay enabled so the click can say where to go.
@@ -1406,6 +1535,92 @@ public:
         });
     }
 
+    void recovery_boot_chain()
+    {
+        const auto source = recovery_source();
+        if (job_running_ || !source.valid()) return;
+        begin_job();
+        set_status(L"Reading the boot chain (read-only)...");
+        job_thread_ = std::jthread([this, source](std::stop_token) {
+            const auto chain = ps2hdd::recovery_service::boot_chain(source);
+            post_done(chain.ok, chain.ok ? widen(source.name()) + L"\n\n" + widen(chain.text)
+                                         : L"Boot chain unavailable:\n\n" + widen(chain.error));
+        });
+    }
+
+    // Writes only a NEW image file, never a disk, so it is allowed from the
+    // legacy frontend for any source; physical TARGETS stay in WinUI.
+    void recovery_migrate_to_image()
+    {
+        const auto source = recovery_source();
+        if (job_running_ || !source.valid() || !session_) return;
+        std::array<wchar_t, 32768> path{};
+        constexpr std::wstring_view suggested = L"PS2 HDD backup.img";
+        std::copy(suggested.begin(), suggested.end(), path.begin());
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window_;
+        dialog.lpstrFilter = L"PS2 HDD image (*.img)\0*.img\0All files\0*.*\0";
+        dialog.lpstrDefExt = L"img";
+        dialog.lpstrFile = path.data();
+        dialog.nMaxFile = static_cast<DWORD>(path.size());
+        dialog.Flags = OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_NOREADONLYRETURN;
+        if (!GetSaveFileNameW(&dialog)) return;
+
+        const std::uint64_t source_bytes = session_->device().size_bytes();
+        const std::array<std::pair<const wchar_t*, std::uint64_t>, 6> sizes{{
+            {L"Same size as the source", source_bytes},
+            {L"Twice the source", source_bytes * 2},
+            {L"500 GB", 500ULL * 1000 * 1000 * 1000},
+            {L"1 TB", 1000ULL * 1000 * 1000 * 1000},
+            {L"2 TB", 2000ULL * 1000 * 1000 * 1000},
+            {L"4 TB", 4000ULL * 1000 * 1000 * 1000},
+        }};
+        std::array<TASKDIALOG_BUTTON, 6> radios{};
+        for (std::size_t i = 0; i < sizes.size(); ++i) radios[i] = {static_cast<int>(100 + i), sizes[i].first};
+        TASKDIALOGCONFIG config{};
+        config.cbSize = sizeof(config);
+        config.hwndParent = window_;
+        config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+        config.pszWindowTitle = L"PS2 DriveForge - back up / clone";
+        config.pszMainInstruction = L"How large should the new image be?";
+        config.pszContent = L"Only space the APA chain owns is copied, and the image is sparse, so it only uses as much "
+                            L"disk space as the data. A larger image gives the PS2 more free space if you later write it to a bigger drive.";
+        config.cRadioButtons = static_cast<UINT>(radios.size());
+        config.pRadioButtons = radios.data();
+        config.nDefaultRadioButton = 100;
+        int button = 0;
+        int radio = 100;
+        if (FAILED(TaskDialogIndirect(&config, &button, &radio, nullptr)) || button != IDOK) return;
+
+        ps2hdd::recovery_service::MigrationTarget target;
+        target.image = std::filesystem::path(path.data());
+        target.image_bytes = sizes[static_cast<std::size_t>(std::clamp(radio - 100, 0, 5))].second;
+        begin_job();
+        set_status(L"Planning backup...");
+        job_thread_ = std::jthread([this, source, target](std::stop_token stop) {
+            const auto planned = ps2hdd::recovery_service::plan_migration(source, target);
+            if (!planned.ok) {
+                post_done(false, L"Backup refused:\n\n" + widen(planned.error));
+                return;
+            }
+            int last = -1;
+            const auto outcome = ps2hdd::recovery_service::migrate(
+                source, target, planned.plan,
+                [this, &last](std::uint64_t done, std::uint64_t total) {
+                    const int pct = total == 0 ? 100 : static_cast<int>(done * 100U / total);
+                    if (pct == last) return;
+                    last = pct;
+                    post_progress(L"Copying " + std::to_wstring(pct) + L"%  |  Games > Cancel to stop");
+                },
+                stop);
+            std::wstring text = widen(planned.text) + L"\n\n" + widen(outcome.ok ? outcome.summary : outcome.error);
+            if (!outcome.warning.empty()) text += L"\n" + widen(outcome.warning);
+            post_done(outcome.ok, text);
+        });
+    }
+
     void recovery_action(UINT id)
     {
         const auto source = recovery_source();
@@ -1668,6 +1883,12 @@ private:
     HWND list_{};
     HWND status_{};
     HBRUSH background_brush_{};
+    HFONT font_{};
+    UINT dpi_{96};
+    static constexpr int kSplitterDip = 5;
+    int tree_width_dip_{300};
+    int splitter_x_{};
+    bool dragging_{};
     bool elevation_limited_{};
     bool discovery_running_{};
     ThemePreference theme_preference_{ThemePreference::System};
@@ -1733,6 +1954,7 @@ HMENU create_menu()
 
     HMENU recovery = CreatePopupMenu();
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryHealth, L"Check structure &health (read-only)");
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryBootChain, L"Boot &chain report (read-only)");
     AppendMenuW(recovery, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryCapture, L"Create &Rescue Capsule...");
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryForensic, L"&Forensic APA analysis (FORENSIC.TXT)...");
@@ -1741,6 +1963,8 @@ HMENU create_menu()
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryRepairTopology, L"Apply automatic-safe &topology repair (image)...");
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryDisable, L"&Disable bootstrap (image)...");
     AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryRestore, L"Restore &bootstrap from HDDRESCUE/HDDMBR (image)...");
+    AppendMenuW(recovery, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(recovery, MF_STRING | MF_GRAYED, kIdRecoveryMigrate, L"Back up / clone to a new &image...");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(recovery), L"&Recovery");
 
     HMENU view = CreatePopupMenu();
@@ -1761,7 +1985,39 @@ HMENU create_menu()
 LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (app) {
+        LRESULT themed = 0;
+        if (app->menu_bar_message(message, wparam, lparam, themed)) return themed;
+    }
     switch (message) {
+    case WM_GETMINMAXINFO:
+        if (app) {
+            app->min_max_info(*reinterpret_cast<MINMAXINFO*>(lparam));
+            return 0;
+        }
+        break;
+    case WM_DPICHANGED:
+        if (app) {
+            app->dpi_changed(HIWORD(wparam), *reinterpret_cast<const RECT*>(lparam));
+            return 0;
+        }
+        break;
+    case WM_SETCURSOR:
+        if (app && LOWORD(lparam) == HTCLIENT && reinterpret_cast<HWND>(wparam) == window && app->set_cursor()) return TRUE;
+        break;
+    case WM_LBUTTONDOWN:
+        if (app) app->mouse_down(GET_X_LPARAM(lparam));
+        return 0;
+    case WM_MOUSEMOVE:
+        if (app) app->mouse_move(GET_X_LPARAM(lparam));
+        return 0;
+    case WM_LBUTTONUP:
+    case WM_CAPTURECHANGED:
+        if (app) app->mouse_up();
+        return 0;
+    case WM_CLOSE:
+        if (app) app->save_layout();
+        break;
     case WM_CREATE: {
         const auto create = reinterpret_cast<CREATESTRUCTW*>(lparam);
         const bool limited = reinterpret_cast<INT_PTR>(create->lpCreateParams) != 0;
@@ -1820,7 +2076,7 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         return 0;
     case WM_SETTINGCHANGE:
         if (app) {
-            app->system_settings_changed();
+            app->system_settings_changed(lparam);
         }
         return 0;
     case WM_COMMAND:
@@ -1857,6 +2113,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             return 0;
         case kIdRecoveryHealth:
             app->recovery_health();
+            return 0;
+        case kIdRecoveryBootChain:
+            app->recovery_boot_chain();
+            return 0;
+        case kIdRecoveryMigrate:
+            app->recovery_migrate_to_image();
             return 0;
         case kIdRecoveryCapture:
         case kIdRecoveryForensic:
@@ -1929,6 +2191,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             return 0;
         }
         if (reinterpret_cast<NMHDR*>(lparam)->idFrom == kListId &&
+            reinterpret_cast<NMHDR*>(lparam)->code == LVN_GETEMPTYMARKUP) {
+            app->empty_markup(*reinterpret_cast<NMLVEMPTYMARKUP*>(lparam));
+            return TRUE;
+        }
+        if (reinterpret_cast<NMHDR*>(lparam)->idFrom == kListId &&
             reinterpret_cast<NMHDR*>(lparam)->code == NM_DBLCLK) {
             app->list_double_click();
             return 0;
@@ -1988,6 +2255,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int show)
     if (!window) {
         return 1;
     }
+    if (auto* app = reinterpret_cast<App*>(GetWindowLongPtrW(window, GWLP_USERDATA))) {
+        if (ps2driveforge::gui::restore_window_layout(window, show, app->tree_width_dip())) show = SW_SHOWNA;
+        RECT client{};
+        GetClientRect(window, &client);
+        app->resize(client.right, client.bottom);
+    }
+    if (show == SW_SHOWNA) show = SW_SHOW;
     ShowWindow(window, show);
     UpdateWindow(window);
 

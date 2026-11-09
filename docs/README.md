@@ -9,6 +9,7 @@ This directory contains developer, format, recovery, performance and real-hardwa
 - [`frieren-pfs-write.md`](frieren-pfs-write.md) - native PFS mutation design and implemented limits.
 - [`opl-asset-pipeline.md`](opl-asset-pipeline.md) - provider staging, CFG/CHT/artwork behavior and OPL destination pipeline.
 - [`bdm-library.md`](bdm-library.md) - exFAT/BDM library (APA-Jail exFAT side, USB, MX4SIO): OPL naming, contiguity, fragment checks, asset sync.
+- [`drive-migration.md`](drive-migration.md) - clone a PS2 HDD to a bigger drive or a sparse backup image; safety rules and fault-injection evidence.
 - [`development-guidelines.md`](development-guidelines.md) - implementation, comment, documentation and storage-safety policy.
 - [`testing.md`](testing.md) - deterministic suite, sanitizers, interoperability tests and hardware gates.
 - [`windows-frontends.md`](windows-frontends.md) - launcher, WinUI, Win32 fallback and package layout.

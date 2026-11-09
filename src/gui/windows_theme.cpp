@@ -9,6 +9,7 @@
 #include <uxtheme.h>
 
 #include <cstring>
+#include <iterator>
 #include <string>
 
 namespace ps2driveforge::gui {
@@ -20,6 +21,37 @@ constexpr wchar_t kWindowsPersonalizeKey[] =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
 constexpr wchar_t kAppsUseLightTheme[] = L"AppsUseLightTheme";
 constexpr UINT_PTR kStatusSubclassId = 0x50533244; // "PS2D"
+constexpr UINT_PTR kListSubclassId = 0x5053324C;   // "PS2L"
+constexpr wchar_t kPlacementValue[] = L"WindowPlacement";
+constexpr wchar_t kTreeWidthValue[] = L"TreeWidth";
+
+// UAH menu bar messages (uxtheme internal, stable since Windows Vista).
+constexpr UINT WM_UAHDRAWMENU = 0x0091;
+constexpr UINT WM_UAHDRAWMENUITEM = 0x0092;
+
+struct UahMenu {
+    HMENU menu;
+    HDC dc;
+    DWORD flags;
+};
+union UahMenuItemMetrics {
+    struct { DWORD cx; DWORD cy; } bar[2];
+    struct { DWORD cx; DWORD cy; } popup[4];
+};
+struct UahMenuPopupMetrics {
+    DWORD cx[4];
+    DWORD update_max_widths : 2;
+};
+struct UahMenuItem {
+    int position;
+    UahMenuItemMetrics metrics;
+    UahMenuPopupMetrics popup;
+};
+struct UahDrawMenuItem {
+    DRAWITEMSTRUCT item;
+    UahMenu menu;
+    UahMenuItem menu_item;
+};
 
 // UxTheme does not expose a documented process-wide Win32 dark-menu switch.
 // Windows 10/11 nevertheless export these entry points by ordinal and native
@@ -167,6 +199,72 @@ LRESULT CALLBACK status_subclass_proc(HWND window, UINT message, WPARAM wparam, 
     return DefSubclassProc(window, message, wparam, lparam);
 }
 
+struct ListThemeState {
+    bool dark{};
+    COLORREF header_text{};
+};
+
+// The header's NM_CUSTOMDRAW goes to its parent (the ListView), not to the
+// main window, so dark header text needs a ListView subclass.
+LRESULT CALLBACK list_subclass_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                                    UINT_PTR subclass_id, DWORD_PTR ref_data)
+{
+    auto* state = reinterpret_cast<ListThemeState*>(ref_data);
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(window, list_subclass_proc, subclass_id);
+        delete state;
+        return DefSubclassProc(window, message, wparam, lparam);
+    }
+    if (message == WM_NOTIFY && state && state->dark) {
+        auto* header = reinterpret_cast<NMHDR*>(lparam);
+        if (header->hwndFrom == ListView_GetHeader(window) && header->code == NM_CUSTOMDRAW) {
+            auto* draw = reinterpret_cast<NMCUSTOMDRAW*>(lparam);
+            if (draw->dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if (draw->dwDrawStage == CDDS_ITEMPREPAINT) {
+                SetTextColor(draw->hdc, state->header_text);
+                return CDRF_DODEFAULT;
+            }
+        }
+    }
+    return DefSubclassProc(window, message, wparam, lparam);
+}
+
+ListThemeState* ensure_list_theme_state(HWND list)
+{
+    DWORD_PTR ref_data = 0;
+    if (GetWindowSubclass(list, list_subclass_proc, kListSubclassId, &ref_data))
+        return reinterpret_cast<ListThemeState*>(ref_data);
+    auto* state = new ListThemeState{};
+    if (!SetWindowSubclass(list, list_subclass_proc, kListSubclassId, reinterpret_cast<DWORD_PTR>(state))) {
+        delete state;
+        return nullptr;
+    }
+    return state;
+}
+
+void paint_menu_bar_underline(HWND window, COLORREF color)
+{
+    MENUBARINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMenuBarInfo(window, OBJID_MENU, 0, &info)) return;
+    RECT client{};
+    GetClientRect(window, &client);
+    MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&client), 2);
+    RECT frame{};
+    GetWindowRect(window, &frame);
+    OffsetRect(&client, -frame.left, -frame.top);
+    // The stray light line sits in the single row between the bar and the client area.
+    RECT line = client;
+    line.bottom = line.top;
+    line.top = line.top - 1;
+    HDC dc = GetWindowDC(window);
+    if (!dc) return;
+    HBRUSH brush = CreateSolidBrush(color);
+    FillRect(dc, &line, brush);
+    DeleteObject(brush);
+    ReleaseDC(window, dc);
+}
+
 StatusThemeState* ensure_status_theme_state(HWND status)
 {
     DWORD_PTR ref_data = 0;
@@ -239,6 +337,9 @@ ThemePalette palette_for(ThemePreference preference)
             .text = GetSysColor(COLOR_WINDOWTEXT),
             .muted_text = GetSysColor(COLOR_GRAYTEXT),
             .border = GetSysColor(COLOR_WINDOWFRAME),
+            .menu_bar = GetSysColor(COLOR_MENUBAR),
+            .menu_hot = GetSysColor(COLOR_HIGHLIGHT),
+            .splitter = GetSysColor(COLOR_WINDOWFRAME),
         };
     }
 
@@ -247,21 +348,29 @@ ThemePalette palette_for(ThemePreference preference)
         // contrast high enough for filesystem metadata and long browsing sessions.
         return ThemePalette{
             .dark = true,
-            .window_background = RGB(24, 24, 24),
-            .control_background = RGB(30, 30, 30),
-            .text = RGB(238, 238, 238),
-            .muted_text = RGB(180, 180, 180),
-            .border = RGB(58, 58, 58),
+            .window_background = RGB(32, 32, 32),
+            .control_background = RGB(25, 25, 25),
+            .text = RGB(240, 240, 240),
+            .muted_text = RGB(165, 165, 165),
+            .border = RGB(51, 51, 51),
+            .menu_bar = RGB(32, 32, 32),
+            .menu_hot = RGB(61, 61, 61),
+            .splitter = RGB(51, 51, 51),
         };
     }
 
+    // Light: a soft frame around white content panes, like Explorer on
+    // Windows 11, instead of one flat white slab.
     return ThemePalette{
         .dark = false,
-        .window_background = GetSysColor(COLOR_WINDOW),
-        .control_background = GetSysColor(COLOR_WINDOW),
-        .text = GetSysColor(COLOR_WINDOWTEXT),
-        .muted_text = GetSysColor(COLOR_GRAYTEXT),
-        .border = GetSysColor(COLOR_WINDOWFRAME),
+        .window_background = RGB(243, 243, 243),
+        .control_background = RGB(255, 255, 255),
+        .text = RGB(26, 26, 26),
+        .muted_text = RGB(96, 96, 96),
+        .border = RGB(229, 229, 229),
+        .menu_bar = GetSysColor(COLOR_MENUBAR),
+        .menu_hot = GetSysColor(COLOR_HIGHLIGHT),
+        .splitter = RGB(218, 218, 218),
     };
 }
 
@@ -323,7 +432,14 @@ void apply_window_theme(HWND window, HWND tree, HWND list, HWND status,
         ListView_SetTextColor(list, palette.text);
         if (HWND header = ListView_GetHeader(list)) {
             allow_dark_for_window(header, palette.dark);
-            SetWindowTheme(header, theme_name, nullptr);
+            // ItemsView is the dark header visual; Explorer leaves it light.
+            SetWindowTheme(header, high_contrast ? nullptr : (palette.dark ? L"DarkMode_ItemsView" : L"ItemsView"),
+                           nullptr);
+            InvalidateRect(header, nullptr, TRUE);
+        }
+        if (auto* state = ensure_list_theme_state(list)) {
+            state->dark = palette.dark && !high_contrast;
+            state->header_text = palette.text;
         }
     }
 
@@ -346,6 +462,111 @@ void apply_window_theme(HWND window, HWND tree, HWND list, HWND status,
         RedrawWindow(window, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
     }
+}
+
+bool handle_menu_bar_message(HWND window, UINT message, WPARAM wparam, LPARAM lparam,
+                             ThemePreference preference, LRESULT& result)
+{
+    if (message != WM_UAHDRAWMENU && message != WM_UAHDRAWMENUITEM && message != WM_NCPAINT &&
+        message != WM_NCACTIVATE) {
+        return false;
+    }
+    const auto palette = palette_for(preference);
+    if (!palette.dark || high_contrast_enabled()) return false;
+
+    if (message == WM_UAHDRAWMENU) {
+        auto* menu = reinterpret_cast<UahMenu*>(lparam);
+        MENUBARINFO info{};
+        info.cbSize = sizeof(info);
+        if (!GetMenuBarInfo(window, OBJID_MENU, 0, &info)) return false;
+        RECT frame{};
+        GetWindowRect(window, &frame);
+        RECT bar = info.rcBar;
+        OffsetRect(&bar, -frame.left, -frame.top);
+        bar.top -= 1;  // cover the 1px seam above the bar on Windows 11
+        HBRUSH brush = CreateSolidBrush(palette.menu_bar);
+        FillRect(menu->dc, &bar, brush);
+        DeleteObject(brush);
+        result = 0;
+        return true;
+    }
+    if (message == WM_UAHDRAWMENUITEM) {
+        auto* draw = reinterpret_cast<UahDrawMenuItem*>(lparam);
+        wchar_t text[256]{};
+        MENUITEMINFOW item{};
+        item.cbSize = sizeof(item);
+        item.fMask = MIIM_STRING;
+        item.dwTypeData = text;
+        item.cch = static_cast<UINT>(std::size(text) - 1);
+        GetMenuItemInfoW(draw->menu.menu, static_cast<UINT>(draw->menu_item.position), TRUE, &item);
+
+        const UINT state = draw->item.itemState;
+        const bool hot = (state & (ODS_HOTLIGHT | ODS_SELECTED)) != 0;
+        const bool disabled = (state & (ODS_INACTIVE | ODS_DISABLED | ODS_GRAYED)) != 0;
+        HBRUSH brush = CreateSolidBrush(hot ? palette.menu_hot : palette.menu_bar);
+        FillRect(draw->menu.dc, &draw->item.rcItem, brush);
+        DeleteObject(brush);
+        SetBkMode(draw->menu.dc, TRANSPARENT);
+        SetTextColor(draw->menu.dc, disabled ? palette.muted_text : palette.text);
+        UINT format = DT_CENTER | DT_SINGLELINE | DT_VCENTER;
+        if (state & ODS_NOACCEL) format |= DT_HIDEPREFIX;
+        RECT rect = draw->item.rcItem;
+        DrawTextW(draw->menu.dc, text, -1, &rect, format);
+        result = 0;
+        return true;
+    }
+    // WM_NCPAINT / WM_NCACTIVATE: let Windows paint the frame, then cover the
+    // light line it draws between the menu bar and the client area.
+    result = DefWindowProcW(window, message, wparam, lparam);
+    paint_menu_bar_underline(window, palette.menu_bar);
+    return true;
+}
+
+HFONT create_ui_font(UINT dpi)
+{
+    NONCLIENTMETRICSW metrics{};
+    metrics.cbSize = sizeof(metrics);
+    if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi)) {
+        metrics.lfMessageFont.lfHeight = -MulDiv(9, static_cast<int>(dpi), 72);
+        wcscpy_s(metrics.lfMessageFont.lfFaceName, L"Segoe UI");
+    }
+    return CreateFontIndirectW(&metrics.lfMessageFont);
+}
+
+void save_window_layout(HWND window, int tree_width_dip)
+{
+    WINDOWPLACEMENT placement{};
+    placement.length = sizeof(placement);
+    if (!GetWindowPlacement(window, &placement)) return;
+    HKEY key{};
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kPreferenceKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
+        ERROR_SUCCESS) {
+        return;
+    }
+    RegSetValueExW(key, kPlacementValue, 0, REG_BINARY, reinterpret_cast<const BYTE*>(&placement), sizeof(placement));
+    const DWORD width = static_cast<DWORD>(tree_width_dip);
+    RegSetValueExW(key, kTreeWidthValue, 0, REG_DWORD, reinterpret_cast<const BYTE*>(&width), sizeof(width));
+    RegCloseKey(key);
+}
+
+bool restore_window_layout(HWND window, int show, int& tree_width_dip)
+{
+    DWORD width = 0;
+    if (query_dword(HKEY_CURRENT_USER, kPreferenceKey, kTreeWidthValue, width) && width >= 160 && width <= 900)
+        tree_width_dip = static_cast<int>(width);
+    WINDOWPLACEMENT placement{};
+    DWORD size = sizeof(placement);
+    if (RegGetValueW(HKEY_CURRENT_USER, kPreferenceKey, kPlacementValue, RRF_RT_REG_BINARY, nullptr, &placement,
+                     &size) != ERROR_SUCCESS ||
+        size != sizeof(placement) || placement.length != sizeof(placement)) {
+        return false;
+    }
+    // Never restore onto a monitor that is gone (undocked laptop, TV off).
+    if (!MonitorFromRect(&placement.rcNormalPosition, MONITOR_DEFAULTTONULL)) return false;
+    if (placement.showCmd == SW_SHOWMINIMIZED || placement.showCmd == SW_MINIMIZE) placement.showCmd = SW_SHOWNORMAL;
+    if (show == SW_SHOWMINNOACTIVE || show == SW_MINIMIZE || show == SW_SHOWMINIMIZED) placement.showCmd = static_cast<UINT>(show);
+    placement.flags = 0;
+    return SetWindowPlacement(window, &placement) != FALSE;
 }
 
 } // namespace ps2driveforge::gui
