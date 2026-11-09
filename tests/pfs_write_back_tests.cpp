@@ -7,6 +7,7 @@
 
 #include "ps2hdd/apa.hpp"
 #include "ps2hdd/apa_allocation.hpp"
+#include "ps2hdd/apa_fingerprint.hpp"
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/pfs.hpp"
@@ -462,6 +463,37 @@ void mount_view_overlays_pending_state()
           "deleted file disappears from Explorer before the commit");
 }
 
+void layout_fingerprint_survives_pfs_commits()
+{
+    ps2hdd::WriteBackOptions options;
+    options.commit_delay = std::chrono::milliseconds(5);
+    Rig rig("fingerprint", options);
+    const auto image = rig.root / "disk.img";
+    const auto take = [&] {
+        ps2hdd::FileBlockDevice device(image);
+        ps2hdd::apa::Reader reader(device);
+        return ps2hdd::apa_layout_fingerprint(reader.scan(), device.size_bytes());
+    };
+    const auto before = take();
+    check(rig.engine->make_directory("+OPL", "/VMC") == ps2hdd::WriteStatus::ok, "mkdir");
+    for (int i = 0; i < 40; ++i) {
+        check(explorer_copy(*rig.engine, "/VMC/card" + std::to_string(i) + ".bin", payload(20000, i)) ==
+                  ps2hdd::WriteStatus::ok,
+              "write");
+    }
+    check(rig.engine->flush(), "flush");
+    check(take() == before, "PFS commits never change the APA layout fingerprint");
+
+    ps2hdd::FileBlockDevice device(image);
+    ps2hdd::apa::Reader reader(device);
+    auto scan = reader.scan();
+    scan.partitions.back().length_sectors += 1;
+    check(ps2hdd::apa_layout_fingerprint(scan, device.size_bytes()) != before,
+          "a repartitioned disk changes the fingerprint");
+    check(ps2hdd::apa_layout_fingerprint(reader.scan(), device.size_bytes() + 512) != before,
+          "a different-size disk changes the fingerprint");
+}
+
 } // namespace
 
 int main()
@@ -473,6 +505,7 @@ int main()
         breaker_trips_and_journal_replays();
         debounced_background_commit();
         mount_view_overlays_pending_state();
+        layout_fingerprint_survives_pfs_commits();
     } catch (const std::exception& error) {
         std::cerr << "Test failure: " << error.what() << '\n';
         return 1;

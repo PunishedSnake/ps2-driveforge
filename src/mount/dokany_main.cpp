@@ -1,6 +1,7 @@
 #include "ps2hdd/dokany_mount.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/physical_drive.hpp"
+#include "ps2hdd/physical_mount_writer.hpp"
 #include "ps2hdd/version.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
 
@@ -70,6 +71,8 @@ void usage()
                   L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> [--debug]\n"
                   L"  PS2-DriveForge-Mount.exe --image <disk.img> --mount <P:> --writable\n"
                   L"      [--allow <partition>]... [--replay-journal] [--debug]\n"
+                  L"  PS2-DriveForge-Mount.exe --physical <index> --mount <P:> --writable\n"
+                  L"      --confirm PhysicalDrive<index> [--allow <partition>]... [--replay-journal]\n"
                   L"  PS2-DriveForge-Mount.exe --unmount <P:>\n\n"
                   L"Mounts are read-only unless --writable is given. Writable mounts (disk images\n"
                   L"for now) accept Explorer writes into PFS partitions through the DriveForge\n"
@@ -88,6 +91,7 @@ int wmain(int argc, wchar_t** argv)
     bool debug = false;
     bool writable = false;
     bool replay_journal = false;
+    std::wstring confirm;
     std::set<std::string> allowed;
 
     for (int i = 1; i < argc; ++i) {
@@ -107,6 +111,8 @@ int wmain(int argc, wchar_t** argv)
             unmount_point = normalize_cli_mount_point(argv[++i]);
         } else if (arg == L"--writable") {
             writable = true;
+        } else if (arg == L"--confirm" && i + 1 < argc) {
+            confirm = argv[++i];
         } else if (arg == L"--replay-journal") {
             replay_journal = true;
         } else if (arg == L"--allow" && i + 1 < argc) {
@@ -156,9 +162,9 @@ int wmain(int argc, wchar_t** argv)
         source = std::move(device);
     }
 
-    if (writable && !image) {
-        std::wcerr << L"--writable currently supports disk images only; physical drives stay\n"
-                      L"read-only in the mount until the guarded physical batch lease lands.\n";
+    if (writable && physical && confirm != L"PhysicalDrive" + std::to_wstring(*physical)) {
+        std::wcerr << L"A writable mount of a physical drive needs the literal target confirmation:\n"
+                   << L"  --confirm PhysicalDrive" << *physical << L"\n";
         return 2;
     }
 
@@ -170,7 +176,8 @@ int wmain(int argc, wchar_t** argv)
         const std::filesystem::path base = chars > 0 && chars < MAX_PATH ? std::filesystem::path(local)
                                                                        : std::filesystem::temp_directory_path();
         ps2hdd::WriteBackOptions options;
-        options.spool_directory = base / L"PS2 DriveForge" / L"Spool" / image->filename();
+        options.spool_directory = base / L"PS2 DriveForge" / L"Spool" /
+                                  (image ? image->filename().wstring() : L"PhysicalDrive" + std::to_wstring(*physical));
         if (!allowed.empty()) {
             options.writable_partitions = allowed;
             for (const auto& id : allowed) options.protected_partitions.erase(id);
@@ -181,18 +188,27 @@ int wmain(int argc, wchar_t** argv)
                        << options.spool_directory.wstring()
                        << L"\nRe-run with --replay-journal to write them to the disk.\n";
         }
-        const auto image_path = *image;
-        started = controller.start_writable(
-            std::move(source),
-            [image_path](std::string& error) -> std::unique_ptr<ps2hdd::WritableBlockDevice> {
+        ps2hdd::WriterFactory factory;
+        if (image) {
+            const auto image_path = *image;
+            factory = [image_path](std::string& error) -> std::unique_ptr<ps2hdd::WritableBlockDevice> {
                 auto device = std::make_unique<ps2hdd::WritableFileBlockDevice>(image_path);
                 if (!device->is_open()) {
                     error = "Could not reopen the disk image for writing";
                     return nullptr;
                 }
                 return device;
-            },
-            options, *mount_point, debug);
+            };
+        } else {
+            auto guarded = ps2hdd::make_physical_mount_writer(*physical, base / L"PS2 DriveForge" / L"Recovery");
+            if (!guarded.ok) {
+                std::cerr << "Writable physical mount refused: " << guarded.error << '\n';
+                return 1;
+            }
+            std::wcout << L"Safety backup of the APA master: " << guarded.hddmbr_path.wstring() << L"\n";
+            factory = std::move(guarded.factory);
+        }
+        started = controller.start_writable(std::move(source), std::move(factory), options, *mount_point, debug);
         if (started && replay_journal && !orphans.empty()) {
             if (auto* engine = controller.write_back()) {
                 std::wcout << L"Replaying " << engine->replay_orphans(orphans) << L" journaled file(s).\n";

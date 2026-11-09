@@ -37,7 +37,15 @@ PS2-DriveForge-Mount.exe --image ps2.img --mount P: --writable --allow +OPL --al
 PS2-DriveForge-Mount.exe --image ps2.img --mount P: --writable --replay-journal
 ```
 
-Physical drives remain read-only in the mount until each commit batch is wired through the guarded physical lease (admission, HDDMBR backup, short RW lease, cold reopen), as already used by game deploy and library sync.
+```text
+PS2-DriveForge-Mount.exe --physical 2 --mount P: --writable --confirm PhysicalDrive2
+```
+
+Physical writable mounts (`make_physical_mount_writer`) follow the same guarded model as game deploy and library sync:
+
+- **Once, at mount:** read-only admission, an APA layout fingerprint, and an FHDB-compatible HDDMBR backup under `%LOCALAPPDATA%\PS2 DriveForge\Recovery`.
+- **Before every batch:** a fresh read-only open must reproduce the exact fingerprint (device size plus every APA header's id, type, start and length; PFS writes can never change it), then a fresh admission. The mount-time identity snapshot cannot be reused, because its sample windows may contain data committed by the previous batch.
+- **Per batch:** a short-lived `WritablePhysicalDrive` lease with volume locks, released as soon as the batch ends. A failed check fails the batch and feeds the circuit breaker; a renumbered or repartitioned disk is never written.
 
 ## Tests
 

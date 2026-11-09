@@ -114,6 +114,7 @@ if(WIN32)
         src/platform/windows/physical_discovery.cpp
         src/platform/windows/physical_game_deploy.cpp
         src/platform/windows/physical_library_sync.cpp
+        src/platform/windows/physical_mount_writer.cpp
         src/platform/windows/physical_partition_remove.cpp
         src/platform/windows/physical_bootstrap_recovery.cpp
         src/platform/windows/physical_apa_recovery.cpp
