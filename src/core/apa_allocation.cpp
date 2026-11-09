@@ -106,6 +106,15 @@ AllocationPlan plan_hdl_allocation(const ScanResult& scan,
         plan.error = "HDL payload size must be greater than zero";
         return plan;
     }
+    if (scan.jail) {
+        // APA-Jail: everything past the APA region belongs to PC partitions
+        // (exFAT, recovery). Clamp here so no caller can allocate into them.
+        if (scan.jail->apa_limit_lba == 0) {
+            plan.error = "APA-Jail layout with an unknown APA boundary; refusing to allocate APA space";
+            return plan;
+        }
+        device_size_bytes = std::min<std::uint64_t>(device_size_bytes, scan.jail->apa_limit_lba * kSectorSize);
+    }
     if (device_size_bytes < static_cast<std::uint64_t>(kAllocationChunkSectors) * kSectorSize) {
         plan.error = "Backing device is smaller than one 128 MiB APA allocation chunk";
         return plan;

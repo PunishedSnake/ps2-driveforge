@@ -182,6 +182,20 @@ void print_overview(ps2hdd::DriveSession& session)
         return;
     }
 
+    if (result.jail) {
+        const auto& jail = *result.jail;
+        std::cout << "Layout: APA-Jail hybrid" << (jail.signature.empty() ? "" : " (" + jail.signature + ")");
+        if (jail.apa_limit_lba != 0) {
+            std::cout << ", APA region " << format_bytes(jail.apa_limit_lba * ps2hdd::apa::kSectorSize);
+        } else {
+            std::cout << ", APA boundary unknown (allocation disabled)";
+        }
+        if (jail.exfat) {
+            std::cout << ", exFAT " << format_bytes(static_cast<std::uint64_t>(jail.exfat->sectors) *
+                                                    ps2hdd::apa::kSectorSize);
+        }
+        std::cout << '\n';
+    }
     std::cout << "Version: " << result.apa_version << "\n\n"
               << std::left << std::setw(34) << "Partition"
               << std::setw(12) << "Type"
