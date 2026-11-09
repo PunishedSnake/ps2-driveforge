@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -149,6 +150,12 @@ public:
     // reports partial=true if a later child fails after earlier removals commit.
     [[nodiscard]] DirectoryRemoveResult remove_empty_directory(std::string_view path);
     [[nodiscard]] TreeRemoveResult remove_tree(std::string_view path);
+
+    // Free payload capacity derived from the allocation bitmaps (not from the
+    // superblock counter, which PS2-era writers do not keep reliable). Uses
+    // the session bitmap cache, so it is cheap once a batch has warmed it.
+    [[nodiscard]] std::optional<std::uint64_t> free_bytes();
+    [[nodiscard]] std::uint64_t zone_bytes() const noexcept;
 
 private:
     struct DirectorySlot {

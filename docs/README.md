@@ -34,6 +34,7 @@ They are not alternate names for the same thing.
 
 - [`apa-format-notes.md`](apa-format-notes.md) - APA structure and evidence-backed invariants.
 - [`pfs-format-notes.md`](pfs-format-notes.md) - PFS superblock, zones, inode/SEGD/SEGI and directory semantics.
+- [`pfs-write-back.md`](pfs-write-back.md) - writable Explorer mount: write-back engine, failsafes and crash recovery.
 - [`hdl-format-notes.md`](hdl-format-notes.md) - HDLoader header and the loader-canonical allocation table behind ISO export.
 - [`pfsshell-comparison.md`](pfsshell-comparison.md) - compatibility observations relative to pfsshell workflows.
 

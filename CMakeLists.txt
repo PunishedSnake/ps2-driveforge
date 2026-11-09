@@ -101,6 +101,8 @@ add_library(ps2driveforge_host
     src/host/http_client.cpp
     src/host/opl_asset_pipeline.cpp
     src/host/opl_library_sync.cpp
+    src/host/pfs_write_back.cpp
+    src/host/writable_mount_view.cpp
     src/host/opl_partition.cpp
     src/host/opl_pfs_import.cpp
     src/host/image_game_deploy.cpp
@@ -466,6 +468,11 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-opl-partition-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-partition-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-opl-partition-tests COMMAND ps2-driveforge-opl-partition-tests)
+    add_executable(ps2-driveforge-pfs-write-back-tests tests/pfs_write_back_tests.cpp)
+    target_link_libraries(ps2-driveforge-pfs-write-back-tests PRIVATE ps2driveforge_host)
+    target_compile_features(ps2-driveforge-pfs-write-back-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-pfs-write-back-tests COMMAND ps2-driveforge-pfs-write-back-tests)
+
     add_executable(ps2-driveforge-opl-library-sync-tests tests/opl_library_sync_tests.cpp)
     target_link_libraries(ps2-driveforge-opl-library-sync-tests PRIVATE ps2driveforge_host)
     target_compile_features(ps2-driveforge-opl-library-sync-tests PRIVATE cxx_std_20)

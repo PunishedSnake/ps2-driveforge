@@ -17,6 +17,9 @@
 - WinUI HDL Tools: **Export as ISO…**, **Export all games…** (resumable, skips existing), **Cancel export**, and an **OPL artwork, CFG & cheats** section with a read-only *Check for missing assets* plan and a separate *Write to OPL partition* step that requires literal target confirmation on physical drives.
 - Win32 fallback: new **Games** menu with background ISO export/export-all/cancel and image-only OPL sync; physical writes stay in WinUI.
 - `ps2-driveforge-hdl-tools sync-assets <image> <cache> [--partition] [--tar] [--all-art] [--apply]`.
+- Added the **PFS write-back engine** (`PfsWriteBack`) and `WritableMountView`: Explorer writes are staged on the host, coalesced and committed in debounced batches through the native PFS writer, with backpressure, a free-space reserve, protected system partitions, a read-only circuit breaker and a crash-recovery intent journal. See `docs/pfs-write-back.md`.
+- Dokany mount: `--writable` for disk images (`--allow`, `--replay-journal`); writable PFS paths support create/write/truncate/delete/rename/mkdir/rmdir with read-your-writes; timeout raised to 60 s as a backstop.
+- `pfs::ImageWriter::free_bytes()` derived from the allocation bitmaps.
 - CI: weekly/dispatchable Actions storage cleanup (artifacts >48 h, caches unused 7 days) and cancellation of superseded pull-request runs.
 
 ## 0.5.0 "Emilia" - 2026-08-23

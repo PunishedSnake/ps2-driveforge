@@ -226,6 +226,35 @@ bool ImageWriter::set_zone(std::size_t subpart, std::uint32_t zone, bool used,
     return true;
 }
 
+std::uint64_t ImageWriter::zone_bytes() const noexcept
+{
+    return static_cast<std::uint64_t>(sectors_per_zone()) * apa::kSectorSize;
+}
+
+std::optional<std::uint64_t> ImageWriter::free_bytes()
+{
+    if (!valid()) {
+        return std::nullopt;
+    }
+    std::uint64_t free_zones = 0;
+    for (std::size_t sub = 0; sub < writable_volume_.extent_count(); ++sub) {
+        const auto total = zones_in_subpart(sub);
+        for (std::uint64_t first = 0; first < total; first += kBitmapBitsPerChunk) {
+            const auto chunk = static_cast<std::uint32_t>(first / kBitmapBitsPerChunk);
+            const auto* bytes = bitmap(sub, chunk);
+            if (bytes == nullptr) {
+                return std::nullopt;
+            }
+            const auto bits = std::min<std::uint64_t>(kBitmapBitsPerChunk, total - first);
+            for (std::uint64_t bit = 0; bit < bits; ++bit) {
+                const auto value = std::to_integer<unsigned>((*bytes)[static_cast<std::size_t>(bit / 8U)]);
+                free_zones += (value >> (bit % 8U)) & 1U ? 0U : 1U;
+            }
+        }
+    }
+    return free_zones * zone_bytes();
+}
+
 ImageWriter::ZoneRun ImageWriter::find_free_run(std::uint32_t count,
                                                 std::size_t preferred_subpart,
                                                 std::uint32_t preferred_zone)
