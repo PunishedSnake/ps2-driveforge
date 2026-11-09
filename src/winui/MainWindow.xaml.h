@@ -28,6 +28,12 @@ struct MainWindow : MainWindowT<MainWindow>
     // XAML-generated glue must be able to take the address of declarative event
     // handlers. Keep only that thin UI surface public; storage state and helper
     // methods remain private.
+    void on_hdl_export_iso(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_export_all(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_hdl_cancel_export(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_opl_sync_plan(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+    void on_opl_sync_apply(IInspectable const&, Microsoft::UI::Xaml::RoutedEventArgs const&);
+
     void on_hdl_iso_path_changed(IInspectable const&, Microsoft::UI::Xaml::Controls::TextChangedEventArgs const&)
     {
         if (HdlIsoPathText().Text().empty() || hdl_iso_path_.empty()) return;
@@ -528,6 +534,15 @@ private:
     std::jthread export_thread_;
     std::jthread mutation_thread_;
     std::jthread hdl_prepare_thread_;
+    std::jthread iso_export_thread_;
+    std::jthread opl_sync_thread_;
+    std::atomic_bool iso_export_busy_{false};
+    std::atomic_bool opl_sync_busy_{false};
+    bool opl_sync_ready_{false};
+    void start_iso_export(std::vector<ps2df::winui::PartitionRowSnapshot> games,
+                          std::filesystem::path directory);
+    void start_opl_sync_apply(bool physical_confirmed);
+    void update_game_action_buttons();
     std::atomic_bool source_busy_{false};
     std::atomic_bool mutation_busy_{false};
     std::atomic_bool hdl_prepare_busy_{false};

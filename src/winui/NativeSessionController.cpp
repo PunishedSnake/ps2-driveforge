@@ -11,6 +11,7 @@
 #include "ps2hdd/opl_metadata.hpp"
 #include "ps2hdd/physical_drive.hpp"
 #include "ps2hdd/physical_game_deploy.hpp"
+#include "ps2hdd/physical_library_sync.hpp"
 #include "ps2hdd/physical_partition_remove.hpp"
 #include "ps2hdd/physical_write_guard.hpp"
 #include "ps2hdd/ps2_iso.hpp"
@@ -499,6 +500,177 @@ HdlMutationResultSnapshot NativeSessionController::install_hdl(
             result.ok = false;
             result.partial = true;
             result.error = "Mutation committed but the WinUI session could not cold-reopen it: " + reopen_error;
+        }
+    }
+    return result;
+}
+
+HdlIsoExportSnapshot NativeSessionController::export_hdl_iso(
+    std::string_view partition, const std::filesystem::path& directory,
+    std::function<void(std::uint64_t, std::uint64_t)> progress, std::stop_token stop)
+{
+    HdlIsoExportSnapshot result;
+    std::shared_ptr<ps2hdd::DriveSession> session;
+    {
+        std::scoped_lock lock(mutex_);
+        session = session_;
+    }
+    if (!session) {
+        result.error = "No source is open.";
+        return result;
+    }
+    const auto layout = session->hdl_layout(partition);
+    if (!layout.ok) {
+        result.error = layout.error;
+        return result;
+    }
+    result.path = directory / ps2hdd::default_hdl_iso_filename(layout.layout.game);
+    const auto exported = session->export_hdl_iso(partition, result.path, {}, std::move(progress),
+                                                  std::move(stop));
+    result.ok = exported.ok;
+    result.cancelled = exported.cancelled;
+    result.error = exported.error;
+    result.bytes = exported.bytes_written;
+    result.warnings = exported.warnings;
+    return result;
+}
+
+LibrarySyncPlanSnapshot NativeSessionController::plan_library_sync(
+    const std::filesystem::path& cache_root,
+    std::function<void(std::size_t, std::size_t)> progress, std::stop_token stop)
+{
+    LibrarySyncPlanSnapshot result;
+    std::shared_ptr<ps2hdd::DriveSession> session;
+    SourceKind kind = SourceKind::none;
+    std::string source;
+    {
+        std::scoped_lock lock(mutex_);
+        session = session_;
+        kind = source_kind_;
+        source = source_name_;
+        prepared_sync_.reset();
+    }
+    if (!session) {
+        result.error = "No source is open.";
+        return result;
+    }
+    auto http = ps2hdd::make_platform_http_client();
+    if (!http) {
+        result.error = "Native HTTPS transport is not available in this build.";
+        return result;
+    }
+
+    auto plan = ps2hdd::opl::plan_library_sync(
+        session->device(), session->scan_result(), *http, cache_root, {},
+        [progress = std::move(progress)](std::size_t done, std::size_t total,
+                                         const ps2hdd::opl::LibrarySyncGame&) {
+            if (progress) progress(done, total);
+        },
+        std::move(stop));
+    result.ok = plan.ok;
+    result.cancelled = plan.cancelled;
+    result.error = plan.error;
+    result.opl_partition_id = plan.opl_partition_id;
+    result.requires_physical_confirmation = kind == SourceKind::physical;
+    for (const auto& game : plan.games) {
+        if (game.game_id.empty() && game.partition_id == plan.opl_partition_id) {
+            for (const auto& issue : game.issues) result.details.push_back("Inventory: " + issue);
+            continue;
+        }
+        ++result.games;
+        switch (game.state) {
+        case ps2hdd::opl::LibrarySyncGameState::fetched: ++result.games_with_updates; break;
+        case ps2hdd::opl::LibrarySyncGameState::up_to_date: ++result.up_to_date; break;
+        case ps2hdd::opl::LibrarySyncGameState::nothing_found: ++result.nothing_found; break;
+        case ps2hdd::opl::LibrarySyncGameState::skipped: ++result.skipped; break;
+        }
+        if (game.state == ps2hdd::opl::LibrarySyncGameState::fetched ||
+            game.state == ps2hdd::opl::LibrarySyncGameState::skipped) {
+            std::string line = (game.title.empty() ? game.partition_id : game.title) +
+                               " [" + (game.game_id.empty() ? "?" : game.game_id) + "]: " +
+                               ps2hdd::opl::library_sync_state_name(game.state);
+            if (game.fetched) line += ", +" + std::to_string(game.fetched) + " file(s)";
+            if (!game.issues.empty()) line += " (" + game.issues.front() + ")";
+            result.details.push_back(std::move(line));
+        }
+    }
+    for (const auto& asset : plan.assets) {
+        result.asset_bytes += asset.bytes;
+    }
+    result.asset_count = plan.assets.size();
+    if (plan.ok) {
+        std::scoped_lock lock(mutex_);
+        prepared_sync_ = std::move(plan);
+        prepared_sync_source_ = std::move(source);
+    }
+    return result;
+}
+
+HdlMutationResultSnapshot NativeSessionController::apply_library_sync(
+    const std::filesystem::path& artifact_directory, bool physical_confirmation)
+{
+    HdlMutationResultSnapshot result;
+    SourceKind kind = SourceKind::none;
+    std::optional<unsigned> physical_index;
+    std::filesystem::path image_path;
+    std::optional<ps2hdd::opl::LibrarySyncPlan> plan;
+    {
+        std::scoped_lock lock(mutex_);
+        kind = source_kind_;
+        physical_index = physical_index_;
+        image_path = image_path_;
+        if (prepared_sync_ && prepared_sync_source_ == source_name_) plan = prepared_sync_;
+    }
+    if (!plan) {
+        result.error = "Build an OPL sync plan for this source first.";
+        return result;
+    }
+    if (plan->assets.empty()) {
+        result.ok = true;
+        result.warning = "Every installed game is already up to date.";
+        return result;
+    }
+    result.partition_id = plan->opl_partition_id;
+
+    if (kind == SourceKind::image) {
+        ps2hdd::WritableFileBlockDevice target(image_path);
+        if (!target.is_open()) {
+            result.error = "Could not reopen the current disk image for guarded write access.";
+            return result;
+        }
+        const auto applied = ps2hdd::opl::apply_library_sync(target, *plan);
+        result.ok = applied.ok;
+        result.error = applied.error;
+        result.affected_headers = applied.files_written;
+        result.partial = !applied.ok && applied.files_written > 0;
+    } else if (kind == SourceKind::physical && physical_index) {
+        if (!physical_confirmation) {
+            result.error = "Physical OPL sync requires explicit target confirmation.";
+            return result;
+        }
+        ps2hdd::PhysicalLibrarySyncOptions options;
+        options.artifact_directory = artifact_directory;
+        const auto applied = ps2hdd::apply_library_sync_to_physical(*physical_index, *plan, options);
+        result.ok = applied.ok;
+        result.error = applied.error;
+        result.hddmbr_path = applied.hddmbr_path;
+        result.affected_headers = applied.sync.files_written;
+        result.partial = !applied.ok && applied.sync.files_written > 0;
+    } else {
+        result.error = "No writable DriveForge source is open.";
+        return result;
+    }
+
+    {
+        std::scoped_lock lock(mutex_);
+        prepared_sync_.reset();
+    }
+    if (result.ok) {
+        std::string reopen_error;
+        if (!cold_reopen(reopen_error)) {
+            result.ok = false;
+            result.partial = true;
+            result.error = "OPL sync committed but the WinUI session could not cold-reopen it: " + reopen_error;
         }
     }
     return result;

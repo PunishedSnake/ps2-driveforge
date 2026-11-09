@@ -636,6 +636,8 @@ void MainWindow::refresh_hdl_tools()
         HdlInstallButton().IsEnabled(false);
         HdlDeleteSelectedButton().IsEnabled(false);
         PhysicalPreflightButton().IsEnabled(false);
+        opl_sync_ready_ = false;
+        update_game_action_buttons();
         return;
     }
 
@@ -661,6 +663,20 @@ void MainWindow::refresh_hdl_tools()
     HdlPreviewButton().IsEnabled(!hdl_iso_path_.empty() && !mutation_busy_.load());
     HdlInstallButton().IsEnabled(hdl_preview_.ok && !mutation_busy_.load());
     HdlDeleteSelectedButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !mutation_busy_.load());
+    update_game_action_buttons();
+}
+
+void MainWindow::update_game_action_buttons()
+{
+    const bool busy = mutation_busy_.load();
+    const bool exporting = iso_export_busy_.load();
+    const bool syncing = opl_sync_busy_.load();
+    const bool has_games = snapshot_.open && !hdl_game_rows_.empty();
+    HdlExportIsoButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !busy && !syncing);
+    HdlExportAllButton().IsEnabled(has_games && !busy && !syncing);
+    HdlCancelExportButton().IsEnabled(exporting);
+    OplSyncPlanButton().IsEnabled(has_games && !busy && !syncing);
+    OplSyncApplyButton().IsEnabled(opl_sync_ready_ && !busy && !syncing);
 }
 
 void MainWindow::choose_hdl_iso()
@@ -1187,6 +1203,215 @@ void MainWindow::on_hdl_install(IInspectable const&, RoutedEventArgs const&)
 void MainWindow::on_hdl_game_changed(IInspectable const&, SelectionChangedEventArgs const&)
 {
     HdlDeleteSelectedButton().IsEnabled(HdlGamePicker().SelectedIndex() >= 0 && !mutation_busy_.load());
+    update_game_action_buttons();
+}
+
+void MainWindow::on_hdl_export_iso(IInspectable const&, RoutedEventArgs const&)
+{
+    const int selected = HdlGamePicker().SelectedIndex();
+    if (selected < 0 || static_cast<std::size_t>(selected) >= hdl_game_rows_.size()) return;
+    const auto directory = pick_folder(native_hwnd());
+    if (!directory) return;
+    start_iso_export({hdl_game_rows_[static_cast<std::size_t>(selected)]}, *directory);
+}
+
+void MainWindow::on_hdl_export_all(IInspectable const&, RoutedEventArgs const&)
+{
+    if (hdl_game_rows_.empty()) return;
+    const auto directory = pick_folder(native_hwnd());
+    if (!directory) return;
+    start_iso_export(hdl_game_rows_, *directory);
+}
+
+void MainWindow::on_hdl_cancel_export(IInspectable const&, RoutedEventArgs const&)
+{
+    if (iso_export_thread_.joinable()) iso_export_thread_.request_stop();
+    HdlExportProgressText().Text(L"Cancelling after the current chunk...");
+}
+
+void MainWindow::start_iso_export(std::vector<ps2df::winui::PartitionRowSnapshot> games,
+                                  std::filesystem::path directory)
+{
+    // Export is read-only, but it holds the session for a long time; keep
+    // mutations out until it finishes so nothing reopens the source under it.
+    if (mutation_busy_.exchange(true)) return;
+    iso_export_busy_.store(true);
+    if (iso_export_thread_.joinable()) iso_export_thread_.join();
+    update_game_action_buttons();
+    HdlInstallButton().IsEnabled(false);
+    HdlDeleteSelectedButton().IsEnabled(false);
+    HdlExportProgress().Value(0);
+    HdlExportProgressText().Text(L"Starting read-only ISO export...");
+    set_status(L"Exporting HDL game ISO(s) read-only...");
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    iso_export_thread_ = std::jthread([this, dispatcher, weak, games = std::move(games),
+                                       directory = std::move(directory)](std::stop_token stop) {
+        std::size_t exported = 0, skipped = 0, failed = 0;
+        std::wstring last_error;
+        bool cancelled = false;
+        for (std::size_t i = 0; i < games.size() && !cancelled; ++i) {
+            const auto& game = games[i];
+            const auto started = std::chrono::steady_clock::now();
+            const std::wstring name = widen(game.title.empty() ? game.partition_id : game.title);
+            const std::size_t index = i;
+            const std::size_t count = games.size();
+            auto result = controller_.export_hdl_iso(
+                game.partition_id, directory,
+                [dispatcher, weak, name, index, count, started](std::uint64_t done, std::uint64_t total) {
+                    const double seconds = std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - started).count();
+                    dispatcher.TryEnqueue([weak, name, index, count, done, total, seconds] {
+                        if (auto self = weak.get()) {
+                            const double game_fraction = total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total);
+                            self->HdlExportProgress().Value((static_cast<double>(index) + game_fraction) / static_cast<double>(count));
+                            std::wstring text = L"[" + std::to_wstring(index + 1) + L"/" + std::to_wstring(count) + L"] " +
+                                                name + L"  " + format_bytes(done) + L" / " + format_bytes(total);
+                            if (seconds > 0.5) {
+                                text += L"  (" + format_bytes(static_cast<std::uint64_t>(static_cast<double>(done) / seconds)) + L"/s)";
+                            }
+                            self->HdlExportProgressText().Text(text);
+                        }
+                    });
+                },
+                stop);
+            if (result.ok) {
+                ++exported;
+            } else if (result.cancelled || stop.stop_requested()) {
+                cancelled = true;
+            } else if (result.error.find("already exists") != std::string::npos) {
+                ++skipped;
+            } else {
+                ++failed;
+                last_error = name + L": " + widen(result.error);
+            }
+        }
+        dispatcher.TryEnqueue([weak, exported, skipped, failed, cancelled, last_error, directory] {
+            if (auto self = weak.get()) {
+                self->iso_export_busy_.store(false);
+                self->mutation_busy_.store(false);
+                self->HdlExportProgress().Value(cancelled ? 0.0 : 1.0);
+                std::wstring summary = L"Exported " + std::to_wstring(exported) + L", skipped " +
+                                       std::to_wstring(skipped) + L" existing, failed " +
+                                       std::to_wstring(failed) + (cancelled ? L" (cancelled)" : L"") +
+                                       L" -> " + directory.wstring();
+                if (!last_error.empty()) summary += L". Last error: " + last_error;
+                self->HdlExportProgressText().Text(summary);
+                self->set_status(cancelled ? L"ISO export cancelled; no partial files left" : L"ISO export finished");
+                self->refresh_hdl_tools();
+            }
+        });
+    });
+}
+
+void MainWindow::on_opl_sync_plan(IInspectable const&, RoutedEventArgs const&)
+{
+    if (mutation_busy_.load() || opl_sync_busy_.exchange(true)) return;
+    if (opl_sync_thread_.joinable()) opl_sync_thread_.join();
+    opl_sync_ready_ = false;
+    update_game_action_buttons();
+    OplSyncProgress().Value(0);
+    OplSyncSummaryText().Text(L"Checking the OPL partition and game databases...");
+    OplSyncDetailsText().Text(L"");
+    set_status(L"Planning OPL asset sync (read-only)...");
+    const auto cache_root = local_app_data_path() / L"PS2 DriveForge" / L"OPL Cache";
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    opl_sync_thread_ = std::jthread([this, dispatcher, weak, cache_root](std::stop_token stop) {
+        auto plan = controller_.plan_library_sync(
+            cache_root,
+            [dispatcher, weak](std::size_t done, std::size_t total) {
+                dispatcher.TryEnqueue([weak, done, total] {
+                    if (auto self = weak.get()) {
+                        self->OplSyncProgress().Value(total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total));
+                        self->OplSyncSummaryText().Text(L"Checked " + std::to_wstring(done) + L" of " + std::to_wstring(total) + L" game(s)...");
+                    }
+                });
+            },
+            stop);
+        dispatcher.TryEnqueue([weak, plan = std::move(plan)] {
+            if (auto self = weak.get()) {
+                self->opl_sync_busy_.store(false);
+                self->OplSyncProgress().Value(1.0);
+                if (!plan.ok) {
+                    self->OplSyncSummaryText().Text(L"Could not plan OPL sync: " + widen(plan.error));
+                    self->update_game_action_buttons();
+                    return;
+                }
+                self->opl_sync_ready_ = plan.asset_count > 0;
+                std::wstring summary = widen(plan.opl_partition_id) + L": " + std::to_wstring(plan.games) +
+                                       L" game(s) - " + std::to_wstring(plan.games_with_updates) + L" with new files (" +
+                                       std::to_wstring(plan.asset_count) + L" files, " + format_bytes(plan.asset_bytes) +
+                                       L"), " + std::to_wstring(plan.up_to_date) + L" already complete, " +
+                                       std::to_wstring(plan.nothing_found) + L" not in databases, " +
+                                       std::to_wstring(plan.skipped) + L" skipped.";
+                if (plan.asset_count == 0) summary += L" Nothing to write.";
+                else if (plan.requires_physical_confirmation) summary += L" Writing needs physical target confirmation.";
+                self->OplSyncSummaryText().Text(summary);
+                std::wstring details;
+                for (const auto& line : plan.details) details += widen(line) + L"\n";
+                self->OplSyncDetailsText().Text(details);
+                self->set_status(L"OPL asset plan ready; nothing has been written yet");
+                self->update_game_action_buttons();
+            }
+        });
+    });
+}
+
+void MainWindow::on_opl_sync_apply(IInspectable const&, RoutedEventArgs const&)
+{
+    if (!opl_sync_ready_) return;
+    if (snapshot_.source_kind == ps2df::winui::SourceKind::physical) {
+        confirm_physical_action(L"Write OPL artwork, CFG and cheats to physical PS2 HDD", [weak = get_weak()] {
+            if (auto self = weak.get()) self->start_opl_sync_apply(true);
+        });
+    } else {
+        start_opl_sync_apply(false);
+    }
+}
+
+void MainWindow::start_opl_sync_apply(bool physical_confirmed)
+{
+    if (mutation_busy_.exchange(true)) return;
+    opl_sync_busy_.store(true);
+    if (opl_sync_thread_.joinable()) opl_sync_thread_.join();
+    update_game_action_buttons();
+    OplSyncSummaryText().Text(L"Writing staged files to the OPL partition...");
+    set_status(L"Applying OPL asset sync...");
+    const auto artifacts = hdl_artifact_directory_.empty()
+        ? local_app_data_path() / L"PS2 DriveForge" / L"Recovery"
+        : hdl_artifact_directory_;
+
+    auto dispatcher = DispatcherQueue();
+    auto weak = get_weak();
+    opl_sync_thread_ = std::jthread([this, dispatcher, weak, artifacts, physical_confirmed](std::stop_token) {
+        auto result = controller_.apply_library_sync(artifacts, physical_confirmed);
+        dispatcher.TryEnqueue([weak, result = std::move(result)] {
+            if (auto self = weak.get()) {
+                self->mutation_busy_.store(false);
+                self->opl_sync_busy_.store(false);
+                self->opl_sync_ready_ = false;
+                self->snapshot_ = self->controller_.snapshot();
+                self->refresh_all_from_snapshot();
+                self->HdlToolsInfoBar().Severity(result.ok ? InfoBarSeverity::Success : InfoBarSeverity::Error);
+                self->HdlToolsInfoBar().Title(result.ok ? L"OPL assets written and verified" : L"OPL asset sync failed");
+                std::wstring message = result.ok
+                    ? (result.warning.empty() ? L"Wrote " + std::to_wstring(result.affected_headers) +
+                                                    L" file(s) to " + widen(result.partition_id) + L"."
+                                              : widen(result.warning))
+                    : widen(result.error);
+                if (!result.hddmbr_path.empty()) message += L" Safety backup: " + result.hddmbr_path.wstring();
+                self->HdlToolsInfoBar().Message(message);
+                self->HdlToolsInfoBar().IsOpen(true);
+                self->OplSyncSummaryText().Text(result.ok ? L"Up to date. Run the check again after installing more games."
+                                                          : L"Sync did not complete: " + widen(result.error));
+                self->set_status(result.ok ? L"OPL asset sync committed and cold-verified" : L"OPL asset sync failed");
+                self->update_game_action_buttons();
+            }
+        });
+    });
 }
 void MainWindow::on_hdl_delete(IInspectable const&, RoutedEventArgs const&)
 {

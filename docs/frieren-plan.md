@@ -65,6 +65,10 @@ Network data is staged and validated on the host before any filesystem mutation.
 
 See [`opl-asset-pipeline.md`](opl-asset-pipeline.md).
 
+## F4c - read-only HDL ISO export and OPL library sync - implemented
+
+Installed games can be extracted back to `.iso` through the loader-canonical allocation table (see `hdl-format-notes.md`), from the CLI, the read-only Explorer mount (`\\Games\\*.iso`), WinUI and Win32. Library sync fills missing ART/CFG/CHT for already-installed games; see the *Library sync* section of [`opl-asset-pipeline.md`](opl-asset-pipeline.md). Physical library sync reuses the guarded deploy sequence and is hardware-gated like every other physical mutation.
+
 ## F4b - native PFS mutation - implemented for Frieren scope
 
 Current native writer coverage includes:

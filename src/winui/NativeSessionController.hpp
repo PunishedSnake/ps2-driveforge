@@ -6,6 +6,7 @@
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/hdl_image_install.hpp"
 #include "ps2hdd/management_model.hpp"
+#include "ps2hdd/opl_library_sync.hpp"
 #include "ps2hdd/opl_metadata.hpp"
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_discovery.hpp"
@@ -154,6 +155,31 @@ struct RecoveryActionSnapshot {
     bool cold_payload_verified{};
 };
 
+struct HdlIsoExportSnapshot {
+    bool ok{};
+    bool cancelled{};
+    std::string error;
+    std::filesystem::path path;
+    std::uint64_t bytes{};
+    std::vector<std::string> warnings;
+};
+
+struct LibrarySyncPlanSnapshot {
+    bool ok{};
+    bool cancelled{};
+    std::string error;
+    std::string opl_partition_id;
+    std::size_t games{};
+    std::size_t games_with_updates{};
+    std::size_t up_to_date{};
+    std::size_t nothing_found{};
+    std::size_t skipped{};
+    std::size_t asset_count{};
+    std::uint64_t asset_bytes{};
+    bool requires_physical_confirmation{};
+    std::vector<std::string> details;
+};
+
 class NativeSessionController final {
 public:
     using EnrichmentProgress = std::function<void(std::size_t completed, std::size_t total)>;
@@ -185,6 +211,23 @@ public:
         std::uint32_t main_lba, const std::filesystem::path& artifact_directory,
         bool physical_confirmation);
     [[nodiscard]] PhysicalPreflightSnapshot physical_write_preflight() const;
+
+    // Read-only: extract one installed HDL game to <directory>/<title> [<startup>].iso.
+    [[nodiscard]] HdlIsoExportSnapshot export_hdl_iso(
+        std::string_view partition, const std::filesystem::path& directory,
+        std::function<void(std::uint64_t, std::uint64_t)> progress = {},
+        std::stop_token stop = {});
+
+    // OPL library sync. plan_library_sync() is read-only on the source and
+    // stages downloads under cache_root; the frozen plan is retained and only
+    // apply_library_sync() mutates (image: WritableFileBlockDevice, physical:
+    // guarded coordinator + literal target confirmation).
+    [[nodiscard]] LibrarySyncPlanSnapshot plan_library_sync(
+        const std::filesystem::path& cache_root,
+        std::function<void(std::size_t, std::size_t)> progress = {},
+        std::stop_token stop = {});
+    [[nodiscard]] HdlMutationResultSnapshot apply_library_sync(
+        const std::filesystem::path& artifact_directory, bool physical_confirmation);
 
     [[nodiscard]] RecoveryActionSnapshot capture_rescue_capsule(
         const std::filesystem::path& artifact_directory) const
@@ -303,6 +346,10 @@ private:
     // capability and replaced atomically after each successful preparation.
     mutable std::filesystem::path prepared_iso_path_;
     mutable std::vector<ps2hdd::opl::FetchedAsset> prepared_iso_assets_;
+
+    // Frozen library-sync plan bound to the source it was planned against.
+    std::optional<ps2hdd::opl::LibrarySyncPlan> prepared_sync_;
+    std::string prepared_sync_source_;
 };
 
 } // namespace ps2df::winui

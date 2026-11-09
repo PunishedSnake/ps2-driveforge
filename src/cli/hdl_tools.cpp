@@ -7,6 +7,7 @@
 #include "ps2hdd/http_client.hpp"
 #include "ps2hdd/opl_asset_pipeline.hpp"
 #include "ps2hdd/opl_assets.hpp"
+#include "ps2hdd/opl_library_sync.hpp"
 #include "ps2hdd/ps2_iso.hpp"
 #include "ps2hdd/version.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
@@ -43,7 +44,11 @@ void usage()
         << "      [--title <text>] [--hidden] [--cd|--dvd] [--compat <0..255>]\n"
         << "      [--dma <0..65535>] [--layer-break <sectors>] --apply\n"
         << "  ps2-driveforge-hdl-tools patch-metadata <disk-image> <partition-id>\n"
-        << "      [--title <text>] [--compat <0..255>] [--dma <0..65535>] --apply\n\n"
+        << "      [--title <text>] [--compat <0..255>] [--dma <0..65535>] --apply\n"
+        << "  ps2-driveforge-hdl-tools sync-assets <disk-image> <cache-dir>\n"
+        << "      [--partition <opl-pfs-id>] [--tar] [--all-art] [--apply]\n"
+        << "      Adds missing ART/CFG/CHT for every installed game. Without --apply it\n"
+        << "      only plans and stages downloads; existing files are never replaced.\n\n"
         << "Asset downloads are staged on the host only. PFS import is intentionally a\n"
         << "separate Frieren write milestone. PhysicalDrive writes do not exist here.\n";
 }
@@ -387,6 +392,95 @@ int fetch_assets(int argc, char** argv)
     return fetched.ok ? 0 : 1;
 }
 
+int sync_assets(int argc, char** argv)
+{
+    if (argc < 4) {
+        usage();
+        return 2;
+    }
+    const std::filesystem::path image_path = argv[2];
+    const std::filesystem::path cache_root = argv[3];
+    ps2hdd::opl::LibrarySyncOptions options;
+    bool apply = false;
+    for (int i = 4; i < argc; ++i) {
+        const std::string_view option = argv[i];
+        if (option == "--apply") {
+            apply = true;
+        } else if (option == "--tar") {
+            options.assets.layout = ps2hdd::opl::LayoutMode::tar_archives;
+        } else if (option == "--all-art") {
+            options.assets.artwork_logo = true;
+            options.assets.artwork_label = true;
+        } else if (option == "--partition" && i + 1 < argc) {
+            options.opl_partition = argv[++i];
+        } else {
+            usage();
+            return 2;
+        }
+    }
+
+    auto http = ps2hdd::make_platform_http_client();
+    if (!http) {
+        std::cerr << "Native HTTPS asset transport is not available on this platform build.\n";
+        return 1;
+    }
+
+    ps2hdd::opl::LibrarySyncPlan plan;
+    {
+        ps2hdd::FileBlockDevice disk(image_path);
+        if (!disk.is_open()) {
+            std::cerr << "Could not open disk image read-only: " << image_path.string() << '\n';
+            return 1;
+        }
+        ps2hdd::apa::Reader reader(disk);
+        const auto scan = reader.scan();
+        if (!scan.ok()) {
+            std::cerr << "Refusing sync: APA scan is not clean.\n";
+            return 1;
+        }
+        plan = ps2hdd::opl::plan_library_sync(
+            disk, scan, *http, cache_root, options,
+            [](std::size_t done, std::size_t total, const ps2hdd::opl::LibrarySyncGame& game) {
+                std::cout << "  [" << done << '/' << total << "] " << std::left << std::setw(14)
+                          << (game.game_id.empty() ? "?" : game.game_id) << ' '
+                          << std::setw(14) << ps2hdd::opl::library_sync_state_name(game.state)
+                          << " present " << game.already_present << ", fetched " << game.fetched
+                          << "  " << game.title << '\n';
+                for (const auto& issue : game.issues) {
+                    std::cout << "        " << issue << '\n';
+                }
+            });
+    }
+    if (!plan.ok) {
+        std::cerr << "OPL sync planning failed: " << plan.error << '\n';
+        return 1;
+    }
+    std::cout << "\nOPL partition: " << plan.opl_partition_id << "\n"
+              << "Games with new files: " << plan.games_with_updates() << ", files staged: "
+              << plan.assets.size() << '\n';
+    if (!apply) {
+        std::cout << "Disk writes performed: zero. Re-run with --apply to write the staged files.\n";
+        return 0;
+    }
+    if (plan.assets.empty()) {
+        std::cout << "Nothing to write.\n";
+        return 0;
+    }
+    ps2hdd::WritableFileBlockDevice target(image_path);
+    if (!target.is_open()) {
+        std::cerr << "Could not reopen the image for guarded write access.\n";
+        return 1;
+    }
+    const auto applied = ps2hdd::opl::apply_library_sync(target, plan);
+    if (!applied.ok) {
+        std::cerr << "OPL sync failed: " << applied.error << '\n';
+        return 1;
+    }
+    std::cout << "Wrote " << applied.files_written << " file(s) to " << plan.opl_partition_id
+              << " (cold PFS reader verified each write).\n";
+    return 0;
+}
+
 int install_image(int argc, char** argv)
 {
     if (argc < 5) {
@@ -646,6 +740,9 @@ int main(int argc, char** argv)
     }
     if (command == "patch-metadata") {
         return patch_metadata(argc, argv);
+    }
+    if (command == "sync-assets") {
+        return sync_assets(argc, argv);
     }
 
     usage();

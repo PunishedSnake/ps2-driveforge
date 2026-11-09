@@ -165,3 +165,23 @@ See [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for current provide
 All PFS asset mutation described here remains image-only in Frieren development. The Windows `PhysicalDrive` backend stays read-only.
 
 A future physical writer must separately prove source identity, Windows locking/cache behavior, flush/readback, interruption recovery and real PS2 consumption. A successful WinHTTP request is, perhaps unsurprisingly, not one of those gates.
+
+## Library sync for installed games
+
+Install is not the only time a game needs assets. `opl::plan_library_sync()` / `apply_library_sync()` bring an existing library up to date:
+
+```text
+clean APA scan
+ -> resolve OPL data partition (same scorer as install)
+ -> inventory ART/ CFG/ CHT/ (classic files + art.tar/cfg.tar/cht.tar members)
+ -> for each HDL main: startup + title from its own 0xDEADFEED header
+ -> plan_assets() minus everything already present
+ -> fetch_assets() into host staging          (zero disk writes so far)
+ -> apply: re-scan, require identical OPL partition LBA
+ -> one import_fetched_assets() transaction
+```
+
+Inventory keys are `DIR/<NAME WITHOUT EXTENSION>`, upper-case, so classic files and TAR members of the same asset collide deliberately and a user `.jpg` cover suppresses a database `.png`. Title/Redump catalogs and HDD-OSD icons are never requested by sync. Games whose startup ID is not an OPL serial, whose header is unreadable, or that duplicate another game's ID are reported as skipped rather than guessed.
+
+Surfaces: WinUI HDL Tools (*Check for missing assets* -> *Write to OPL partition*; physical targets go through `apply_library_sync_to_physical()` and literal target confirmation), Win32 **Games** menu (images only), and `ps2-driveforge-hdl-tools sync-assets`.
+

@@ -101,7 +101,28 @@
                                 <StackPanel Spacing="10">
                                     <TextBlock Text="Installed HDL games" FontSize="18" FontWeight="SemiBold"/>
                                     <ComboBox x:Name="HdlGamePicker" PlaceholderText="Select installed game" HorizontalAlignment="Stretch"/>
-                                    <Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False" HorizontalAlignment="Left"/>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button x:Name="HdlExportIsoButton" Content="Export as ISO..." IsEnabled="False" Click="on_hdl_export_iso" ToolTipService.ToolTip="Read-only: rebuild the original .iso from the selected game"/>
+                                        <Button x:Name="HdlExportAllButton" Content="Export all games..." IsEnabled="False" Click="on_hdl_export_all" ToolTipService.ToolTip="Read-only: back up every installed game as .iso (already exported files are skipped)"/>
+                                        <Button x:Name="HdlCancelExportButton" Content="Cancel export" IsEnabled="False" Click="on_hdl_cancel_export"/>
+                                        <Button x:Name="HdlDeleteSelectedButton" Content="Delete selected game" IsEnabled="False"/>
+                                    </StackPanel>
+                                    <ProgressBar x:Name="HdlExportProgress" Minimum="0" Maximum="1" Value="0" Height="4"/>
+                                    <TextBlock x:Name="HdlExportProgressText" Text="" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+
+                                    <Border Style="{StaticResource DriveForgeCompactCardStyle}" Margin="0,8,0,0">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="OPL artwork, CFG &amp; cheats" FontWeight="SemiBold"/>
+                                            <TextBlock Text="Fetch cover, icon, background and screenshot art, game CFG and widescreen cheats for every installed game. Only missing files are added; your own ART/CFG/CHT files are never replaced." Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <Button x:Name="OplSyncPlanButton" Content="Check for missing assets" IsEnabled="False" Click="on_opl_sync_plan"/>
+                                                <Button x:Name="OplSyncApplyButton" Content="Write to OPL partition" IsEnabled="False" Click="on_opl_sync_apply"/>
+                                            </StackPanel>
+                                            <ProgressBar x:Name="OplSyncProgress" Minimum="0" Maximum="1" Value="0" Height="3"/>
+                                            <TextBlock x:Name="OplSyncSummaryText" Text="Not checked yet" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap"/>
+                                            <TextBlock x:Name="OplSyncDetailsText" Text="" Style="{StaticResource DriveForgeCaptionStyle}" TextWrapping="Wrap" MaxLines="12" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </Border>
 
                                     <Expander Header="Advanced bootstrap, diagnostics and recovery" IsExpanded="False" Margin="0,8,0,0">
                                         <StackPanel Spacing="12" Padding="0,8,0,0">

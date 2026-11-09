@@ -10,7 +10,14 @@
 - `DriveSession` caches validated HDL layouts per session; bulk export streams from the instrumented backing device so multi-GiB copies neither evict metadata pages nor pay for 256 KiB read-ahead windows they immediately outrun.
 - Explorer mount: disks with HDL partitions now show `\Games\<title> [<startup>].iso` virtual files with deterministic, case-insensitive, de-duplicated names; PFS-only disks keep the unchanged Darkness root namespace.
 - `ps2-driveforge-inspect` gains `--games` (validated game list with ISO size/slices) and `--extract-iso <partition|--all> <output>` with live throughput; `--all` is resumable and skips already-exported games.
-- Added `ps2-driveforge-hdl-iso-tests`; the normal regression suite is now **15 executables** and package verification expects it.
+- Added `ps2-driveforge-hdl-iso-tests` (listed in `scripts/frieren-regression-tests.ps1`).
+- Integrated the Frieren write foundation with `main` and the ISO export work; the full suite is 52 regression executables.
+- Added **OPL library sync** (`opl_library_sync`): for every installed HDL game, read the startup ID/title from its own HDL header, inventory `ART/`, `CFG/`, `CHT/` (classic files and `art.tar`/`cfg.tar`/`cht.tar` members) on the resolved OPL partition, fetch only missing assets through the existing provider pipeline, and import them in one PFS transaction. User files always win: matching is by `DIR/<name without extension>`, so a user `SLUS_123.45_COV.jpg` suppresses a database `.png`. Plans are bound to the exact OPL partition LBA and refused if it moved.
+- Added the Windows guarded `apply_library_sync_to_physical()` coordinator (read-only admission, HDDMBR backup, short RW lease, cold read-only inventory proof of every synced file).
+- WinUI HDL Tools: **Export as ISO…**, **Export all games…** (resumable, skips existing), **Cancel export**, and an **OPL artwork, CFG & cheats** section with a read-only *Check for missing assets* plan and a separate *Write to OPL partition* step that requires literal target confirmation on physical drives.
+- Win32 fallback: new **Games** menu with background ISO export/export-all/cancel and image-only OPL sync; physical writes stay in WinUI.
+- `ps2-driveforge-hdl-tools sync-assets <image> <cache> [--partition] [--tar] [--all-art] [--apply]`.
+- CI: weekly/dispatchable Actions storage cleanup (artifacts >48 h, caches unused 7 days) and cancellation of superseded pull-request runs.
 
 ## 0.5.0 "Emilia" - 2026-08-23
 

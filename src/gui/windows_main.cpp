@@ -4,6 +4,10 @@
 
 #include "ps2hdd/drive_session.hpp"
 #include "ps2hdd/file_block_device.hpp"
+#include "ps2hdd/hdl_export.hpp"
+#include "ps2hdd/http_client.hpp"
+#include "ps2hdd/opl_library_sync.hpp"
+#include "ps2hdd/writable_file_block_device.hpp"
 #include "ps2hdd/partition_catalog.hpp"
 #include "ps2hdd/physical_discovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
@@ -17,6 +21,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <uxtheme.h>
 #include <windows.h>
 
@@ -30,6 +35,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stop_token>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -50,10 +56,18 @@ constexpr UINT kIdMountReadOnly = 107;
 constexpr UINT kIdOpenMounted = 108;
 constexpr UINT kIdUnmount = 109;
 constexpr UINT kIdRestartElevated = 110;
+constexpr UINT kIdExportIso = 111;
+constexpr UINT kIdExportAllIso = 112;
+constexpr UINT kIdCancelJob = 113;
+constexpr UINT kIdOplSync = 114;
 constexpr UINT kIdPhysicalBase = 300;
 constexpr UINT kMaxPhysicalMenuEntries = 512;
 constexpr UINT kMountTimerId = 1;
 constexpr UINT kDiscoveryComplete = WM_APP + 1;
+// Background job messages. lParam always owns a heap object the UI thread frees.
+constexpr UINT kJobProgress = WM_APP + 2;   // std::wstring*
+constexpr UINT kJobDone = WM_APP + 3;       // std::wstring*  (wParam: 1 = success)
+constexpr UINT kSyncPlanned = WM_APP + 4;   // ps2hdd::opl::LibrarySyncPlan*
 constexpr int kTreeId = 1000;
 constexpr int kListId = 1001;
 constexpr int kStatusId = 1002;
@@ -541,6 +555,15 @@ private:
         EnableMenuItem(menu, kIdOpenMounted, MF_BYCOMMAND | MF_GRAYED);
         EnableMenuItem(menu, kIdUnmount, MF_BYCOMMAND | MF_GRAYED);
 #endif
+        const bool hdl_selected = active_partition_ && !active_partition_->is_sub() &&
+                                  active_partition_->type == ps2hdd::apa::kTypeHdl;
+        const bool has_games = source_open && std::any_of(
+            session_->scan_result().partitions.begin(), session_->scan_result().partitions.end(),
+            [](const auto& p) { return !p.is_sub() && p.type == ps2hdd::apa::kTypeHdl; });
+        EnableMenuItem(menu, kIdExportIso, MF_BYCOMMAND | (hdl_selected && !job_running_ ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(menu, kIdExportAllIso, MF_BYCOMMAND | (has_games && !job_running_ ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(menu, kIdCancelJob, MF_BYCOMMAND | (job_running_ ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(menu, kIdOplSync, MF_BYCOMMAND | (has_games && !job_running_ ? MF_ENABLED : MF_GRAYED));
         EnableMenuItem(menu, kIdRestartElevated, MF_BYCOMMAND |
                        (!ps2driveforge::gui::is_process_elevated() ? MF_ENABLED : MF_GRAYED));
         DrawMenuBar(window_);
@@ -659,6 +682,10 @@ private:
 
     bool load_device(std::unique_ptr<ps2hdd::BlockDevice> source)
     {
+        if (job_running_) {
+            message(L"Wait for the running export/sync job to finish (or cancel it) before switching sources.", MB_ICONWARNING);
+            return false;
+        }
 #ifdef PS2DF_HAS_DOKANY
         if (mount_controller_ && mount_controller_->is_running()) {
             message(L"Unmount the current Explorer volume before switching source devices.", MB_ICONWARNING);
@@ -818,6 +845,7 @@ private:
     void open_partition(const ps2hdd::apa::Partition& partition)
     {
         active_partition_ = partition;
+        update_action_menu();
         active_path_.clear();
         visible_entries_.clear();
         ListView_DeleteAllItems(list_);
@@ -970,6 +998,258 @@ private:
         navigate(active_path_);
     }
 
+    // ---- Frieren background jobs: ISO export and OPL library sync ----------
+
+    std::optional<std::filesystem::path> pick_folder(const wchar_t* title)
+    {
+        const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        std::optional<std::filesystem::path> result;
+        IFileOpenDialog* dialog = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&dialog))) && dialog) {
+            FILEOPENDIALOGOPTIONS options{};
+            dialog->GetOptions(&options);
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+            dialog->SetTitle(title);
+            if (SUCCEEDED(dialog->Show(window_))) {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                        result = std::filesystem::path(path);
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
+                }
+            }
+            dialog->Release();
+        }
+        if (SUCCEEDED(init)) {
+            CoUninitialize();
+        }
+        return result;
+    }
+
+    void post_progress(std::wstring text) const
+    {
+        auto* owned = new std::wstring(std::move(text));
+        if (!PostMessageW(window_, kJobProgress, 0, reinterpret_cast<LPARAM>(owned))) {
+            delete owned;
+        }
+    }
+
+    void post_done(bool ok, std::wstring text) const
+    {
+        auto* owned = new std::wstring(std::move(text));
+        if (!PostMessageW(window_, kJobDone, ok ? 1 : 0, reinterpret_cast<LPARAM>(owned))) {
+            delete owned;
+        }
+    }
+
+    void begin_job()
+    {
+        if (job_thread_.joinable()) {
+            job_thread_.join();
+        }
+        job_running_ = true;
+        update_action_menu();
+    }
+
+    void export_iso(bool all_games)
+    {
+        if (!session_ || job_running_) {
+            return;
+        }
+        std::vector<std::string> games;
+        if (all_games) {
+            for (const auto& layout : session_->hdl_layouts()) {
+                games.push_back(layout.layout.game.partition_id);
+            }
+        } else if (active_partition_ && active_partition_->type == ps2hdd::apa::kTypeHdl) {
+            games.push_back(active_partition_->id);
+        }
+        if (games.empty()) {
+            return;
+        }
+        const auto directory = pick_folder(all_games ? L"Back up all HDL games as ISO to..."
+                                                     : L"Export HDL game as ISO to...");
+        if (!directory) {
+            return;
+        }
+        begin_job();
+        ps2hdd::DriveSession* session = session_.get();
+        job_thread_ = std::jthread([this, session, games = std::move(games),
+                                    directory = *directory](std::stop_token stop) {
+            std::size_t exported = 0, skipped = 0, failed = 0;
+            std::wstring last_error;
+            for (std::size_t i = 0; i < games.size() && !stop.stop_requested(); ++i) {
+                const auto layout = session->hdl_layout(games[i]);
+                if (!layout.ok) {
+                    ++failed;
+                    last_error = widen(games[i] + ": " + layout.error);
+                    continue;
+                }
+                const auto target = directory / ps2hdd::default_hdl_iso_filename(layout.layout.game);
+                std::error_code ec;
+                if (std::filesystem::exists(target, ec)) {
+                    ++skipped;
+                    continue;
+                }
+                const std::wstring name = widen(layout.layout.game.title);
+                std::uint64_t last_report = 0;
+                const auto result = session->export_hdl_iso(
+                    games[i], target, {},
+                    [&](std::uint64_t done, std::uint64_t total) {
+                        if (done != total && done < last_report + 64ULL * 1024ULL * 1024ULL) {
+                            return;
+                        }
+                        last_report = done;
+                        std::wostringstream text;
+                        text << L"[" << (i + 1) << L"/" << games.size() << L"] Exporting " << name
+                             << L"  " << format_bytes(done) << L" / " << format_bytes(total)
+                             << L"  |  Games > Cancel to stop";
+                        post_progress(text.str());
+                    },
+                    stop);
+                if (result.ok) {
+                    ++exported;
+                } else if (!result.cancelled) {
+                    ++failed;
+                    last_error = name + L": " + widen(result.error);
+                }
+            }
+            std::wostringstream summary;
+            summary << L"ISO export " << (stop.stop_requested() ? L"cancelled" : L"finished") << L".\n\n"
+                    << L"Exported: " << exported << L"\nAlready present (skipped): " << skipped
+                    << L"\nFailed: " << failed << L"\n\nFolder: " << directory.wstring();
+            if (!last_error.empty()) {
+                summary << L"\n\nLast error: " << last_error;
+            }
+            post_done(failed == 0, summary.str());
+        });
+    }
+
+    void plan_opl_sync()
+    {
+        if (!session_ || job_running_) {
+            return;
+        }
+        if (!current_image_) {
+            message(L"Writing OPL assets to a physical PS2 HDD requires the guarded target confirmation in the modern (WinUI) frontend.\n\nOpen PS2-DriveForge.exe without --legacy, then use HDL Tools > OPL artwork, CFG & cheats.",
+                    MB_ICONINFORMATION);
+            return;
+        }
+        begin_job();
+        set_status(L"Checking installed games for missing OPL artwork, CFG and cheats (read-only)...");
+        ps2hdd::DriveSession* session = session_.get();
+        job_thread_ = std::jthread([this, session](std::stop_token stop) {
+            auto http = ps2hdd::make_platform_http_client();
+            if (!http) {
+                post_done(false, L"Native HTTPS transport is not available in this build.");
+                return;
+            }
+            std::array<wchar_t, 32768> local{};
+            const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
+            const auto root = chars > 0 && chars < local.size() ? std::filesystem::path(local.data())
+                                                              : std::filesystem::temp_directory_path();
+            auto plan = std::make_unique<ps2hdd::opl::LibrarySyncPlan>(ps2hdd::opl::plan_library_sync(
+                session->device(), session->scan_result(), *http, root / L"PS2 DriveForge" / L"OPL Cache", {},
+                [this](std::size_t done, std::size_t total, const ps2hdd::opl::LibrarySyncGame& game) {
+                    post_progress(L"Checked " + std::to_wstring(done) + L"/" + std::to_wstring(total) +
+                                  L": " + widen(game.title));
+                },
+                stop));
+            auto* raw = plan.release();
+            if (!PostMessageW(window_, kSyncPlanned, 0, reinterpret_cast<LPARAM>(raw))) {
+                delete raw;
+            }
+        });
+    }
+
+    void sync_planned(std::unique_ptr<ps2hdd::opl::LibrarySyncPlan> plan)
+    {
+        job_running_ = false;
+        update_action_menu();
+        if (!plan->ok) {
+            message(L"Could not plan the OPL sync:\n\n" + widen(plan->error), MB_ICONERROR);
+            return;
+        }
+        std::size_t up_to_date = 0, nothing = 0, skipped = 0;
+        std::wostringstream details;
+        for (const auto& game : plan->games) {
+            using State = ps2hdd::opl::LibrarySyncGameState;
+            if (game.state == State::up_to_date) ++up_to_date;
+            if (game.state == State::nothing_found) ++nothing;
+            if (game.state == State::skipped && !game.game_id.empty()) ++skipped;
+            if (game.state == State::fetched) {
+                details << L"  " << widen(game.title) << L" [" << widen(game.game_id) << L"]: +"
+                        << game.fetched << L" file(s)\n";
+            }
+        }
+        std::wostringstream text;
+        text << widen(plan->opl_partition_id) << L": " << plan->games_with_updates()
+             << L" game(s) can get " << plan->assets.size() << L" new file(s).\n"
+             << up_to_date << L" already complete, " << nothing << L" not found in the databases, "
+             << skipped << L" skipped.\n\n" << details.str();
+        if (plan->assets.empty()) {
+            message(text.str() + L"\nNothing to write.", MB_ICONINFORMATION);
+            set_status(L"OPL assets already up to date");
+            return;
+        }
+        text << L"\nOnly missing files are added; existing ART/CFG/CHT files are never replaced.\n\n"
+             << L"Write these files into the OPL partition of this disk image?";
+        if (MessageBoxW(window_, text.str().c_str(), L"PS2 DriveForge - OPL sync",
+                        MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+            set_status(L"OPL sync cancelled; nothing was written");
+            return;
+        }
+
+        const auto image = *current_image_;
+        begin_job();
+        set_status(L"Writing OPL assets to the disk image...");
+        job_thread_ = std::jthread([this, image, plan = std::shared_ptr<ps2hdd::opl::LibrarySyncPlan>(std::move(plan))](std::stop_token) {
+            ps2hdd::WritableFileBlockDevice target(image);
+            if (!target.is_open()) {
+                post_done(false, L"Could not reopen the disk image for guarded write access.");
+                return;
+            }
+            const auto applied = ps2hdd::opl::apply_library_sync(target, *plan);
+            post_done(applied.ok, applied.ok
+                ? L"Wrote " + std::to_wstring(applied.files_written) + L" file(s) to " +
+                      widen(plan->opl_partition_id) + L" and verified the partition.\n\nThe image will be reopened."
+                : L"OPL sync failed:\n\n" + widen(applied.error));
+        });
+        reopen_after_job_ = true;
+    }
+
+    void job_progress(std::unique_ptr<std::wstring> text) { set_status(*text); }
+
+    void job_done(bool ok, std::unique_ptr<std::wstring> text)
+    {
+        if (job_thread_.joinable()) {
+            job_thread_.join();
+        }
+        job_running_ = false;
+        const bool reopen = std::exchange(reopen_after_job_, false);
+        if (reopen && current_image_) {
+            auto source = std::make_unique<ps2hdd::FileBlockDevice>(*current_image_);
+            if (source->is_open()) {
+                (void)load_device(std::move(source));
+            }
+        }
+        update_action_menu();
+        set_status(ok ? L"Done" : L"Finished with errors");
+        message(*text, ok ? MB_ICONINFORMATION : MB_ICONWARNING);
+    }
+
+    void cancel_job()
+    {
+        if (job_thread_.joinable()) {
+            job_thread_.request_stop();
+            set_status(L"Cancelling after the current chunk...");
+        }
+    }
+
 #ifdef PS2DF_HAS_DOKANY
     void finish_mount_controller()
     {
@@ -1005,6 +1285,10 @@ private:
     std::optional<ps2hdd::apa::Partition> active_partition_;
     std::string active_path_;
     std::vector<ps2hdd::SessionEntry> visible_entries_;
+    bool job_running_{};
+    bool reopen_after_job_{};
+    // Declared last: destroyed (stop requested + joined) before session_.
+    std::jthread job_thread_;
 };
 
 HMENU create_menu()
@@ -1026,6 +1310,14 @@ HMENU create_menu()
     AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(file, MF_STRING, kIdExit, L"E&xit");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
+
+    HMENU games = CreatePopupMenu();
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdExportIso, L"&Export selected game as ISO...");
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdExportAllIso, L"Export &all games as ISO...");
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdCancelJob, L"&Cancel running job");
+    AppendMenuW(games, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(games, MF_STRING | MF_GRAYED, kIdOplSync, L"Add missing OPL artwork, CFG && cheats...");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(games), L"&Games");
 
     HMENU view = CreatePopupMenu();
     HMENU theme = CreatePopupMenu();
@@ -1054,6 +1346,28 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(owned.release()));
         return 0;
     }
+    case kJobProgress:
+        if (app) {
+            app->job_progress(std::unique_ptr<std::wstring>(reinterpret_cast<std::wstring*>(lparam)));
+        } else {
+            delete reinterpret_cast<std::wstring*>(lparam);
+        }
+        return 0;
+    case kJobDone:
+        if (app) {
+            app->job_done(wparam != 0, std::unique_ptr<std::wstring>(reinterpret_cast<std::wstring*>(lparam)));
+        } else {
+            delete reinterpret_cast<std::wstring*>(lparam);
+        }
+        return 0;
+    case kSyncPlanned:
+        if (app) {
+            app->sync_planned(std::unique_ptr<ps2hdd::opl::LibrarySyncPlan>(
+                reinterpret_cast<ps2hdd::opl::LibrarySyncPlan*>(lparam)));
+        } else {
+            delete reinterpret_cast<ps2hdd::opl::LibrarySyncPlan*>(lparam);
+        }
+        return 0;
     case kDiscoveryComplete:
         if (app) {
             std::unique_ptr<std::vector<ps2hdd::PhysicalDriveProbe>> results(
@@ -1098,6 +1412,18 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lp
             return 0;
         case kIdRestartElevated:
             app->restart_elevated();
+            return 0;
+        case kIdExportIso:
+            app->export_iso(false);
+            return 0;
+        case kIdExportAllIso:
+            app->export_iso(true);
+            return 0;
+        case kIdCancelJob:
+            app->cancel_job();
+            return 0;
+        case kIdOplSync:
+            app->plan_opl_sync();
             return 0;
 #ifdef PS2DF_HAS_DOKANY
         case kIdMountReadOnly:
