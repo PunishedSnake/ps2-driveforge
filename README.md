@@ -4,7 +4,7 @@
 
 PS2 DriveForge lets you inspect PS2 HDDs, browse PFS filesystems, manage HDLoader game metadata, work with OPL data and perform guarded storage operations without turning a decades-old disk format into a shell-script archaeology exercise.
 
-The current public release is **0.5.0 - Emilia**. The active **0.6.0 - Frieren** development line adds native image-only HDL/PFS mutation and an interoperable recovery/rescue layer shared with **FHDB Manager**. Physical Windows disk writes remain locked.
+The current public release is **0.5.0 - Emilia**; **0.6.0-beta.1 - Frieren** is the current prerelease. Frieren adds native HDL/PFS writes (images and, behind typed `PhysicalDriveN` confirmation, physical drives), a writable Explorer mount with a crash-safe write-back engine, OPL asset sync for +OPL and exFAT/BDM libraries (including APA-Jail), structure health / boot-chain reports, FHDB-compatible recovery, drive migration and sparse backups.
 
 > [!IMPORTANT]
 > The normal Windows `PhysicalDrive` backend is still read-only and uses `GENERIC_READ`. Frieren write APIs require an explicit `WritableBlockDevice`, currently backed by existing disk images. A damaged real PS2 HDD should still be imaged before host-side recovery work.

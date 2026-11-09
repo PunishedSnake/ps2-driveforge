@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.6.0-dev',
+    [string]$Version = '0.6.0-beta.1',
     [string]$Codename = 'Frieren',
     [string]$CanonicalRoot = (Join-Path $PSScriptRoot '..\dist\windows-x64'),
     [string]$BuildBin = (Join-Path $PSScriptRoot '..\build\windows-x64\Release'),

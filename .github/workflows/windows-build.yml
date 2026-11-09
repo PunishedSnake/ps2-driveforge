@@ -155,11 +155,11 @@ jobs:
           .\dist\windows-x64\ps2-driveforge-physical-tools.exe --version
           if ($LASTEXITCODE -ne 0) { throw 'Frieren physical developer tool did not start.' }
 
-      - name: Build 0.6.0-dev portable and installer packages
+      - name: Build 0.6.0-beta.1 portable and installer packages
         shell: pwsh
         run: |
           .\scripts\make-user-release.ps1 `
-            -Version '0.6.0-dev' `
+            -Version '0.6.0-beta.1' `
             -Codename 'Frieren' `
             -InnoCompiler '${{ steps.inno.outputs.compiler }}' `
             -DokanyMsi (Join-Path $env:RUNNER_TEMP 'Dokan_x64.msi')
@@ -167,8 +167,8 @@ jobs:
       - name: Verify Frieren development artifacts
         shell: pwsh
         run: |
-          $portable = '.\dist\PS2-DriveForge-0.6.0-dev-Frieren-Portable-x64.zip'
-          $setup = '.\dist\PS2-DriveForge-0.6.0-dev-Frieren-Setup-x64.exe'
+          $portable = '.\dist\PS2-DriveForge-0.6.0-beta.1-Frieren-Portable-x64.zip'
+          $setup = '.\dist\PS2-DriveForge-0.6.0-beta.1-Frieren-Setup-x64.exe'
           foreach ($path in @($portable, $setup)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Expected Frieren development artifact was not produced: $path"
@@ -179,10 +179,10 @@ jobs:
       - name: Upload Frieren development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.6.0-dev-Frieren-windows-x64
+          name: PS2-DriveForge-0.6.0-beta.1-Frieren-windows-x64
           path: |
-            dist/PS2-DriveForge-0.6.0-dev-Frieren-Portable-x64.zip
-            dist/PS2-DriveForge-0.6.0-dev-Frieren-Setup-x64.exe
+            dist/PS2-DriveForge-0.6.0-beta.1-Frieren-Portable-x64.zip
+            dist/PS2-DriveForge-0.6.0-beta.1-Frieren-Setup-x64.exe
           if-no-files-found: error
 
           retention-days: 3

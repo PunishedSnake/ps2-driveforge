@@ -132,7 +132,7 @@ jobs:
       - name: Upload WinUI development artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PS2-DriveForge-0.6.0-dev-Frieren-WinUI-x64
+          name: PS2-DriveForge-0.6.0-beta.1-Frieren-WinUI-x64
           path: src/winui/x64/Release/**
           if-no-files-found: error
 

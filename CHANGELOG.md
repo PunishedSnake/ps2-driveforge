@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0-dev "Frieren" - in development
+## 0.6.0-beta.1 "Frieren" - 2026-11-09 (prerelease)
 
 - Fixed a `-Wcomment` warning in `mount_view.hpp` (backslash-terminated `//` lines) that broke GCC `-Werror` builds.
 - Added loader-canonical HDLoader allocation-table decoding (`+0x0F4`, `{ISO LSN, HDD sector, bytes}`) as used by HDLoader/OPL, documented against hdl-dump's shifted `+0x0F5` encoding in `docs/hdl-format-notes.md`; both encodings are regression-tested to agree.

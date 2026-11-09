@@ -5,7 +5,7 @@
   #error OutputDir must be supplied with /DOutputDir=...
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.6.0-dev"
+  #define AppVersion "0.6.0-beta.1"
 #endif
 #ifndef AppCodename
   #define AppCodename "Frieren"

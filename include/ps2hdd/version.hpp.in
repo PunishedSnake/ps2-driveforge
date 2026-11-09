@@ -7,8 +7,9 @@ namespace ps2hdd::version {
 inline constexpr unsigned major = @PROJECT_VERSION_MAJOR@;
 inline constexpr unsigned minor = @PROJECT_VERSION_MINOR@;
 inline constexpr unsigned patch = @PROJECT_VERSION_PATCH@;
-inline constexpr std::string_view string = "@PROJECT_VERSION@";
+inline constexpr std::string_view string = "@PS2DF_VERSION_STRING@";
 inline constexpr std::string_view codename = "@PS2DF_CODENAME@";
-inline constexpr bool development = true;
+inline constexpr std::string_view prerelease = "@PS2DF_PRERELEASE@";
+inline constexpr bool development = !prerelease.empty();
 
 } // namespace ps2hdd::version
