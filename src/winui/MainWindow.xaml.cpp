@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <map>
 #include <cctype>
 #include <exception>
 #include <fstream>
@@ -958,6 +959,26 @@ void MainWindow::start_mount()
         show_error(L"Mount", L"Open a PS2 HDD or disk image first.");
         return;
     }
+    const bool writable = MountWritableToggle().IsOn();
+    if (writable && current_physical_) {
+        confirm_physical_action(L"Mount physical PS2 HDD with Explorer writes", [weak = get_weak()] {
+            if (auto self = weak.get()) self->launch_mount(true);
+        });
+        return;
+    }
+    launch_mount(writable);
+}
+
+std::filesystem::path MainWindow::mount_status_path() const
+{
+    const std::wstring name = current_physical_ ? L"PhysicalDrive" + std::to_wstring(*current_physical_)
+                                                : current_image_.filename().wstring();
+    return local_app_data_path() / L"PS2 DriveForge" / L"Spool" / name / L"status.txt";
+}
+
+void MainWindow::launch_mount(bool writable)
+{
+    mount_writable_ = writable;
     const auto helper = mount_helper_path();
     if (!path_exists(helper)) {
         show_error(L"Mount", L"PS2-DriveForge-Mount.exe is not present in this package.");
@@ -973,9 +994,11 @@ void MainWindow::start_mount()
     bool elevate = false;
     if (current_physical_) {
         parameters = L"--physical " + std::to_wstring(*current_physical_) + L" --mount \"" + mount_point_ + L"\"";
+        if (writable) parameters += L" --writable --confirm PhysicalDrive" + std::to_wstring(*current_physical_);
         elevate = true;
     } else if (!current_image_.empty()) {
         parameters = L"--image \"" + current_image_.wstring() + L"\" --mount \"" + mount_point_ + L"\"";
+        if (writable) parameters += L" --writable";
     } else {
         mount_point_.clear();
         return;
@@ -992,7 +1015,7 @@ void MainWindow::start_mount()
     execute.nShow = SW_HIDE;
     if (!ShellExecuteExW(&execute) || !execute.hProcess) {
         mount_point_.clear();
-        if (GetLastError() != ERROR_CANCELLED) show_error(L"Mount", L"Could not start read-only mount helper.");
+        if (GetLastError() != ERROR_CANCELLED) show_error(L"Mount", L"Could not start the mount helper.");
         return;
     }
     if (mount_process_) CloseHandle(mount_process_);
@@ -1035,12 +1058,32 @@ void MainWindow::poll_mount_state()
         UnmountButton().IsEnabled(false);
         MountButton().IsEnabled(snapshot_.open);
         MountPageMountButton().IsEnabled(snapshot_.open);
+        MountWritableToggle().IsEnabled(true);
+        MountWriteBackText().Text(L"");
         return;
     }
     const bool mounted = GetFileAttributesW(mount_point_.c_str()) != INVALID_FILE_ATTRIBUTES;
     if (mounted) {
-        MountStatusText().Text(L"Mounted read-only");
+        MountStatusText().Text(mount_writable_ ? L"Mounted with write-back" : L"Mounted read-only");
         MountPointText().Text(L"Drive letter: " + mount_point_);
+        MountWritableToggle().IsEnabled(false);
+        if (mount_writable_) {
+            std::wifstream in(mount_status_path());
+            std::map<std::wstring, std::wstring> status;
+            for (std::wstring line; std::getline(in, line);) {
+                if (const auto eq = line.find(L'='); eq != std::wstring::npos) status[line.substr(0, eq)] = line.substr(eq + 1);
+            }
+            std::wstring text = status.empty() ? L"Waiting for write-back status..." :
+                L"Pending: " + status[L"pending_ops"] + L" change(s) | committed: " + status[L"committed_ops"] +
+                L" | coalesced: " + status[L"coalesced_ops"] + L" | app writes " + status[L"application_writes"] +
+                L" -> " + status[L"disk_sessions"] + L" disk session(s)";
+            if (status[L"failed_ops"] != L"0" && !status[L"failed_ops"].empty()) text += L" | FAILED: " + status[L"failed_ops"];
+            if (status[L"read_only"] == L"1") text += L"\nCircuit breaker tripped - mount is now read-only. " + status[L"last_error"];
+            else if (!status[L"last_error"].empty()) text += L"\nLast error: " + status[L"last_error"];
+            MountWriteBackText().Text(text);
+        } else {
+            MountWriteBackText().Text(L"");
+        }
         OpenExplorerButton().IsEnabled(true);
         MountPageExplorerButton().IsEnabled(true);
         UnmountButton().IsEnabled(true);

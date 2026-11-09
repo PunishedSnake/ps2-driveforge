@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -239,6 +240,33 @@ int wmain(int argc, wchar_t** argv)
                    << *mount_point << L"\n";
     }
 
+    // Heartbeat for frontends (WinUI polls this): the helper is a separate,
+    // possibly elevated process, so a tiny key=value file is the IPC.
+    if (auto* engine = controller.write_back(); engine && writable) {
+        wchar_t local[MAX_PATH]{};
+        const DWORD chars = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
+        const std::filesystem::path base = chars > 0 && chars < MAX_PATH ? std::filesystem::path(local)
+                                                                       : std::filesystem::temp_directory_path();
+        const auto status_path = base / L"PS2 DriveForge" / L"Spool" /
+                                 (image ? image->filename().wstring() : L"PhysicalDrive" + std::to_wstring(*physical)) /
+                                 L"status.txt";
+        while (controller.is_running()) {
+            const auto stats = engine->stats();
+            {
+                std::ofstream out(status_path.wstring() + L".tmp", std::ios::trunc);
+                out << "pending_ops=" << stats.pending_ops << "\npending_bytes=" << stats.pending_bytes
+                    << "\ncommitted_ops=" << stats.committed_ops << "\nfailed_ops=" << stats.failed_ops
+                    << "\ncoalesced_ops=" << stats.coalesced_ops << "\napplication_writes=" << stats.application_writes
+                    << "\ndisk_sessions=" << stats.disk_write_sessions << "\nread_only=" << (stats.read_only ? 1 : 0)
+                    << "\nlast_error=" << stats.last_error << "\n";
+            }
+            std::error_code ec;
+            std::filesystem::rename(status_path.wstring() + L".tmp", status_path, ec);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        std::error_code ec;
+        std::filesystem::remove(status_path, ec);
+    }
     controller.wait();
     if (auto* engine = controller.write_back()) {
         const auto stats = engine->stats();
