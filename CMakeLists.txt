@@ -34,6 +34,9 @@ add_library(ps2driveforge_core
     src/core/fhdb_artifacts.cpp
     src/core/fhdb_restore.cpp
     src/core/structure_health.cpp
+    src/core/boot_chain.cpp
+    src/core/forensic_preview.cpp
+    src/core/apa_migrate.cpp
     src/core/apa_repair.cpp
     src/core/apa_forensic.cpp
     src/core/apa_recovery_apply.cpp
@@ -119,6 +122,7 @@ if(WIN32)
         src/platform/windows/physical_library_sync.cpp
         src/platform/windows/physical_mount_writer.cpp
         src/platform/windows/windows_partition_volume.cpp
+        src/platform/windows/physical_migration.cpp
         src/platform/windows/physical_partition_remove.cpp
         src/platform/windows/physical_bootstrap_recovery.cpp
         src/platform/windows/physical_apa_recovery.cpp
@@ -155,7 +159,7 @@ target_link_libraries(ps2-driveforge-pfs-tools PRIVATE ps2driveforge_core)
 target_compile_features(ps2-driveforge-pfs-tools PRIVATE cxx_std_20)
 
 add_executable(ps2-driveforge-repair-tools src/cli/repair_tools.cpp)
-target_link_libraries(ps2-driveforge-repair-tools PRIVATE ps2driveforge_core)
+target_link_libraries(ps2-driveforge-repair-tools PRIVATE ps2driveforge_host)
 target_compile_features(ps2-driveforge-repair-tools PRIVATE cxx_std_20)
 
 if(WIN32)
@@ -386,6 +390,22 @@ if(PS2DF_BUILD_TESTS)
     target_link_libraries(ps2-driveforge-structure-health-tests PRIVATE ps2driveforge_core)
     target_compile_features(ps2-driveforge-structure-health-tests PRIVATE cxx_std_20)
     add_test(NAME ps2-driveforge-structure-health-tests COMMAND ps2-driveforge-structure-health-tests)
+    add_executable(ps2-driveforge-boot-chain-tests tests/boot_chain_tests.cpp)
+    target_link_libraries(ps2-driveforge-boot-chain-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-boot-chain-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-boot-chain-tests COMMAND ps2-driveforge-boot-chain-tests)
+    add_executable(ps2-driveforge-forensic-preview-tests tests/forensic_preview_tests.cpp)
+    target_link_libraries(ps2-driveforge-forensic-preview-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-forensic-preview-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-forensic-preview-tests COMMAND ps2-driveforge-forensic-preview-tests)
+    add_executable(ps2-driveforge-migration-tests tests/migration_tests.cpp)
+    target_link_libraries(ps2-driveforge-migration-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-migration-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-migration-tests COMMAND ps2-driveforge-migration-tests)
+    add_executable(ps2-driveforge-fault-injection-tests tests/fault_injection_tests.cpp)
+    target_link_libraries(ps2-driveforge-fault-injection-tests PRIVATE ps2driveforge_core)
+    target_compile_features(ps2-driveforge-fault-injection-tests PRIVATE cxx_std_20)
+    add_test(NAME ps2-driveforge-fault-injection-tests COMMAND ps2-driveforge-fault-injection-tests)
 
     add_executable(ps2-driveforge-apa-repair-tests tests/apa_repair_tests.cpp)
     target_link_libraries(ps2-driveforge-apa-repair-tests PRIVATE ps2driveforge_core)

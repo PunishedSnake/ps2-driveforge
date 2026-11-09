@@ -1,10 +1,13 @@
 #pragma once
 
+#include "ps2hdd/apa_migrate.hpp"
+#include "ps2hdd/boot_chain.hpp"
 #include "ps2hdd/structure_health.hpp"
 
 #include <cstddef>
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -32,6 +35,7 @@ struct Outcome {
     std::string error;
     std::string warning;
     std::string summary;
+    std::string details;  // multi-line report (e.g. forensic map previews)
     std::vector<std::filesystem::path> artifacts;
 };
 
@@ -44,6 +48,14 @@ struct HealthOutcome {
 
 [[nodiscard]] HealthOutcome assess(const Source& source);
 
+struct BootChainOutcome {
+    bool ok{};
+    std::string error;
+    bootchain::Report report;
+    std::string text;
+};
+[[nodiscard]] BootChainOutcome boot_chain(const Source& source, const std::filesystem::path& memory_card_root = {});
+
 [[nodiscard]] Outcome capture_rescue(const Source& source, const std::filesystem::path& artifact_directory);
 [[nodiscard]] Outcome restore_bootstrap(const Source& source,
                                         const std::filesystem::path& artifact_directory,
@@ -54,5 +66,27 @@ struct HealthOutcome {
 [[nodiscard]] Outcome forensic_report(const Source& source, const std::filesystem::path& artifact_directory);
 [[nodiscard]] Outcome repair_forensic_automatic(const Source& source,
                                                 const std::filesystem::path& artifact_directory);
+
+// Drive migration: PS2 HDD -> bigger drive, -> sparse backup image, or a
+// backup image -> drive. Image targets are created new (never overwritten).
+struct MigrationTarget {
+    std::filesystem::path image;
+    std::uint64_t image_bytes{};  // size for a new image target
+    std::optional<unsigned> physical;
+
+    [[nodiscard]] std::string name() const;
+};
+
+struct MigrationPlanOutcome {
+    bool ok{};
+    std::string error;
+    migrate::Plan plan;
+    std::string text;
+};
+
+[[nodiscard]] MigrationPlanOutcome plan_migration(const Source& source, const MigrationTarget& target);
+[[nodiscard]] Outcome migrate(const Source& source, const MigrationTarget& target, const migrate::Plan& plan,
+                              migrate::Progress progress = {}, std::stop_token stop = {});
+[[nodiscard]] std::string human_bytes(std::uint64_t bytes);
 
 } // namespace ps2hdd::recovery_service

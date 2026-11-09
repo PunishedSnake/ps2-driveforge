@@ -5,6 +5,7 @@
 #include "ps2hdd/fhdb_artifacts.hpp"
 #include "ps2hdd/fhdb_rescue_capture.hpp"
 #include "ps2hdd/fhdb_restore.hpp"
+#include "ps2hdd/forensic_preview.hpp"
 #include "ps2hdd/file_block_device.hpp"
 #include "ps2hdd/writable_file_block_device.hpp"
 
@@ -12,8 +13,10 @@
 #include "ps2hdd/physical_apa_recovery.hpp"
 #include "ps2hdd/physical_bootstrap_recovery.hpp"
 #include "ps2hdd/physical_drive.hpp"
+#include "ps2hdd/physical_migration.hpp"
 #endif
 
+#include <cstdio>
 #include <memory>
 
 namespace ps2hdd::recovery_service {
@@ -115,6 +118,20 @@ HealthOutcome assess(const Source& source)
     result.report = health::assess(*device);
     result.text = health::render(result.report);
     result.ok = true;
+    return result;
+}
+
+BootChainOutcome boot_chain(const Source& source, const std::filesystem::path& memory_card_root)
+{
+    BootChainOutcome result;
+    auto device = open_read_only(source, result.error);
+    if (!device) return result;
+    bootchain::Options options;
+    options.memory_card_root = memory_card_root;
+    result.report = bootchain::inspect(*device, options);
+    result.text = bootchain::render(result.report);
+    result.ok = result.report.ok;
+    if (!result.ok) result.error = result.report.error;
     return result;
 }
 
@@ -261,6 +278,8 @@ Outcome forensic_report(const Source& source, const std::filesystem::path& artif
         return result;
     }
     result.artifacts.push_back(report.path);
+    for (std::size_t i = 0; i < scan.maps.size(); ++i)
+        result.details += forensic::render_preview(forensic::preview(scan, i));
     const auto best = best_automatic_map(scan);
     if (best.found) {
         const auto meta = fhdb::save_hddmeta(artifact_directory, scan, best.plan);
@@ -326,6 +345,119 @@ Outcome repair_forensic_automatic(const Source& source, const std::filesystem::p
     result.cold_verified = result.ok;
     result.summary = result.ok ? "Automatic-safe topology repair committed (map " + std::to_string(best.index) + ")"
                                : "Forensic topology repair did not complete";
+    return result;
+}
+
+std::string human_bytes(std::uint64_t bytes)
+{
+    char text[64];
+    const double value = static_cast<double>(bytes);
+    if (value >= 1024.0 * 1024.0 * 1024.0) std::snprintf(text, sizeof(text), "%.2f GiB", value / (1024.0 * 1024.0 * 1024.0));
+    else std::snprintf(text, sizeof(text), "%.0f MiB", value / (1024.0 * 1024.0));
+    return text;
+}
+
+std::string MigrationTarget::name() const
+{
+    if (physical) return "PhysicalDrive" + std::to_string(*physical);
+    return image.filename().string() + " (new image)";
+}
+
+MigrationPlanOutcome plan_migration(const Source& source, const MigrationTarget& target)
+{
+    MigrationPlanOutcome result;
+    auto device = open_read_only(source, result.error);
+    if (!device) return result;
+    std::uint64_t target_bytes = 0;
+    if (target.physical) {
+#ifdef _WIN32
+        // Use a permissive required size here; the plan below enforces it.
+        if (!check_migration_target(*target.physical, source.physical, 0, target_bytes, result.error)) return result;
+#else
+        result.error = "Physical drives are only supported on Windows";
+        return result;
+#endif
+    } else {
+        if (target.image.empty() || target.image_bytes == 0) {
+            result.error = "Choose a new image file and its size";
+            return result;
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(target.image, ec)) {
+            result.error = target.image.string() + " already exists; choose a new file name";
+            return result;
+        }
+        if (!source.physical && std::filesystem::equivalent(source.image.parent_path() / source.image.filename(), target.image, ec)) {
+            result.error = "The target is the source image";
+            return result;
+        }
+        target_bytes = target.image_bytes;
+    }
+    result.plan = migrate::plan(*device, target_bytes);
+    if (!result.plan.ok) {
+        result.error = result.plan.error;
+        return result;
+    }
+    const auto& plan = result.plan;
+    result.text = source.name() + " -> " + target.name() + "\n" + std::to_string(plan.partitions) +
+                  " partition(s), copying " + human_bytes(plan.copy_bytes) + " (of " + human_bytes(plan.source_bytes) +
+                  " source)\nAllocated APA space ends at " + human_bytes(plan.required_bytes) + "; target " +
+                  human_bytes(plan.target_bytes) + (plan.gained_bytes() >= 0 ? " (+" : " (") +
+                  (plan.gained_bytes() >= 0 ? human_bytes(static_cast<std::uint64_t>(plan.gained_bytes()))
+                                            : "-" + human_bytes(static_cast<std::uint64_t>(-plan.gained_bytes()))) +
+                  " free space)";
+    for (const auto& warning : plan.warnings) result.text += "\n[WARN] " + warning;
+    result.ok = true;
+    return result;
+}
+
+Outcome migrate(const Source& source, const MigrationTarget& target, const migrate::Plan& plan,
+                migrate::Progress progress, std::stop_token stop)
+{
+    Outcome result;
+    auto device = open_read_only(source, result.error);
+    if (!device) return result;
+    if (target.physical) {
+#ifdef _WIN32
+        const auto moved = migrate_to_physical(*device, source.physical, *target.physical, plan, std::move(progress), stop);
+        result.ok = moved.ok;
+        result.error = moved.error;
+        result.cold_verified = moved.cold_verified;
+        result.partial = !moved.ok && moved.copy.copied_bytes > 0;
+        if (result.partial && !moved.copy.master_written)
+            result.warning = "The target has no APA master yet, so the PS2 will not mistake it for a valid disk.";
+#else
+        result.error = "Physical drives are only supported on Windows";
+        return result;
+#endif
+    } else {
+        std::string error;
+        if (!migrate::create_sparse_image(target.image, plan.target_bytes, error)) {
+            result.error = error;
+            return result;
+        }
+        WritableFileBlockDevice disk(target.image);
+        if (!disk.is_open()) {
+            result.error = "Could not open the new image for writing";
+            return result;
+        }
+        migrate::Options options;
+        options.target_is_zeroed = true;
+        const auto copied = migrate::apply(*device, disk, plan, options, std::move(progress), stop);
+        result.ok = copied.ok;
+        result.error = copied.error;
+        result.cold_verified = copied.verified;
+        if (!copied.ok) {
+            std::error_code ec;
+            std::filesystem::remove(target.image, ec);  // a half image is worthless; never leave one around
+            result.warning = "The incomplete image was deleted.";
+        } else {
+            result.artifacts.push_back(target.image);
+        }
+    }
+    result.summary = result.ok ? "Migrated " + std::to_string(plan.partitions) + " partition(s) (" +
+                                     human_bytes(plan.copy_bytes) + ") to " + target.name() + ", verified"
+                               : "Migration did not complete";
     return result;
 }
 

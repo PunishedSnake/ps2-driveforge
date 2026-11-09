@@ -15,6 +15,9 @@
 #include "ps2hdd/physical_game_deploy.hpp"
 #include "ps2hdd/physical_partition_remove.hpp"
 #include "ps2hdd/physical_write_guard.hpp"
+#include "ps2hdd/boot_chain.hpp"
+#include "ps2hdd/forensic_preview.hpp"
+#include "ps2hdd/recovery_service.hpp"
 #include "ps2hdd/structure_health.hpp"
 #include "ps2hdd/version.hpp"
 
@@ -42,6 +45,7 @@ void usage()
         << "Read-only admission and recovery inspection:\n"
         << "  ps2-driveforge-physical-tools preflight <index>\n"
         << "  ps2-driveforge-physical-tools health <index>\n"
+        << "  ps2-driveforge-physical-tools boot-chain <index> [--mc <memory-card-folder>]\n"
         << "  ps2-driveforge-physical-tools forensic-scan <index>\n"
         << "  ps2-driveforge-physical-tools capture-rescue <index> <artifact-dir>\n"
         << "      [--romver <text>] [--family <text>] [--confidence <text>]\n\n"
@@ -67,6 +71,10 @@ void usage()
         << "      --apply --confirm PhysicalDriveN\n"
         << "  ps2-driveforge-physical-tools repair-forensic <index> <map-index> <artifact-dir>\n"
         << "      --apply --confirm PhysicalDriveN [--allow-manual]\n\n"
+        << "Drive migration (copies only APA-allocated space, master written last):\n"
+        << "  ps2-driveforge-physical-tools migrate <src-index> <dst-index> [--apply --confirm PhysicalDriveDST]\n"
+        << "  ps2-driveforge-physical-tools backup <src-index> <new-image> [<size>]   (sparse image, default = source size)\n"
+        << "  ps2-driveforge-physical-tools restore-image <image> <dst-index> [--apply --confirm PhysicalDriveDST]\n\n"
         << "Provider network/crypto staging completes before any writable raw-disk handle is opened.\n"
         << "Physical mutations require an exact target confirmation and host-side recovery artifacts.\n";
 }
@@ -448,7 +456,8 @@ int forensic_scan(unsigned index)
                   << "  patches:      " << plan.patches.size() << "\n"
                   << "  auto-safe:    " << (plan.automatic_safe ? "YES" : "no") << "\n"
                   << "  manual-only:  "
-                  << (!plan.automatic_safe && plan.manual_allowed ? "yes" : "no") << "\n";
+                  << (!plan.automatic_safe && plan.manual_allowed ? "yes" : "no") << "\n"
+                  << ps2hdd::forensic::render_preview(ps2hdd::forensic::preview(scan, i));
     }
 
     return scan.ok && !scan.truncated ? 0 : 1;
@@ -690,6 +699,55 @@ int repair_master(std::span<char*> args)
     return 0;
 }
 
+
+bool parse_size(std::string_view text, std::uint64_t& bytes)
+{
+    std::uint64_t value = 0;
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || value == 0) return false;
+    const std::string_view unit(end, static_cast<std::size_t>(text.data() + text.size() - end));
+    std::uint64_t scale = 1;
+    if (unit == "K" || unit == "KiB") scale = 1ULL << 10;
+    else if (unit == "M" || unit == "MiB") scale = 1ULL << 20;
+    else if (unit == "G" || unit == "GiB") scale = 1ULL << 30;
+    else if (unit == "T" || unit == "TiB") scale = 1ULL << 40;
+    else if (!unit.empty()) return false;
+    bytes = value * scale;
+    return true;
+}
+
+int run_migration(const ps2hdd::recovery_service::Source& source, const ps2hdd::recovery_service::MigrationTarget& target,
+                  bool apply)
+{
+    namespace rs = ps2hdd::recovery_service;
+    const auto planned = rs::plan_migration(source, target);
+    if (!planned.ok) {
+        std::cerr << "Migration refused: " << planned.error << '\n';
+        return 1;
+    }
+    std::cout << planned.text << '\n';
+    if (!apply) {
+        std::cout << "Dry run; add --apply to copy.\n";
+        return 0;
+    }
+    int last = -1;
+    const auto outcome = rs::migrate(source, target, planned.plan, [&last](std::uint64_t done, std::uint64_t total) {
+        const int pct = total == 0 ? 100 : static_cast<int>(done * 100U / total);
+        if (pct != last) {
+            last = pct;
+            std::cerr << "\r  copying " << pct << "%" << std::flush;
+        }
+    });
+    std::cerr << '\n';
+    if (!outcome.warning.empty()) std::cout << "[WARN] " << outcome.warning << '\n';
+    if (!outcome.ok) {
+        std::cerr << "Migration failed: " << outcome.error << '\n';
+        return outcome.partial ? 3 : 1;
+    }
+    std::cout << outcome.summary << '\n';
+    return 0;
+}
+
 int health(unsigned index)
 {
     ps2hdd::PhysicalDrive disk(index);
@@ -845,6 +903,64 @@ int main(int argc, char** argv)
             return 2;
         }
         return health(index);
+    }
+    if (command == "migrate" || command == "restore-image") {
+        if (argc < 4) {
+            usage();
+            return 2;
+        }
+        ps2hdd::recovery_service::Source source;
+        unsigned src = 0, dst = 0;
+        if (command == "migrate") {
+            if (!parse_unsigned(argv[2], src)) { usage(); return 2; }
+            source.physical = src;
+        } else {
+            source.image = argv[2];
+        }
+        if (!parse_unsigned(argv[3], dst)) { usage(); return 2; }
+        ps2hdd::recovery_service::MigrationTarget target;
+        target.physical = dst;
+        const bool apply = has_flag(args, "--apply");
+        if (apply) {
+            std::string error;
+            if (!confirm_target(args, dst, error)) {
+                std::cerr << error << " (the TARGET drive)\n";
+                return 2;
+            }
+        }
+        return run_migration(source, target, apply);
+    }
+    if (command == "backup") {
+        unsigned src = 0;
+        if (argc < 4 || !parse_unsigned(argv[2], src)) { usage(); return 2; }
+        ps2hdd::recovery_service::Source source;
+        source.physical = src;
+        ps2hdd::recovery_service::MigrationTarget target;
+        target.image = argv[3];
+        if (argc >= 5 && argv[4][0] != '-') {
+            if (!parse_size(argv[4], target.image_bytes)) { usage(); return 2; }
+        } else {
+            ps2hdd::PhysicalDrive disk(src);
+            target.image_bytes = disk.is_open() ? disk.size_bytes() : 0;
+        }
+        return run_migration(source, target, true);
+    }
+    if (command == "boot-chain") {
+        unsigned index = 0;
+        if ((argc != 3 && argc != 5) || !parse_unsigned(argv[2], index)) {
+            usage();
+            return 2;
+        }
+        ps2hdd::PhysicalDrive disk(index);
+        if (!disk.is_open()) {
+            std::cerr << "Could not open PhysicalDrive" << index << " read-only\n";
+            return 1;
+        }
+        ps2hdd::bootchain::Options options;
+        if (argc == 5 && std::string_view(argv[3]) == "--mc") options.memory_card_root = argv[4];
+        const auto report = ps2hdd::bootchain::inspect(disk, options);
+        std::cout << ps2hdd::bootchain::render(report);
+        return report.ok ? 0 : 1;
     }
     if (command == "disable-bootstrap") {
         return disable_bootstrap(args);
